@@ -51,6 +51,34 @@ class TestPublicAPIExports:
         from scidb import ReservedMetadataKeyError
         assert issubclass(ReservedMetadataKeyError, Exception)
 
+    def test_thunk_decorator_exported(self):
+        from scidb import thunk
+        assert callable(thunk)
+
+    def test_thunk_class_exported(self):
+        from scidb import Thunk
+        assert Thunk is not None
+
+    def test_pipeline_thunk_exported(self):
+        from scidb import PipelineThunk
+        assert PipelineThunk is not None
+
+    def test_output_thunk_exported(self):
+        from scidb import OutputThunk
+        assert OutputThunk is not None
+
+    def test_lineage_record_exported(self):
+        from scidb import LineageRecord
+        assert LineageRecord is not None
+
+    def test_extract_lineage_exported(self):
+        from scidb import extract_lineage
+        assert callable(extract_lineage)
+
+    def test_get_raw_value_exported(self):
+        from scidb import get_raw_value
+        assert callable(get_raw_value)
+
 
 class TestAllExports:
     """Test __all__ contains expected exports."""
@@ -78,6 +106,19 @@ class TestAllExports:
         assert "NotFoundError" in scidb.__all__
         assert "DatabaseNotConfiguredError" in scidb.__all__
         assert "ReservedMetadataKeyError" in scidb.__all__
+
+    def test_all_contains_thunk_exports(self):
+        import scidb
+        assert "thunk" in scidb.__all__
+        assert "Thunk" in scidb.__all__
+        assert "PipelineThunk" in scidb.__all__
+        assert "OutputThunk" in scidb.__all__
+
+    def test_all_contains_lineage_exports(self):
+        import scidb
+        assert "LineageRecord" in scidb.__all__
+        assert "extract_lineage" in scidb.__all__
+        assert "get_raw_value" in scidb.__all__
 
     def test_all_exports_are_accessible(self):
         """Verify all items in __all__ are actually accessible."""

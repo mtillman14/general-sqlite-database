@@ -5,7 +5,10 @@ import sqlite3
 import threading
 from datetime import datetime
 from pathlib import Path
-from typing import Type
+from typing import TYPE_CHECKING, Type
+
+if TYPE_CHECKING:
+    from .lineage import LineageRecord
 
 from .exceptions import (
     DatabaseNotConfiguredError,
@@ -119,6 +122,38 @@ class DatabaseManager:
         """
         )
 
+        # Lineage tracking table
+        self.connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS _lineage (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                output_vhash TEXT UNIQUE NOT NULL,
+                output_type TEXT NOT NULL,
+                function_name TEXT NOT NULL,
+                function_hash TEXT NOT NULL,
+                inputs JSON NOT NULL,
+                constants JSON NOT NULL,
+                created_at TEXT DEFAULT CURRENT_TIMESTAMP
+            )
+        """
+        )
+
+        # Index for querying by function
+        self.connection.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_lineage_function
+            ON _lineage(function_hash)
+        """
+        )
+
+        # Index for querying by output
+        self.connection.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_lineage_output
+            ON _lineage(output_vhash)
+        """
+        )
+
         self.connection.commit()
 
     def register(self, variable_class: Type[BaseVariable]) -> None:
@@ -202,7 +237,12 @@ class DatabaseManager:
         self._registered_types[type_name] = variable_class
         return row["table_name"]
 
-    def save(self, variable: BaseVariable, metadata: dict) -> str:
+    def save(
+        self,
+        variable: BaseVariable,
+        metadata: dict,
+        lineage: "LineageRecord | None" = None,
+    ) -> str:
         """
         Save a variable to the database.
 
@@ -212,6 +252,7 @@ class DatabaseManager:
         Args:
             variable: The variable instance to save
             metadata: Addressing metadata
+            lineage: Optional lineage record if data came from a thunk
 
         Returns:
             The vhash of the saved/existing data
@@ -260,8 +301,38 @@ class DatabaseManager:
             (vhash, type_name, table_name, metadata_json, now),
         )
 
+        # Save lineage if provided
+        if lineage is not None:
+            self._save_lineage(vhash, type_name, lineage, now)
+
         self.connection.commit()
         return vhash
+
+    def _save_lineage(
+        self,
+        output_vhash: str,
+        output_type: str,
+        lineage: "LineageRecord",
+        timestamp: str,
+    ) -> None:
+        """Save lineage record for a variable."""
+        self.connection.execute(
+            """
+            INSERT OR REPLACE INTO _lineage
+            (output_vhash, output_type, function_name, function_hash,
+             inputs, constants, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+        """,
+            (
+                output_vhash,
+                output_type,
+                lineage.function_name,
+                lineage.function_hash,
+                json.dumps(lineage.inputs),
+                json.dumps(lineage.constants),
+                timestamp,
+            ),
+        )
 
     def load(
         self,
@@ -385,6 +456,114 @@ class DatabaseManager:
             }
             for row in cursor.fetchall()
         ]
+
+    def get_provenance(
+        self,
+        variable_class: Type[BaseVariable],
+        version: str | None = None,
+        **metadata,
+    ) -> dict | None:
+        """
+        Get the provenance (lineage) of a variable.
+
+        Args:
+            variable_class: The type to query
+            version: Specific vhash, or None to use metadata lookup
+            **metadata: Metadata to match (if version not specified)
+
+        Returns:
+            Dict with function_name, function_hash, inputs, constants
+            or None if no lineage recorded (data wasn't from a thunk)
+        """
+        # First, find the vhash
+        if version:
+            vhash = version
+        else:
+            var = self.load(variable_class, metadata)
+            if isinstance(var, list):
+                var = var[0]  # Latest
+            vhash = var.vhash
+
+        cursor = self.connection.execute(
+            """SELECT function_name, function_hash, inputs, constants
+               FROM _lineage WHERE output_vhash = ?""",
+            (vhash,),
+        )
+        row = cursor.fetchone()
+
+        if row is None:
+            return None  # No lineage recorded
+
+        return {
+            "function_name": row["function_name"],
+            "function_hash": row["function_hash"],
+            "inputs": json.loads(row["inputs"]),
+            "constants": json.loads(row["constants"]),
+        }
+
+    def get_derived_from(
+        self,
+        variable_class: Type[BaseVariable],
+        version: str | None = None,
+        **metadata,
+    ) -> list[dict]:
+        """
+        Find all variables that were derived from this one.
+
+        Answers: "What outputs used this variable as an input?"
+
+        Args:
+            variable_class: The type to query
+            version: Specific vhash, or None to use metadata lookup
+            **metadata: Metadata to match (if version not specified)
+
+        Returns:
+            List of dicts with vhash, type, function for each derived variable
+        """
+        # First, find the vhash
+        if version:
+            vhash = version
+        else:
+            var = self.load(variable_class, metadata)
+            if isinstance(var, list):
+                var = var[0]
+            vhash = var.vhash
+
+        # Search for this vhash in any lineage inputs
+        cursor = self.connection.execute(
+            """SELECT output_vhash, output_type, function_name, inputs
+               FROM _lineage
+               WHERE EXISTS (
+                   SELECT 1 FROM json_each(inputs)
+                   WHERE json_extract(value, '$.vhash') = ?
+               )""",
+            (vhash,),
+        )
+
+        return [
+            {
+                "vhash": row["output_vhash"],
+                "type": row["output_type"],
+                "function": row["function_name"],
+            }
+            for row in cursor.fetchall()
+        ]
+
+    def has_lineage(self, vhash: str) -> bool:
+        """
+        Check if a variable has lineage information.
+
+        Args:
+            vhash: The version hash to check
+
+        Returns:
+            True if lineage exists, False otherwise
+        """
+        cursor = self.connection.execute(
+            "SELECT 1 FROM _lineage WHERE output_vhash = ?",
+            (vhash,),
+        )
+        return cursor.fetchone() is not None
 
     def close(self):
         """Close the database connection."""

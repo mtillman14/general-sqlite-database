@@ -6,9 +6,10 @@ A lightweight database framework for scientific computing that provides:
 - Automatic content-based versioning
 - Flexible metadata-based addressing
 - Portable single-file SQLite storage
+- Automatic lineage tracking via thunks
 
 Example:
-    from scidb import configure_database, BaseVariable
+    from scidb import configure_database, BaseVariable, thunk
     import numpy as np
     import pandas as pd
 
@@ -32,6 +33,18 @@ Example:
 
     # Load
     loaded = RotationMatrix.load(subject=1, trial=1)
+
+    # With lineage tracking
+    @thunk(n_outputs=1)
+    def process(data):
+        return data * 2
+
+    result = process(loaded)  # Returns OutputThunk with lineage
+    processed = RotationMatrix(result)
+    processed.save(subject=1, trial=1, stage="processed")
+
+    # Query provenance
+    provenance = db.get_provenance(RotationMatrix, subject=1, trial=1, stage="processed")
 """
 
 from .database import DatabaseManager, configure_database, get_database
@@ -42,6 +55,8 @@ from .exceptions import (
     ReservedMetadataKeyError,
     SciDBError,
 )
+from .lineage import LineageRecord, extract_lineage, get_raw_value
+from .thunk import OutputThunk, PipelineThunk, Thunk, thunk
 from .variable import BaseVariable
 
 __version__ = "0.1.0"
@@ -53,6 +68,15 @@ __all__ = [
     # Configuration
     "configure_database",
     "get_database",
+    # Thunk system
+    "thunk",
+    "Thunk",
+    "PipelineThunk",
+    "OutputThunk",
+    # Lineage
+    "LineageRecord",
+    "extract_lineage",
+    "get_raw_value",
     # Exceptions
     "SciDBError",
     "NotRegisteredError",

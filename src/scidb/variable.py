@@ -109,6 +109,9 @@ class BaseVariable(ABC):
         """
         Save this variable to the database.
 
+        If self.data is an OutputThunk (from a thunked computation),
+        lineage is automatically extracted and stored.
+
         Args:
             db: Optional explicit database. If None, uses global database.
             **metadata: Addressing metadata (e.g., subject=1, trial=1)
@@ -123,6 +126,8 @@ class BaseVariable(ABC):
         """
         from .database import get_database
         from .exceptions import ReservedMetadataKeyError
+        from .thunk import OutputThunk
+        from .lineage import extract_lineage, get_raw_value
 
         # Validate metadata keys
         reserved_used = set(metadata.keys()) & self._reserved_keys
@@ -132,7 +137,15 @@ class BaseVariable(ABC):
             )
 
         db = db or get_database()
-        vhash = db.save(self, metadata)
+
+        # Extract lineage if data came from a thunk
+        lineage = None
+        if isinstance(self.data, OutputThunk):
+            lineage = extract_lineage(self.data)
+            # Unwrap to get actual value for hashing and storage
+            self.data = get_raw_value(self.data)
+
+        vhash = db.save(self, metadata, lineage=lineage)
         self._vhash = vhash
         self._metadata = metadata
         return vhash

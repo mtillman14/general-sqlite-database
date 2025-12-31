@@ -1,0 +1,357 @@
+"""Thunk system for automatic lineage tracking.
+
+This module provides a Python adaptation of Haskell's thunk concept for building
+data processing pipelines with automatic provenance tracking.
+
+Example:
+    @thunk(n_outputs=1)
+    def process_signal(raw: np.ndarray, cal_factor: float) -> np.ndarray:
+        return raw * cal_factor
+
+    result = process_signal(raw_data, 2.5)  # Returns OutputThunk
+    print(result.value)  # The actual computed value
+    print(result.pipeline_thunk.inputs)  # Captured inputs for lineage
+"""
+
+from functools import wraps
+from hashlib import sha256
+from typing import Any, Callable
+
+STRING_REPR_DELIMITER = "-"
+
+
+class Thunk:
+    """
+    Wraps a function to enable lineage tracking.
+
+    When called, creates a PipelineThunk that tracks inputs.
+    The function's bytecode is hashed for reproducibility checking.
+
+    Attributes:
+        fcn: The wrapped function
+        n_outputs: Number of outputs the function returns
+        hash: SHA-256 hash of function bytecode + n_outputs
+        pipeline_thunks: All PipelineThunks created from this Thunk
+    """
+
+    def __init__(self, fcn: Callable, n_outputs: int = 1):
+        """
+        Initialize a Thunk wrapper.
+
+        Args:
+            fcn: The function to wrap
+            n_outputs: Number of output values the function returns
+        """
+        self.fcn = fcn
+        self.n_outputs = n_outputs
+        self.pipeline_thunks: tuple[PipelineThunk, ...] = ()
+
+        # Hash function bytecode + constants for reproducibility
+        # Include co_consts to distinguish functions with same structure but different literals
+        fcn_code = fcn.__code__.co_code
+        fcn_consts = str(fcn.__code__.co_consts).encode()
+        combined_code = fcn_code + fcn_consts
+        fcn_hash = sha256(combined_code).hexdigest()
+
+        string_repr = f"{fcn_hash}{STRING_REPR_DELIMITER}{n_outputs}"
+        self.hash = sha256(string_repr.encode()).hexdigest()
+
+    def __repr__(self) -> str:
+        return f"Thunk(fcn={self.fcn.__name__}, n_outputs={self.n_outputs})"
+
+    def __eq__(self, other: object) -> bool:
+        if not isinstance(other, Thunk):
+            return False
+        return self.hash == other.hash
+
+    def __hash__(self) -> int:
+        return int(self.hash[:16], 16)
+
+    def __call__(self, *args, **kwargs) -> "OutputThunk | tuple[OutputThunk, ...]":
+        """
+        Create a PipelineThunk and execute or defer.
+
+        Returns:
+            OutputThunk or tuple of OutputThunks wrapping the result(s)
+        """
+        pipeline_thunk = PipelineThunk(self, *args, **kwargs)
+
+        # Check for existing equivalent PipelineThunk
+        for existing in self.pipeline_thunks:
+            if pipeline_thunk._matches(existing):
+                pipeline_thunk = existing
+                break
+        else:
+            self.pipeline_thunks = (*self.pipeline_thunks, pipeline_thunk)
+
+        return pipeline_thunk(*args, **kwargs)
+
+
+class PipelineThunk:
+    """
+    Represents a specific invocation of a Thunk with captured inputs.
+
+    Tracks:
+    - The parent Thunk (function definition)
+    - All input arguments (positional and keyword)
+    - Output(s) after execution
+
+    Attributes:
+        thunk: The parent Thunk that created this
+        inputs: Dict mapping argument names to values
+        outputs: Tuple of OutputThunks after execution
+    """
+
+    def __init__(self, thunk: Thunk, *args, **kwargs):
+        """
+        Initialize a PipelineThunk.
+
+        Args:
+            thunk: The parent Thunk
+            *args: Positional arguments passed to the function
+            **kwargs: Keyword arguments passed to the function
+        """
+        self.thunk = thunk
+        self.inputs: dict[str, Any] = {}
+
+        # Capture positional args
+        for i, arg in enumerate(args):
+            self.inputs[f"arg_{i}"] = arg
+
+        # Capture keyword args
+        self.inputs.update(kwargs)
+
+        self.outputs: tuple[OutputThunk, ...] = ()
+
+    @property
+    def hash(self) -> str:
+        """Dynamic hash based on thunk + inputs."""
+        # Create a stable hash of inputs
+        input_parts = []
+        for name in sorted(self.inputs.keys()):
+            value = self.inputs[name]
+            if isinstance(value, OutputThunk):
+                input_parts.append((name, "output", value.hash))
+            elif self._is_base_variable(value) and value._vhash is not None:
+                input_parts.append((name, "variable", value._vhash))
+            else:
+                # For other values, use repr (may not be perfectly stable)
+                input_parts.append((name, "value", repr(value)))
+
+        input_str = str(input_parts)
+        combined = f"{self.thunk.hash}{STRING_REPR_DELIMITER}{input_str}"
+        return sha256(combined.encode()).hexdigest()
+
+    def __hash__(self) -> int:
+        return int(self.hash[:16], 16)
+
+    def __repr__(self) -> str:
+        return (
+            f"PipelineThunk(fcn={self.thunk.fcn.__name__}, "
+            f"n_inputs={len(self.inputs)}, n_outputs={self.thunk.n_outputs})"
+        )
+
+    @property
+    def is_complete(self) -> bool:
+        """True if all inputs are concrete values (not pending thunks)."""
+        for value in self.inputs.values():
+            if isinstance(value, OutputThunk) and not value.is_complete:
+                return False
+        return True
+
+    def __call__(self, *args, **kwargs) -> "OutputThunk | tuple[OutputThunk, ...]":
+        """
+        Execute the function if complete, return OutputThunk(s).
+
+        Returns:
+            OutputThunk or tuple of OutputThunks wrapping the result(s)
+        """
+        result: tuple = tuple(None for _ in range(self.thunk.n_outputs))
+
+        if self.is_complete:
+            # Unwrap any OutputThunk or BaseVariable inputs to get raw values
+            resolved_args = []
+            for arg in args:
+                if isinstance(arg, OutputThunk):
+                    resolved_args.append(arg.value)
+                elif self._is_base_variable(arg):
+                    # BaseVariable - use its data
+                    resolved_args.append(arg.data)
+                else:
+                    resolved_args.append(arg)
+
+            resolved_kwargs = {}
+            for k, v in kwargs.items():
+                if isinstance(v, OutputThunk):
+                    resolved_kwargs[k] = v.value
+                elif self._is_base_variable(v):
+                    resolved_kwargs[k] = v.data
+                else:
+                    resolved_kwargs[k] = v
+
+            result = self.thunk.fcn(*resolved_args, **resolved_kwargs)
+
+            # Normalize to tuple
+            if not isinstance(result, tuple):
+                result = (result,)
+
+            if len(result) != self.thunk.n_outputs:
+                raise ValueError(
+                    f"Function {self.thunk.fcn.__name__} returned {len(result)} outputs, "
+                    f"but {self.thunk.n_outputs} were expected."
+                )
+
+        # Wrap outputs in OutputThunks
+        outputs = tuple(
+            OutputThunk(self, i, self.is_complete, val) for i, val in enumerate(result)
+        )
+        self.outputs = outputs
+
+        if len(outputs) == 1:
+            return outputs[0]
+        return outputs
+
+    @staticmethod
+    def _is_base_variable(obj: Any) -> bool:
+        """Check if obj is a BaseVariable (without importing it to avoid circular imports)."""
+        # Check for BaseVariable by looking for characteristic attributes
+        # that BaseVariable has but numpy arrays don't
+        return (
+            hasattr(obj, "data")
+            and hasattr(obj, "_vhash")
+            and hasattr(obj, "to_db")
+            and hasattr(obj, "from_db")
+        )
+
+    def _matches(self, other: "PipelineThunk") -> bool:
+        """Check if this is equivalent to another PipelineThunk."""
+        if self.thunk.hash != other.thunk.hash:
+            return False
+
+        # Check if inputs match
+        if set(self.inputs.keys()) != set(other.inputs.keys()):
+            return False
+
+        for key in self.inputs:
+            self_val = self.inputs[key]
+            other_val = other.inputs[key]
+
+            # Compare OutputThunks by hash
+            if isinstance(self_val, OutputThunk) and isinstance(other_val, OutputThunk):
+                if self_val.hash != other_val.hash:
+                    return False
+            elif isinstance(self_val, OutputThunk) or isinstance(other_val, OutputThunk):
+                return False
+            else:
+                # Compare other values directly
+                try:
+                    if self_val != other_val:
+                        return False
+                except (ValueError, TypeError):
+                    # numpy arrays raise ValueError for == comparison
+                    import numpy as np
+
+                    if isinstance(self_val, np.ndarray) and isinstance(
+                        other_val, np.ndarray
+                    ):
+                        if not np.array_equal(self_val, other_val):
+                            return False
+                    else:
+                        return False
+
+        return True
+
+
+class OutputThunk:
+    """
+    Wraps a function output with lineage information.
+
+    Contains:
+    - Reference to the PipelineThunk that produced it
+    - Output index (for multi-output functions)
+    - The actual computed value
+
+    This is the key to provenance: every OutputThunk knows its parent
+    PipelineThunk, which knows its inputs (possibly other OutputThunks).
+
+    Attributes:
+        pipeline_thunk: The PipelineThunk that produced this output
+        output_num: Index of this output (0-based)
+        is_complete: True if the value has been computed
+        value: The actual computed value (None if not complete)
+        hash: SHA-256 hash encoding the full lineage
+    """
+
+    def __init__(
+        self,
+        pipeline_thunk: PipelineThunk,
+        output_num: int,
+        is_complete: bool,
+        value: Any,
+    ):
+        """
+        Initialize an OutputThunk.
+
+        Args:
+            pipeline_thunk: The PipelineThunk that produced this
+            output_num: Index of this output
+            is_complete: Whether the value has been computed
+            value: The computed value (or None if not complete)
+        """
+        self.pipeline_thunk = pipeline_thunk
+        self.output_num = output_num
+        self.is_complete = is_complete
+        self.value = value if is_complete else None
+
+        string_repr = (
+            f"{pipeline_thunk.hash}{STRING_REPR_DELIMITER}"
+            f"output{STRING_REPR_DELIMITER}{output_num}"
+        )
+        self.hash = sha256(string_repr.encode()).hexdigest()
+
+    def __repr__(self) -> str:
+        fcn_name = self.pipeline_thunk.thunk.fcn.__name__
+        return f"OutputThunk(fn={fcn_name}, output={self.output_num}, complete={self.is_complete})"
+
+    def __str__(self) -> str:
+        """Show only the value when printed."""
+        return str(self.value)
+
+    def __eq__(self, other: object) -> bool:
+        """Compare by hash if OutputThunk, otherwise compare value."""
+        if isinstance(other, OutputThunk):
+            return self.hash == other.hash
+        return self.value == other
+
+    def __hash__(self) -> int:
+        return int(self.hash[:16], 16)
+
+
+def thunk(n_outputs: int = 1) -> Callable[[Callable], Thunk]:
+    """
+    Decorator to convert a function into a Thunk.
+
+    Example:
+        @thunk(n_outputs=1)
+        def process_signal(raw, calibration):
+            return raw * calibration
+
+        result = process_signal(raw_data, cal_data)  # Returns OutputThunk
+        print(result.value)  # The actual computed value
+        print(result.pipeline_thunk.inputs)  # Captured inputs
+
+    Args:
+        n_outputs: Number of outputs the function returns (default 1)
+
+    Returns:
+        A decorator that converts functions to Thunks
+    """
+
+    def decorator(fcn: Callable) -> Thunk:
+        t = Thunk(fcn, n_outputs)
+        # Preserve function metadata
+        t.__doc__ = fcn.__doc__
+        t.__name__ = fcn.__name__  # type: ignore
+        return t
+
+    return decorator

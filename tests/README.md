@@ -1,6 +1,6 @@
 # SciDB Test Suite
 
-Comprehensive pytest-compatible test suite for Phase 1 of the scidb implementation.
+Comprehensive pytest-compatible test suite for scidb implementation.
 
 ## Test Structure
 
@@ -14,6 +14,8 @@ tests/
 ├── test_database.py     # Tests for DatabaseManager
 ├── test_init.py         # Tests for public API exports
 ├── test_integration.py  # End-to-end integration tests
+├── test_thunk.py        # Tests for thunk system (Phase 2)
+├── test_lineage.py      # Tests for lineage tracking (Phase 2)
 └── requirements.txt     # Test dependencies
 ```
 
@@ -71,7 +73,7 @@ pytest --ignore=tests/test_integration.py
 
 ## Test Categories
 
-### Unit Tests
+### Phase 1: Core Infrastructure
 
 - `test_exceptions.py` - Exception hierarchy and behavior
 - `test_hashing.py` - Deterministic hashing for various data types
@@ -79,6 +81,11 @@ pytest --ignore=tests/test_integration.py
 - `test_variable.py` - BaseVariable ABC behavior
 - `test_database.py` - DatabaseManager operations
 - `test_init.py` - Public API exports
+
+### Phase 2: Thunk System & Lineage
+
+- `test_thunk.py` - Thunk decorator, PipelineThunk, OutputThunk
+- `test_lineage.py` - Lineage extraction and provenance tracking
 
 ### Integration Tests
 
