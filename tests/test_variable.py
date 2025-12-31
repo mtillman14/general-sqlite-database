@@ -65,6 +65,246 @@ class TestBaseVariableInit:
         np.testing.assert_array_equal(var.data, arr)
 
 
+class TestForType:
+    """Test BaseVariable.for_type() class factory."""
+
+    def test_for_type_creates_subclass(self, scalar_class):
+        """for_type() should create a subclass."""
+        SpecialScalar = scalar_class.for_type("special")
+        assert issubclass(SpecialScalar, scalar_class)
+
+    def test_for_type_has_correct_name(self, scalar_class):
+        """Generated class name should include type suffix."""
+        SpecialScalar = scalar_class.for_type("temperature")
+        assert SpecialScalar.__name__ == "ScalarValueTemperature"
+
+    def test_for_type_has_type_suffix(self, scalar_class):
+        """get_type_suffix() should return the suffix."""
+        SpecialScalar = scalar_class.for_type("humidity")
+        assert SpecialScalar.get_type_suffix() == "humidity"
+
+    def test_for_type_table_name_includes_suffix(self, scalar_class):
+        """table_name() should include the type suffix."""
+        SpecialScalar = scalar_class.for_type("pressure")
+        assert SpecialScalar.table_name() == "scalar_value_pressure"
+
+    def test_for_type_normalizes_spaces(self, scalar_class):
+        """Spaces in type name should become underscores."""
+        SpecialScalar = scalar_class.for_type("ambient temperature")
+        assert SpecialScalar.table_name() == "scalar_value_ambient_temperature"
+
+    def test_for_type_normalizes_hyphens(self, scalar_class):
+        """Hyphens in type name should become underscores."""
+        SpecialScalar = scalar_class.for_type("air-quality")
+        assert SpecialScalar.table_name() == "scalar_value_air_quality"
+
+    def test_for_type_normalizes_uppercase(self, scalar_class):
+        """Uppercase in type name should become lowercase."""
+        SpecialScalar = scalar_class.for_type("Temperature")
+        assert SpecialScalar.table_name() == "scalar_value_temperature"
+
+    def test_for_type_preserves_schema_version(self, scalar_class):
+        """Specialized class should inherit schema_version."""
+        SpecialScalar = scalar_class.for_type("test")
+        assert SpecialScalar.schema_version == scalar_class.schema_version
+
+    def test_for_type_inherits_to_db(self, scalar_class):
+        """Specialized class should inherit to_db() method."""
+        SpecialScalar = scalar_class.for_type("test")
+        instance = SpecialScalar(42)
+        df = instance.to_db()
+        assert df["value"].iloc[0] == 42
+
+    def test_for_type_inherits_from_db(self, scalar_class):
+        """Specialized class should inherit from_db() method."""
+        SpecialScalar = scalar_class.for_type("test")
+        df = pd.DataFrame({"value": [123]})
+        data = SpecialScalar.from_db(df)
+        assert data == 123
+
+    def test_multiple_for_type_different_tables(self, scalar_class):
+        """Multiple for_type() calls should create different table names."""
+        Type1 = scalar_class.for_type("alpha")
+        Type2 = scalar_class.for_type("beta")
+        Type3 = scalar_class.for_type("gamma")
+
+        assert Type1.table_name() == "scalar_value_alpha"
+        assert Type2.table_name() == "scalar_value_beta"
+        assert Type3.table_name() == "scalar_value_gamma"
+
+    def test_original_class_unchanged(self, scalar_class):
+        """Original class should not be modified by for_type()."""
+        _ = scalar_class.for_type("test")
+        assert scalar_class.get_type_suffix() is None
+        assert scalar_class.table_name() == "scalar_value"
+
+    def test_for_type_works_with_database(self, db, array_class):
+        """Specialized types should work with save/load."""
+        TempArray = array_class.for_type("temperature")
+        HumidArray = array_class.for_type("humidity")
+
+        db.register(TempArray)
+        db.register(HumidArray)
+
+        # Save different data to each type
+        temp_data = np.array([20.0, 21.0, 22.0])
+        humid_data = np.array([60.0, 65.0, 70.0])
+
+        TempArray(temp_data).save(db=db, sensor=1)
+        HumidArray(humid_data).save(db=db, sensor=1)
+
+        # Load back - should get correct data for each type
+        loaded_temp = TempArray.load(db=db, sensor=1)
+        loaded_humid = HumidArray.load(db=db, sensor=1)
+
+        np.testing.assert_array_equal(loaded_temp.data, temp_data)
+        np.testing.assert_array_equal(loaded_humid.data, humid_data)
+
+    def test_for_type_separate_tables_in_database(self, db, scalar_class):
+        """Each specialized type should create its own table."""
+        Type1 = scalar_class.for_type("alpha")
+        Type2 = scalar_class.for_type("beta")
+
+        db.register(Type1)
+        db.register(Type2)
+
+        # Check tables exist
+        cursor = db.connection.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name LIKE 'scalar_value_%'"
+        )
+        tables = {row[0] for row in cursor.fetchall()}
+
+        assert "scalar_value_alpha" in tables
+        assert "scalar_value_beta" in tables
+
+    def test_for_type_data_isolation(self, db, scalar_class):
+        """Data saved to one specialized type should not appear in another."""
+        Type1 = scalar_class.for_type("type_a")
+        Type2 = scalar_class.for_type("type_b")
+
+        db.register(Type1)
+        db.register(Type2)
+
+        # Save to Type1 only
+        Type1(100).save(db=db, key="test")
+
+        # Should find in Type1
+        loaded = Type1.load(db=db, key="test")
+        assert loaded.data == 100
+
+        # Should NOT find in Type2
+        from scidb.exceptions import NotFoundError
+        with pytest.raises(NotFoundError):
+            Type2.load(db=db, key="test")
+
+    def test_for_type_with_array_class(self, db, array_class):
+        """for_type() should work with array-based variable classes."""
+        SignalA = array_class.for_type("signal_a")
+        SignalB = array_class.for_type("signal_b")
+
+        db.register(SignalA)
+        db.register(SignalB)
+
+        data_a = np.array([1.0, 2.0, 3.0])
+        data_b = np.array([10.0, 20.0, 30.0])
+
+        SignalA(data_a).save(db=db, channel=1)
+        SignalB(data_b).save(db=db, channel=1)
+
+        # Verify separate storage
+        loaded_a = SignalA.load(db=db, channel=1)
+        loaded_b = SignalB.load(db=db, channel=1)
+
+        np.testing.assert_array_equal(loaded_a.data, data_a)
+        np.testing.assert_array_equal(loaded_b.data, data_b)
+
+    def test_for_type_no_argument_creates_default(self, scalar_class):
+        """for_type() with no argument should create a default type."""
+        DefaultScalar = scalar_class.for_type()
+        assert issubclass(DefaultScalar, scalar_class)
+        assert DefaultScalar.__name__ == "ScalarValueDefault"
+
+    def test_for_type_empty_string_creates_default(self, scalar_class):
+        """for_type('') should create a default type."""
+        DefaultScalar = scalar_class.for_type("")
+        assert issubclass(DefaultScalar, scalar_class)
+        assert DefaultScalar.__name__ == "ScalarValueDefault"
+
+    def test_default_type_uses_base_table(self, scalar_class):
+        """Default type should use the same table as the base class."""
+        DefaultScalar = scalar_class.for_type()
+        assert DefaultScalar.table_name() == scalar_class.table_name()
+        assert DefaultScalar.table_name() == "scalar_value"
+
+    def test_default_type_has_empty_suffix(self, scalar_class):
+        """Default type should have empty string as suffix."""
+        DefaultScalar = scalar_class.for_type()
+        assert DefaultScalar.get_type_suffix() == ""
+
+    def test_default_type_is_distinct_from_base(self, scalar_class):
+        """Default type should be a different class from the base."""
+        DefaultScalar = scalar_class.for_type()
+        assert DefaultScalar is not scalar_class
+
+    def test_migration_one_to_one_to_one_to_many(self, db, scalar_class):
+        """Support migration from one-to-one to one-to-many mapping."""
+        # Step 1: Start with one-to-one (using base class directly)
+        db.register(scalar_class)
+        scalar_class(42).save(db=db, key="original")
+
+        # Step 2: Later, decide to use one-to-many
+        DefaultScalar = scalar_class.for_type()  # For existing data
+        TypeA = scalar_class.for_type("type_a")
+        TypeB = scalar_class.for_type("type_b")
+
+        db.register(DefaultScalar)  # Same table as scalar_class
+        db.register(TypeA)
+        db.register(TypeB)
+
+        # Save new typed data
+        TypeA(100).save(db=db, key="new_a")
+        TypeB(200).save(db=db, key="new_b")
+
+        # Old data should still be accessible via base class
+        loaded_original = scalar_class.load(db=db, key="original")
+        assert loaded_original.data == 42
+
+        # Old data should also be accessible via default type (same table)
+        loaded_via_default = DefaultScalar.load(db=db, key="original")
+        assert loaded_via_default.data == 42
+
+        # New typed data should be in separate tables
+        loaded_a = TypeA.load(db=db, key="new_a")
+        loaded_b = TypeB.load(db=db, key="new_b")
+        assert loaded_a.data == 100
+        assert loaded_b.data == 200
+
+        # Typed data should NOT be accessible via base class
+        from scidb.exceptions import NotFoundError
+        with pytest.raises(NotFoundError):
+            scalar_class.load(db=db, key="new_a")
+
+    def test_default_type_and_base_share_data(self, db, scalar_class):
+        """Default type and base class should access the same data."""
+        db.register(scalar_class)
+        DefaultScalar = scalar_class.for_type()
+        db.register(DefaultScalar)
+
+        # Save via base class
+        scalar_class(123).save(db=db, key="shared")
+
+        # Load via default type
+        loaded = DefaultScalar.load(db=db, key="shared")
+        assert loaded.data == 123
+
+        # Save via default type
+        DefaultScalar(456).save(db=db, key="shared2")
+
+        # Load via base class
+        loaded2 = scalar_class.load(db=db, key="shared2")
+        assert loaded2.data == 456
+
+
 class TestTableName:
     """Test table_name class method."""
 

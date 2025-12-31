@@ -1,26 +1,19 @@
 """SQLite BLOB serialization helpers."""
 
-import io
+import pickle
 import sqlite3
 
 import pandas as pd
 
 
 def serialize_dataframe(df: pd.DataFrame) -> bytes:
-    """Serialize a DataFrame to bytes for BLOB storage.
-
-    Uses Parquet format for long-term archival stability.
-    Parquet is cross-language, schema-preserving, and not tied to Python versions.
-    """
-    buffer = io.BytesIO()
-    df.to_parquet(buffer, engine="pyarrow")
-    return buffer.getvalue()
+    """Serialize a DataFrame to bytes for BLOB storage."""
+    return pickle.dumps(df, protocol=4)
 
 
 def deserialize_dataframe(blob: bytes) -> pd.DataFrame:
     """Deserialize bytes back to a DataFrame."""
-    buffer = io.BytesIO(blob)
-    return pd.read_parquet(buffer, engine="pyarrow")
+    return pickle.loads(blob)
 
 
 def adapt_dataframe(df: pd.DataFrame) -> bytes:
