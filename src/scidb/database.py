@@ -925,6 +925,43 @@ class DatabaseManager:
         except Exception:
             return None
 
+    def get_cached_by_key(self, cache_key: str) -> tuple | None:
+        """
+        Look up cached result by cache key only (without knowing variable type).
+
+        This is used for automatic cache checking in Thunk.__call__().
+
+        Args:
+            cache_key: The cache key (hash of function + inputs)
+
+        Returns:
+            Tuple of (data, vhash) if found and loadable, None otherwise
+        """
+        cursor = self.connection.execute(
+            """SELECT output_type, output_vhash FROM _computation_cache
+               WHERE cache_key = ?""",
+            (cache_key,),
+        )
+        row = cursor.fetchone()
+
+        if row is None:
+            return None
+
+        output_type = row["output_type"]
+        output_vhash = row["output_vhash"]
+
+        # Look up class from registry
+        var_class = self._registered_types.get(output_type)
+        if var_class is None:
+            return None  # Class not registered in this session
+
+        # Load the variable by vhash
+        var = self.load_by_vhash(var_class, output_vhash)
+        if var is None:
+            return None  # Data was deleted or corrupted
+
+        return (var.data, output_vhash)
+
     def invalidate_cache(
         self,
         function_name: str | None = None,

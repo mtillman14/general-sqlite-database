@@ -519,3 +519,284 @@ class TestCacheWorkflow:
 
         assert cached is not None
         assert cached.data == 20  # (5*2) + 10
+
+
+class TestAutomaticCacheChecking:
+    """Test automatic cache checking in Thunk.__call__()."""
+
+    def test_auto_cache_skips_execution(self, configured_db, scalar_class):
+        """When cached, function should not execute."""
+        configured_db.register(scalar_class)
+        execution_count = [0]
+
+        @thunk(n_outputs=1)
+        def expensive_compute(x):
+            execution_count[0] += 1
+            return x * 2
+
+        # First run - executes
+        result1 = expensive_compute(10)
+        assert execution_count[0] == 1
+        assert result1.data == 20
+        assert result1.was_cached is False
+
+        # Save to populate cache
+        scalar_class(result1).save(db=configured_db, subject=1)
+
+        # Second run - should use cache, not execute
+        result2 = expensive_compute(10)
+        assert execution_count[0] == 1  # Still 1! Not executed again
+        assert result2.data == 20
+        assert result2.was_cached is True
+
+    def test_auto_cache_returns_correct_data(self, configured_db, scalar_class):
+        """Cached result should have correct data and properties."""
+        configured_db.register(scalar_class)
+
+        @thunk(n_outputs=1)
+        def compute(x):
+            return x * 3
+
+        result1 = compute(7)
+        vhash = scalar_class(result1).save(db=configured_db, subject=1)
+
+        result2 = compute(7)
+        assert result2.data == 21
+        assert result2.was_cached is True
+        assert result2.cached_vhash == vhash
+        assert result2.is_complete is True
+
+    def test_auto_cache_miss_executes_function(self, configured_db, scalar_class):
+        """When not cached, function should execute normally."""
+        configured_db.register(scalar_class)
+        execution_count = [0]
+
+        @thunk(n_outputs=1)
+        def compute(x):
+            execution_count[0] += 1
+            return x + 5
+
+        # First run - no cache, should execute
+        result = compute(10)
+        assert execution_count[0] == 1
+        assert result.data == 15
+        assert result.was_cached is False
+
+    def test_auto_cache_different_inputs_miss(self, configured_db, scalar_class):
+        """Different inputs should not hit cache."""
+        configured_db.register(scalar_class)
+        execution_count = [0]
+
+        @thunk(n_outputs=1)
+        def compute(x):
+            execution_count[0] += 1
+            return x * 2
+
+        # First run with x=10
+        result1 = compute(10)
+        scalar_class(result1).save(db=configured_db, subject=1)
+        assert execution_count[0] == 1
+
+        # Second run with x=20 - different input, should execute
+        result2 = compute(20)
+        assert execution_count[0] == 2
+        assert result2.data == 40
+        assert result2.was_cached is False
+
+    def test_auto_cache_no_database_configured(self):
+        """Without database, function should execute normally."""
+        # No configure_database() called
+        execution_count = [0]
+
+        @thunk(n_outputs=1)
+        def compute(x):
+            execution_count[0] += 1
+            return x * 2
+
+        result = compute(10)
+        assert execution_count[0] == 1
+        assert result.data == 20
+        assert result.was_cached is False
+
+    def test_auto_cache_class_not_registered(self, configured_db, scalar_class):
+        """If class not registered, function should execute normally."""
+        # Don't register the class - it's not in _registered_types
+        execution_count = [0]
+
+        @thunk(n_outputs=1)
+        def compute(x):
+            execution_count[0] += 1
+            return x * 2
+
+        # First run and save
+        result1 = compute(10)
+        scalar_class(result1).save(db=configured_db, subject=1)
+        assert execution_count[0] == 1
+
+        # Clear the registered types to simulate new session
+        configured_db._registered_types.clear()
+
+        # Second run - class not in registry, should execute
+        result2 = compute(10)
+        assert execution_count[0] == 2  # Executed again
+        assert result2.was_cached is False
+
+    def test_auto_cache_multi_output_not_cached(self, configured_db, scalar_class):
+        """Multi-output functions should not use auto-cache."""
+        configured_db.register(scalar_class)
+        execution_count = [0]
+
+        @thunk(n_outputs=2)
+        def split_compute(x):
+            execution_count[0] += 1
+            return x, x * 2
+
+        # First run
+        a1, b1 = split_compute(10)
+        assert execution_count[0] == 1
+
+        # Save both outputs
+        scalar_class(a1).save(db=configured_db, subject=1, output="a")
+        scalar_class(b1).save(db=configured_db, subject=1, output="b")
+
+        # Second run - multi-output, should still execute
+        a2, b2 = split_compute(10)
+        assert execution_count[0] == 2  # Executed again
+        assert a2.was_cached is False
+        assert b2.was_cached is False
+
+    def test_auto_cache_with_array_input(self, configured_db, array_class):
+        """Auto-cache should work with array inputs."""
+        configured_db.register(array_class)
+        execution_count = [0]
+
+        @thunk(n_outputs=1)
+        def normalize(arr):
+            execution_count[0] += 1
+            return arr / arr.max()
+
+        arr = np.array([1.0, 2.0, 4.0])
+
+        # First run
+        result1 = normalize(arr)
+        array_class(result1).save(db=configured_db, subject=1)
+        assert execution_count[0] == 1
+
+        # Second run with same array
+        result2 = normalize(arr)
+        assert execution_count[0] == 1  # Not executed again
+        assert result2.was_cached is True
+        np.testing.assert_array_equal(result2.data, np.array([0.25, 0.5, 1.0]))
+
+    def test_auto_cache_with_chained_thunks(self, configured_db, scalar_class):
+        """Auto-cache should work in chained computations."""
+        configured_db.register(scalar_class)
+        step1_count = [0]
+        step2_count = [0]
+
+        @thunk(n_outputs=1)
+        def step1(x):
+            step1_count[0] += 1
+            return x * 2
+
+        @thunk(n_outputs=1)
+        def step2(x):
+            step2_count[0] += 1
+            return x + 10
+
+        # First run of full pipeline
+        intermediate = step1(5)
+        final = step2(intermediate)
+        scalar_class(final).save(db=configured_db, subject=1)
+        assert step1_count[0] == 1
+        assert step2_count[0] == 1
+
+        # Second run - step2 should be cached
+        intermediate2 = step1(5)
+        final2 = step2(intermediate2)
+        assert step2_count[0] == 1  # step2 not executed again
+        assert final2.was_cached is True
+        assert final2.data == 20
+
+    def test_auto_cache_preserves_pipeline_thunk(self, configured_db, scalar_class):
+        """Cached OutputThunk should have valid pipeline_thunk."""
+        configured_db.register(scalar_class)
+
+        @thunk(n_outputs=1)
+        def compute(x):
+            return x * 2
+
+        result1 = compute(10)
+        scalar_class(result1).save(db=configured_db, subject=1)
+
+        result2 = compute(10)
+        assert result2.was_cached is True
+        assert result2.pipeline_thunk is not None
+        assert result2.pipeline_thunk.thunk.fcn.__name__ == "compute"
+        assert result2.output_num == 0
+
+
+class TestGetCachedByKey:
+    """Test DatabaseManager.get_cached_by_key() method."""
+
+    def test_returns_none_when_not_cached(self, db):
+        """Should return None for unknown cache key."""
+        result = db.get_cached_by_key("nonexistent_key")
+        assert result is None
+
+    def test_returns_data_and_vhash_when_cached(self, db, scalar_class):
+        """Should return (data, vhash) tuple when cached."""
+        db.register(scalar_class)
+
+        @thunk(n_outputs=1)
+        def compute(x):
+            return x * 2
+
+        result = compute(10)
+        vhash = scalar_class(result).save(db=db, subject=1)
+
+        cache_key = result.pipeline_thunk.compute_cache_key()
+        cached = db.get_cached_by_key(cache_key)
+
+        assert cached is not None
+        data, cached_vhash = cached
+        assert data == 20
+        assert cached_vhash == vhash
+
+    def test_returns_none_when_class_not_registered(self, db, scalar_class):
+        """Should return None if variable class not in registry."""
+        db.register(scalar_class)
+
+        @thunk(n_outputs=1)
+        def compute(x):
+            return x * 2
+
+        result = compute(10)
+        scalar_class(result).save(db=db, subject=1)
+
+        # Clear registry
+        db._registered_types.clear()
+
+        cache_key = result.pipeline_thunk.compute_cache_key()
+        cached = db.get_cached_by_key(cache_key)
+
+        assert cached is None
+
+    def test_returns_none_when_data_deleted(self, db, scalar_class):
+        """Should return None if underlying data was deleted."""
+        db.register(scalar_class)
+
+        @thunk(n_outputs=1)
+        def compute(x):
+            return x * 2
+
+        result = compute(10)
+        scalar_class(result).save(db=db, subject=1)
+        cache_key = result.pipeline_thunk.compute_cache_key()
+
+        # Delete the data from the variable table
+        db.connection.execute(f"DELETE FROM {scalar_class.table_name()}")
+        db.connection.commit()
+
+        cached = db.get_cached_by_key(cache_key)
+        assert cached is None

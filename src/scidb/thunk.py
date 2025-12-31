@@ -76,6 +76,9 @@ class Thunk:
         """
         Create a PipelineThunk and execute or defer.
 
+        Automatically checks the computation cache for single-output functions.
+        If a cached result exists, returns it without re-executing the function.
+
         Returns:
             OutputThunk or tuple of OutputThunks wrapping the result(s)
         """
@@ -88,6 +91,30 @@ class Thunk:
                 break
         else:
             self.pipeline_thunks = (*self.pipeline_thunks, pipeline_thunk)
+
+        # Auto-cache check for single-output functions
+        if self.n_outputs == 1:
+            try:
+                from .database import get_database
+
+                db = get_database()
+                cache_key = pipeline_thunk.compute_cache_key()
+                cached = db.get_cached_by_key(cache_key)
+
+                if cached is not None:
+                    data, vhash = cached
+                    output = OutputThunk(
+                        pipeline_thunk=pipeline_thunk,
+                        output_num=0,
+                        is_complete=True,
+                        data=data,
+                        was_cached=True,
+                        cached_vhash=vhash,
+                    )
+                    pipeline_thunk.outputs = (output,)
+                    return output
+            except Exception:
+                pass  # No db configured or other error, execute normally
 
         return pipeline_thunk(*args, **kwargs)
 

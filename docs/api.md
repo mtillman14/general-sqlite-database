@@ -67,7 +67,8 @@ db = DatabaseManager("path/to/db.sqlite")
 | `has_lineage(vhash)` | Check if lineage exists |
 | `export_to_csv(variable_class, path, **metadata)` | Export matching records to CSV |
 | `preview_data(variable_class, **metadata)` | Get formatted preview of records |
-| `get_cached_computation(cache_key, variable_class)` | Look up cached result |
+| `get_cached_computation(cache_key, variable_class)` | Look up cached result by key and type |
+| `get_cached_by_key(cache_key)` | Look up cached result by key only (used for auto-caching) |
 | `cache_computation(...)` | Store computation in cache |
 | `invalidate_cache(function_name=None, function_hash=None)` | Clear cache entries |
 | `get_cache_stats()` | Get cache statistics |
@@ -106,7 +107,7 @@ db = get_database()
 
 ### `@thunk(n_outputs=1, unwrap=True)`
 
-Decorator for lineage-tracked functions.
+Decorator for lineage-tracked functions with automatic caching.
 
 ```python
 @thunk(n_outputs=1)
@@ -123,6 +124,18 @@ result.data  # The actual result
 |-----------|---------|-------------|
 | `n_outputs` | `1` | Number of outputs the function returns |
 | `unwrap` | `True` | If True, unwrap `BaseVariable` and `OutputThunk` inputs to raw data. If False, pass wrapper objects directly (useful for debugging). |
+
+**Automatic caching:**
+
+For single-output functions, results are cached automatically. Once saved, subsequent calls with the same inputs skip execution:
+
+```python
+result = process(data)
+MyVar(result).save(...)  # Populates cache
+
+result2 = process(data)  # Cache hit! No execution
+result2.was_cached       # True
+```
 
 **Cross-script lineage:**
 

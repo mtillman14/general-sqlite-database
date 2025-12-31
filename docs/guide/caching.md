@@ -1,12 +1,12 @@
 # Computation Caching
 
-SciDB automatically caches computation results. When you save a variable produced by a thunked function, the result is cached. Future identical computations can be skipped.
+SciDB automatically caches computation results. When you save a variable produced by a thunked function, the result is cached. Future identical computations are skipped automatically.
 
 ## How Caching Works
 
 1. **Save populates cache** - When saving an `OutputThunk`, the cache is updated
 2. **Cache key** - Hash of function + input hashes
-3. **Cache lookup** - Check before re-running expensive computations
+3. **Automatic lookup** - Thunks check the cache before executing
 
 ```
                     ┌─────────────────┐
@@ -18,55 +18,54 @@ SciDB automatically caches computation results. When you save a variable produce
               ▼                             ▼
     ┌─────────────────┐          ┌─────────────────┐
     │  First run:     │          │  Later run:     │
-    │  Execute +      │          │  Check cache    │
-    │  Save + Cache   │          │  Return cached  │
+    │  Execute +      │          │  Auto cache hit │
+    │  Save + Cache   │          │  Skip execution │
     └─────────────────┘          └─────────────────┘
 ```
 
-## Automatic Cache Population
+## Automatic Caching
 
-Cache is populated automatically when saving thunk results:
+Caching is fully automatic for single-output functions. Just save once, and future calls with the same inputs skip execution:
 
 ```python
 @thunk(n_outputs=1)
 def expensive_computation(data):
-    # ... takes 10 minutes
-    return result
+    print("Computing...")  # Only prints on first run
+    return data * 2
 
-# First run: executes and caches
+# First run: executes and prints "Computing..."
 result = expensive_computation(raw_data)
 MyVar(result).save(subject=1, stage="computed")
 
-# Later: same inputs -> cache hit
-result2 = expensive_computation(raw_data)  # Still executes
-cached = check_cache(result2.pipeline_thunk, MyVar, db=db)
-if cached:
-    # Use cached result instead
-    print(f"Cache hit! vhash: {cached.cached_vhash}")
+# Second run: cache hit, no execution!
+result2 = expensive_computation(raw_data)  # No print, returns cached
+print(result2.was_cached)  # True
+print(result2.data)        # Same result, no recomputation
 ```
 
-## Explicit Cache Checking
+**Requirements for automatic caching:**
+- Database must be configured (`configure_database(...)`)
+- Variable class must be registered (happens on first `save()` or `load()`)
+- Function must have `n_outputs=1`
 
-Use `check_cache()` before running expensive computations:
+## Manual Cache Checking
+
+For more control, use `check_cache()` explicitly:
 
 ```python
-from scidb import check_cache, PipelineThunk
+from scidb import check_cache
 
 @thunk(n_outputs=1)
 def process(data):
     return data * 2
 
-# Create the pipeline thunk
 result = process(input_data)
-
-# Check if already cached
 cached = check_cache(result.pipeline_thunk, OutputVar, db=db)
+
 if cached:
-    print("Using cached result")
-    final = cached.data
+    print(f"Cache hit! vhash: {cached.cached_vhash}")
 else:
-    print("Computing...")
-    final = result.data
+    print("Cache miss, saving...")
     OutputVar(result).save(db=db, subject=1)
 ```
 
