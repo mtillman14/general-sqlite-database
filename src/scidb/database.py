@@ -967,10 +967,14 @@ class DatabaseManager:
             output_type = row["output_type"]
             output_vhash = row["output_vhash"]
 
-            # Look up class from registry
+            # Look up class from database registry first
             var_class = self._registered_types.get(output_type)
             if var_class is None:
-                return None  # Class not registered in this session
+                # Try global registry and auto-register
+                var_class = BaseVariable.get_subclass_by_name(output_type)
+                if var_class is None:
+                    return None  # Class not found anywhere
+                self.register(var_class)
 
             # Load the variable by vhash
             var = self.load_by_vhash(var_class, output_vhash)

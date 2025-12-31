@@ -865,3 +865,147 @@ class TestGetCachedByKey:
         cached = db.get_cached_by_key(cache_key, n_outputs=2)
 
         assert cached is None
+
+
+class TestAutoRegistration:
+    """Test that classes are auto-registered from global registry."""
+
+    def test_global_registry_populated_on_class_definition(self):
+        """Classes should be added to global registry when defined."""
+
+        class MyTestVar(BaseVariable):
+            schema_version = 1
+
+            def to_db(self):
+                import pandas as pd
+
+                return pd.DataFrame({"value": [self.data]})
+
+            @classmethod
+            def from_db(cls, df):
+                return df["value"].iloc[0]
+
+        assert "MyTestVar" in BaseVariable._all_subclasses
+        assert BaseVariable._all_subclasses["MyTestVar"] is MyTestVar
+
+    def test_for_type_adds_to_global_registry(self):
+        """for_type() created classes should be in global registry."""
+
+        class TypedVar(BaseVariable):
+            schema_version = 1
+
+            def to_db(self):
+                import pandas as pd
+
+                return pd.DataFrame({"value": [self.data]})
+
+            @classmethod
+            def from_db(cls, df):
+                return df["value"].iloc[0]
+
+        SpecializedVar = TypedVar.for_type("specialized")
+
+        assert "TypedVarSpecialized" in BaseVariable._all_subclasses
+        assert BaseVariable._all_subclasses["TypedVarSpecialized"] is SpecializedVar
+
+    def test_get_subclass_by_name(self):
+        """get_subclass_by_name should find classes in global registry."""
+
+        class LookupTestVar(BaseVariable):
+            schema_version = 1
+
+            def to_db(self):
+                import pandas as pd
+
+                return pd.DataFrame({"value": [self.data]})
+
+            @classmethod
+            def from_db(cls, df):
+                return df["value"].iloc[0]
+
+        found = BaseVariable.get_subclass_by_name("LookupTestVar")
+        assert found is LookupTestVar
+
+        not_found = BaseVariable.get_subclass_by_name("NonExistentClass")
+        assert not_found is None
+
+    def test_auto_registration_on_cache_lookup(self, db):
+        """get_cached_by_key should auto-register from global registry."""
+        import pandas as pd
+
+        # Define a class that's in global registry but NOT registered with db
+        class AutoRegVar(BaseVariable):
+            schema_version = 1
+
+            def to_db(self):
+                return pd.DataFrame({"value": [self.data]})
+
+            @classmethod
+            def from_db(cls, df):
+                return df["value"].iloc[0]
+
+        # Verify it's in global registry but not db registry
+        assert "AutoRegVar" in BaseVariable._all_subclasses
+        assert "AutoRegVar" not in db._registered_types
+
+        # Manually register to save (simulating a previous session)
+        db.register(AutoRegVar)
+        vhash = AutoRegVar(42).save(db=db, test=1)
+
+        @thunk(n_outputs=1)
+        def process(x):
+            return x * 2
+
+        result = process(42)
+        AutoRegVar(result).save(db=db, test=2)
+        cache_key = result.pipeline_thunk.compute_cache_key()
+
+        # Now simulate a fresh session: remove from db registry
+        del db._registered_types["AutoRegVar"]
+        assert "AutoRegVar" not in db._registered_types
+
+        # Cache lookup should auto-register and succeed
+        cached = db.get_cached_by_key(cache_key, n_outputs=1)
+
+        assert cached is not None
+        assert cached[0][0] == 84  # 42 * 2
+        assert "AutoRegVar" in db._registered_types  # Now registered
+
+    def test_auto_cache_works_without_explicit_registration(self, db):
+        """Full auto-caching should work even without explicit registration."""
+        import pandas as pd
+        from scidb import configure_database, get_database
+
+        # Define class (goes into global registry)
+        class PipelineVar(BaseVariable):
+            schema_version = 1
+
+            def to_db(self):
+                return pd.DataFrame({"value": [self.data]})
+
+            @classmethod
+            def from_db(cls, df):
+                return df["value"].iloc[0]
+
+        execution_count = 0
+
+        @thunk(n_outputs=1)
+        def expensive_fn(x):
+            nonlocal execution_count
+            execution_count += 1
+            return x * 10
+
+        # First run: executes
+        result1 = expensive_fn(5)
+        assert execution_count == 1
+        PipelineVar(result1).save(db=db, run=1)
+
+        # Remove from db registry to simulate fresh session
+        del db._registered_types["PipelineVar"]
+
+        # Second run: should hit cache via auto-registration
+        result2 = expensive_fn(5)
+
+        assert result2.was_cached
+        assert result2.data == 50
+        assert execution_count == 1  # No additional execution

@@ -43,6 +43,19 @@ class BaseVariable(ABC):
         {"vhash", "id", "created_at", "schema_version", "data"}
     )
 
+    # Global registry of all subclasses (for auto-registration with database)
+    _all_subclasses: dict[str, type["BaseVariable"]] = {}
+
+    def __init_subclass__(cls, **kwargs):
+        """Register subclass in global registry when defined."""
+        super().__init_subclass__(**kwargs)
+        cls._all_subclasses[cls.__name__] = cls
+
+    @classmethod
+    def get_subclass_by_name(cls, name: str) -> type["BaseVariable"] | None:
+        """Look up a subclass by its name from the global registry."""
+        return cls._all_subclasses.get(name)
+
     def __init__(self, data: Any):
         """
         Initialize with native data.
@@ -261,6 +274,7 @@ class BaseVariable(ABC):
                 function_hash=output_thunk.pipeline_thunk.thunk.hash,
                 output_type=self.__class__.__name__,
                 output_vhash=vhash,
+                output_num=output_thunk.output_num,
             )
 
         return vhash

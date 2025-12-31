@@ -46,7 +46,10 @@ def generate_preview(df: pd.DataFrame, max_length: int = 500) -> str:
         if len(values_str) > max_length - 50:
             values_str = values_str[:max_length - 53] + "..."
         parts.append(f"Values: {values_str}")
-        return " | ".join(parts)
+        result = " | ".join(parts)
+        if len(result) > max_length:
+            result = result[:max_length - 3] + "..."
+        return result
 
     # For multi-row DataFrames, show stats and sample values
     # Try to identify the "value" column (common patterns)
