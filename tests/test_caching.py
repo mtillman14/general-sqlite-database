@@ -263,7 +263,7 @@ class TestCheckCacheHelper:
 
         assert cached is not None
         assert isinstance(cached, OutputThunk)
-        assert cached.value == 20
+        assert cached.data == 20
         assert cached.was_cached is True
 
     def test_check_cache_returns_none_on_miss(self, db, scalar_class):
@@ -457,7 +457,7 @@ class TestCacheWithArrays:
 
         assert cached is not None
         np.testing.assert_array_almost_equal(
-            cached.value, np.array([0.25, 0.5, 1.0])
+            cached.data, np.array([0.25, 0.5, 1.0])
         )
 
 
@@ -486,7 +486,7 @@ class TestCacheWorkflow:
 
         if cached:
             # Use cached result
-            assert cached.value == 20
+            assert cached.data == 20
             assert cached.was_cached is True
         else:
             # Would recompute (but we expect cache hit)
@@ -518,4 +518,4 @@ class TestCacheWorkflow:
         cached = check_cache(final2.pipeline_thunk, scalar_class, db=db)
 
         assert cached is not None
-        assert cached.value == 20  # (5*2) + 10
+        assert cached.data == 20  # (5*2) + 10

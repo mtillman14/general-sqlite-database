@@ -104,7 +104,7 @@ db = get_database()
 
 ## Thunk System
 
-### `@thunk(n_outputs=1)`
+### `@thunk(n_outputs=1, unwrap=True)`
 
 Decorator for lineage-tracked functions.
 
@@ -114,7 +114,41 @@ def process(data: np.ndarray) -> np.ndarray:
     return data * 2
 
 result = process(data)  # Returns OutputThunk
-result.value  # The actual result
+result.data  # The actual result
+```
+
+**Parameters:**
+
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| `n_outputs` | `1` | Number of outputs the function returns |
+| `unwrap` | `True` | If True, unwrap `BaseVariable` and `OutputThunk` inputs to raw data. If False, pass wrapper objects directly (useful for debugging). |
+
+**Cross-script lineage:**
+
+```python
+# step1.py
+result = process(raw_data)
+Intermediate(result).save(db=db, subject=1)
+
+# step2.py
+loaded = Intermediate.load(db=db, subject=1)
+
+@thunk(n_outputs=1)
+def analyze(data):  # Receives raw data (loaded.data)
+    return data.mean()
+
+result = analyze(loaded)  # Pass the variable, lineage is captured
+```
+
+**Debugging with unwrap=False:**
+
+```python
+@thunk(n_outputs=1, unwrap=False)
+def debug_process(var):
+    print(f"Input vhash: {var.vhash}")
+    print(f"Input metadata: {var.metadata}")
+    return var.data * 2
 ```
 
 ---
@@ -129,6 +163,7 @@ Wrapper for a function with lineage tracking.
 |-----------|------|-------------|
 | `fcn` | `Callable` | The wrapped function |
 | `n_outputs` | `int` | Number of outputs |
+| `unwrap` | `bool` | Whether to unwrap inputs |
 | `hash` | `str` | SHA-256 of bytecode |
 
 ---
@@ -164,7 +199,7 @@ Wraps a function output with lineage.
 |-----------|------|-------------|
 | `pipeline_thunk` | `PipelineThunk` | Producer |
 | `output_num` | `int` | Output index |
-| `value` | `Any` | Computed result |
+| `data` | `Any` | Computed result |
 | `is_complete` | `bool` | Whether computed |
 | `was_cached` | `bool` | From cache |
 | `cached_vhash` | `str \| None` | Cached version hash |
@@ -192,7 +227,7 @@ print(lineage.function_name)
 Unwrap OutputThunk to raw value.
 
 ```python
-raw = get_raw_value(output_thunk)  # Returns output_thunk.value
+raw = get_raw_value(output_thunk)  # Returns output_thunk.data
 raw = get_raw_value(plain_data)    # Returns plain_data unchanged
 ```
 
@@ -205,7 +240,7 @@ Check if computation is cached.
 ```python
 cached = check_cache(result.pipeline_thunk, MyVar, db=db)
 if cached:
-    print(cached.value)
+    print(cached.data)
 ```
 
 **Returns:** `OutputThunk | None`

@@ -39,7 +39,6 @@ class SignalData(BaseVariable):
 from scidb import configure_database
 
 db = configure_database("my_experiment.db")
-# Types are auto-registered on first save - no manual registration needed
 ```
 
 ## 3. Save Data with Metadata
@@ -116,7 +115,7 @@ thunked_filtfilt = Thunk(filtfilt, n_outputs=1)
 
 # Use with full lineage tracking
 b, a = thunked_butter(N=4, Wn=0.1, btype='low')
-filtered = thunked_filtfilt(b.value, a.value, raw_data)
+filtered = thunked_filtfilt(b.data, a.data, raw_data)
 
 SignalData(filtered).save(subject=1, stage="filtered")
 ```

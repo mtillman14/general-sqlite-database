@@ -63,10 +63,10 @@ result = process(input_data)
 cached = check_cache(result.pipeline_thunk, OutputVar, db=db)
 if cached:
     print("Using cached result")
-    final = cached.value
+    final = cached.data
 else:
     print("Computing...")
-    final = result.value
+    final = result.data
     OutputVar(result).save(db=db, subject=1)
 ```
 
@@ -130,7 +130,7 @@ cached = check_cache(result.pipeline_thunk, MyVar, db=db)
 if cached:
     cached.was_cached     # True
     cached.cached_vhash   # "abc123..."
-    cached.value          # The cached data
+    cached.data           # The cached data
 ```
 
 ## When Cache Misses Occur
@@ -159,7 +159,7 @@ MyVar(result).save(db=db, subject=1)  # Populates cache
 ```python
 cached = check_cache(pipeline_thunk, MyVar, db=db)
 if cached:
-    return cached.value
+    return cached.data
 ```
 
 ### 3. Use Saved Variables as Inputs

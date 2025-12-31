@@ -156,10 +156,10 @@ def get_raw_value(data: Any) -> Any:
         data: Either an OutputThunk or a raw value
 
     Returns:
-        The raw value (unwrapped if OutputThunk, otherwise unchanged)
+        The raw data (unwrapped if OutputThunk, otherwise unchanged)
     """
     if isinstance(data, OutputThunk):
-        return data.value
+        return data.data
     return data
 
 
@@ -214,7 +214,7 @@ def check_cache(
         pipeline_thunk=pipeline_thunk,
         output_num=0,
         is_complete=True,
-        value=cached_var.data,
+        data=cached_var.data,
         was_cached=True,
         cached_vhash=cached_var.vhash,
     )

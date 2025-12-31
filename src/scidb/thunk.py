@@ -9,7 +9,7 @@ Example:
         return raw * cal_factor
 
     result = process_signal(raw_data, 2.5)  # Returns OutputThunk
-    print(result.value)  # The actual computed value
+    print(result.data)  # The actual computed data
     print(result.pipeline_thunk.inputs)  # Captured inputs for lineage
 """
 
@@ -30,20 +30,25 @@ class Thunk:
     Attributes:
         fcn: The wrapped function
         n_outputs: Number of outputs the function returns
+        unwrap: Whether to unwrap BaseVariable/OutputThunk inputs to raw data
         hash: SHA-256 hash of function bytecode + n_outputs
         pipeline_thunks: All PipelineThunks created from this Thunk
     """
 
-    def __init__(self, fcn: Callable, n_outputs: int = 1):
+    def __init__(self, fcn: Callable, n_outputs: int = 1, unwrap: bool = True):
         """
         Initialize a Thunk wrapper.
 
         Args:
             fcn: The function to wrap
             n_outputs: Number of output values the function returns
+            unwrap: If True (default), unwrap BaseVariable and OutputThunk inputs
+                   to their raw data before calling the function. If False, pass
+                   the wrapper objects directly (useful for debugging/inspection).
         """
         self.fcn = fcn
         self.n_outputs = n_outputs
+        self.unwrap = unwrap
         self.pipeline_thunks: tuple[PipelineThunk, ...] = ()
 
         # Hash function bytecode + constants for reproducibility
@@ -57,7 +62,7 @@ class Thunk:
         self.hash = sha256(string_repr.encode()).hexdigest()
 
     def __repr__(self) -> str:
-        return f"Thunk(fcn={self.fcn.__name__}, n_outputs={self.n_outputs})"
+        return f"Thunk(fcn={self.fcn.__name__}, n_outputs={self.n_outputs}, unwrap={self.unwrap})"
 
     def __eq__(self, other: object) -> bool:
         if not isinstance(other, Thunk):
@@ -100,6 +105,7 @@ class PipelineThunk:
         thunk: The parent Thunk that created this
         inputs: Dict mapping argument names to values
         outputs: Tuple of OutputThunks after execution
+        unwrap: Whether to unwrap inputs before calling the function
     """
 
     def __init__(self, thunk: Thunk, *args, **kwargs):
@@ -112,6 +118,7 @@ class PipelineThunk:
             **kwargs: Keyword arguments passed to the function
         """
         self.thunk = thunk
+        self.unwrap = thunk.unwrap
         self.inputs: dict[str, Any] = {}
 
         # Capture positional args
@@ -169,23 +176,30 @@ class PipelineThunk:
         result: tuple = tuple(None for _ in range(self.thunk.n_outputs))
 
         if self.is_complete:
-            # Unwrap any OutputThunk or BaseVariable inputs to get raw values
+            # Resolve arguments - unwrap if self.unwrap is True
             resolved_args = []
             for arg in args:
-                if isinstance(arg, OutputThunk):
-                    resolved_args.append(arg.value)
-                elif self._is_base_variable(arg):
-                    # BaseVariable - use its data
-                    resolved_args.append(arg.data)
+                if self.unwrap:
+                    # Unwrap OutputThunk and BaseVariable to raw data
+                    if isinstance(arg, OutputThunk):
+                        resolved_args.append(arg.data)
+                    elif self._is_base_variable(arg):
+                        resolved_args.append(arg.data)
+                    else:
+                        resolved_args.append(arg)
                 else:
+                    # Pass through as-is (for debugging/inspection)
                     resolved_args.append(arg)
 
             resolved_kwargs = {}
             for k, v in kwargs.items():
-                if isinstance(v, OutputThunk):
-                    resolved_kwargs[k] = v.value
-                elif self._is_base_variable(v):
-                    resolved_kwargs[k] = v.data
+                if self.unwrap:
+                    if isinstance(v, OutputThunk):
+                        resolved_kwargs[k] = v.data
+                    elif self._is_base_variable(v):
+                        resolved_kwargs[k] = v.data
+                    else:
+                        resolved_kwargs[k] = v
                 else:
                     resolved_kwargs[k] = v
 
@@ -298,7 +312,7 @@ class OutputThunk:
     Contains:
     - Reference to the PipelineThunk that produced it
     - Output index (for multi-output functions)
-    - The actual computed value
+    - The actual computed data
 
     This is the key to provenance: every OutputThunk knows its parent
     PipelineThunk, which knows its inputs (possibly other OutputThunks).
@@ -306,8 +320,8 @@ class OutputThunk:
     Attributes:
         pipeline_thunk: The PipelineThunk that produced this output
         output_num: Index of this output (0-based)
-        is_complete: True if the value has been computed
-        value: The actual computed value (None if not complete)
+        is_complete: True if the data has been computed
+        data: The actual computed data (None if not complete)
         hash: SHA-256 hash encoding the full lineage
         was_cached: True if this result was loaded from cache
         cached_vhash: The vhash of the cached result (if was_cached)
@@ -318,7 +332,7 @@ class OutputThunk:
         pipeline_thunk: PipelineThunk,
         output_num: int,
         is_complete: bool,
-        value: Any,
+        data: Any,
         was_cached: bool = False,
         cached_vhash: str | None = None,
     ):
@@ -328,15 +342,15 @@ class OutputThunk:
         Args:
             pipeline_thunk: The PipelineThunk that produced this
             output_num: Index of this output
-            is_complete: Whether the value has been computed
-            value: The computed value (or None if not complete)
+            is_complete: Whether the data has been computed
+            data: The computed data (or None if not complete)
             was_cached: Whether this result was loaded from cache
             cached_vhash: The vhash if loaded from cache
         """
         self.pipeline_thunk = pipeline_thunk
         self.output_num = output_num
         self.is_complete = is_complete
-        self.value = value if is_complete else None
+        self.data = data if is_complete else None
         self._was_cached = was_cached
         self._cached_vhash = cached_vhash
 
@@ -361,20 +375,20 @@ class OutputThunk:
         return f"OutputThunk(fn={fcn_name}, output={self.output_num}, complete={self.is_complete})"
 
     def __str__(self) -> str:
-        """Show only the value when printed."""
-        return str(self.value)
+        """Show only the data when printed."""
+        return str(self.data)
 
     def __eq__(self, other: object) -> bool:
-        """Compare by hash if OutputThunk, otherwise compare value."""
+        """Compare by hash if OutputThunk, otherwise compare data."""
         if isinstance(other, OutputThunk):
             return self.hash == other.hash
-        return self.value == other
+        return self.data == other
 
     def __hash__(self) -> int:
         return int(self.hash[:16], 16)
 
 
-def thunk(n_outputs: int = 1) -> Callable[[Callable], Thunk]:
+def thunk(n_outputs: int = 1, unwrap: bool = True) -> Callable[[Callable], Thunk]:
     """
     Decorator to convert a function into a Thunk.
 
@@ -384,18 +398,29 @@ def thunk(n_outputs: int = 1) -> Callable[[Callable], Thunk]:
             return raw * calibration
 
         result = process_signal(raw_data, cal_data)  # Returns OutputThunk
-        print(result.value)  # The actual computed value
+        print(result.data)  # The actual computed data
         print(result.pipeline_thunk.inputs)  # Captured inputs
+
+    For debugging/inspection, use unwrap=False to receive the full objects:
+
+        @thunk(n_outputs=1, unwrap=False)
+        def debug_process(var):
+            print(f"Input vhash: {var.vhash}")
+            print(f"Input metadata: {var.metadata}")
+            return var.data * 2
 
     Args:
         n_outputs: Number of outputs the function returns (default 1)
+        unwrap: If True (default), unwrap BaseVariable and OutputThunk inputs
+               to their raw data (.data). If False, pass the wrapper
+               objects directly for inspection/debugging.
 
     Returns:
         A decorator that converts functions to Thunks
     """
 
     def decorator(fcn: Callable) -> Thunk:
-        t = Thunk(fcn, n_outputs)
+        t = Thunk(fcn, n_outputs, unwrap)
         # Preserve function metadata
         t.__doc__ = fcn.__doc__
         t.__name__ = fcn.__name__  # type: ignore

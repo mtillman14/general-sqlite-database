@@ -78,13 +78,13 @@ class TestThunkExecution:
         result = double(5)
         assert isinstance(result, OutputThunk)
 
-    def test_output_thunk_has_value(self):
+    def test_output_thunk_has_data(self):
         @thunk(n_outputs=1)
         def double(x):
             return x * 2
 
         result = double(5)
-        assert result.value == 10
+        assert result.data == 10
 
     def test_output_thunk_is_complete(self):
         @thunk(n_outputs=1)
@@ -104,15 +104,15 @@ class TestThunkExecution:
         assert len(result) == 3
         assert all(isinstance(r, OutputThunk) for r in result)
 
-    def test_multi_output_values(self):
+    def test_multi_output_data(self):
         @thunk(n_outputs=3)
         def multi(x):
             return x, x * 2, x * 3
 
         a, b, c = multi(5)
-        assert a.value == 5
-        assert b.value == 10
-        assert c.value == 15
+        assert a.data == 5
+        assert b.data == 10
+        assert c.data == 15
 
     def test_thunk_with_kwargs(self):
         @thunk(n_outputs=1)
@@ -120,7 +120,7 @@ class TestThunkExecution:
             return a + b
 
         result = add(5, b=20)
-        assert result.value == 25
+        assert result.data == 25
 
 
 class TestPipelineThunk:
@@ -265,7 +265,7 @@ class TestThunkChaining:
         intermediate = double(5)  # OutputThunk with value 10
         result = add_one(intermediate)  # Should unwrap and use 10
 
-        assert result.value == 11
+        assert result.data == 11
 
     def test_chain_preserves_lineage(self):
         @thunk(n_outputs=1)
@@ -283,7 +283,7 @@ class TestThunkChaining:
         pt = result.pipeline_thunk
         assert "arg_0" in pt.inputs
         assert isinstance(pt.inputs["arg_0"], OutputThunk)
-        assert pt.inputs["arg_0"].value == 10
+        assert pt.inputs["arg_0"].data == 10
 
     def test_long_chain(self):
         @thunk(n_outputs=1)
@@ -302,7 +302,7 @@ class TestThunkChaining:
         b = multiply(a, 2)  # 10
         c = square(b)  # 100
 
-        assert c.value == 100
+        assert c.data == 100
 
 
 class TestThunkWithNumpy:
@@ -317,7 +317,7 @@ class TestThunkWithNumpy:
         result = normalize(arr)
 
         expected = np.array([0.25, 0.5, 1.0])
-        np.testing.assert_array_almost_equal(result.value, expected)
+        np.testing.assert_array_almost_equal(result.data, expected)
 
     def test_numpy_multiple_array_inputs(self):
         @thunk(n_outputs=1)
@@ -328,7 +328,7 @@ class TestThunkWithNumpy:
         arr2 = np.array([4, 5, 6])
         result = add_arrays(arr1, arr2)
 
-        np.testing.assert_array_equal(result.value, np.array([5, 7, 9]))
+        np.testing.assert_array_equal(result.data, np.array([5, 7, 9]))
 
     def test_numpy_chain(self):
         @thunk(n_outputs=1)
@@ -343,7 +343,7 @@ class TestThunkWithNumpy:
         doubled = double(arr)
         total = sum_array(doubled)
 
-        assert total.value == 12
+        assert total.data == 12
 
 
 class TestThunkErrorHandling:
@@ -364,3 +364,200 @@ class TestThunkErrorHandling:
 
         with pytest.raises(RuntimeError, match="Test error"):
             raises_error(5)
+
+
+class TestThunkUnwrap:
+    """Test the unwrap parameter for thunks."""
+
+    def test_unwrap_true_by_default(self):
+        """unwrap should be True by default."""
+        @thunk(n_outputs=1)
+        def my_func(x):
+            return x * 2
+
+        assert my_func.unwrap is True
+
+    def test_unwrap_false_explicit(self):
+        """Can set unwrap=False explicitly."""
+        @thunk(n_outputs=1, unwrap=False)
+        def my_func(x):
+            return x
+
+        assert my_func.unwrap is False
+
+    def test_unwrap_true_passes_raw_data_from_output_thunk(self):
+        """With unwrap=True, OutputThunk input is unwrapped to .data."""
+        @thunk(n_outputs=1)
+        def step1(x):
+            return x * 2
+
+        @thunk(n_outputs=1)
+        def step2(x):
+            # x should be the raw data (10), not an OutputThunk
+            assert not isinstance(x, OutputThunk)
+            assert x == 10
+            return x + 1
+
+        intermediate = step1(5)
+        result = step2(intermediate)
+        assert result.data == 11
+
+    def test_unwrap_false_passes_output_thunk(self):
+        """With unwrap=False, OutputThunk input is passed through."""
+        @thunk(n_outputs=1)
+        def step1(x):
+            return x * 2
+
+        @thunk(n_outputs=1, unwrap=False)
+        def step2(x):
+            # x should be the OutputThunk itself
+            assert isinstance(x, OutputThunk)
+            assert x.data == 10
+            return x.data + 1
+
+        intermediate = step1(5)
+        result = step2(intermediate)
+        assert result.data == 11
+
+    def test_unwrap_false_preserves_lineage_info(self):
+        """With unwrap=False, can access lineage info from input."""
+        @thunk(n_outputs=1)
+        def step1(x):
+            return x * 2
+
+        @thunk(n_outputs=1, unwrap=False)
+        def debug_step(x):
+            # Can access lineage info
+            assert hasattr(x, 'pipeline_thunk')
+            assert x.pipeline_thunk.thunk.fcn.__name__ == 'step1'
+            return x.data + 1
+
+        intermediate = step1(5)
+        result = debug_step(intermediate)
+        assert result.data == 11
+
+    def test_unwrap_true_with_base_variable(self, db, scalar_class):
+        """With unwrap=True, BaseVariable input is unwrapped to .data."""
+        # Save a variable
+        scalar_class(42).save(db=db, key="test")
+        loaded = scalar_class.load(db=db, key="test")
+
+        @thunk(n_outputs=1)
+        def process(x):
+            # x should be the raw data (42), not the BaseVariable
+            assert not hasattr(x, 'vhash')
+            assert x == 42
+            return x * 2
+
+        result = process(loaded)
+        assert result.data == 84
+
+    def test_unwrap_false_with_base_variable(self, db, scalar_class):
+        """With unwrap=False, BaseVariable input is passed through."""
+        # Save a variable
+        scalar_class(42).save(db=db, key="test")
+        loaded = scalar_class.load(db=db, key="test")
+
+        @thunk(n_outputs=1, unwrap=False)
+        def debug_process(var):
+            # var should be the BaseVariable itself
+            assert hasattr(var, 'vhash')
+            assert hasattr(var, 'metadata')
+            assert var.vhash is not None
+            assert var.data == 42
+            return var.data * 2
+
+        result = debug_process(loaded)
+        assert result.data == 84
+
+    def test_unwrap_false_can_inspect_metadata(self, db, scalar_class):
+        """With unwrap=False, can inspect metadata from input variable."""
+        scalar_class(100).save(db=db, subject=1, trial=2, experiment="test")
+        loaded = scalar_class.load(db=db, subject=1, trial=2)
+
+        @thunk(n_outputs=1, unwrap=False)
+        def inspect_and_process(var):
+            assert var.metadata['subject'] == 1
+            assert var.metadata['trial'] == 2
+            assert var.metadata['experiment'] == 'test'
+            return var.data / 10
+
+        result = inspect_and_process(loaded)
+        assert result.data == 10.0
+
+    def test_unwrap_with_mixed_inputs(self, db, scalar_class):
+        """unwrap works with mixed input types."""
+        scalar_class(10).save(db=db, key="var1")
+        loaded = scalar_class.load(db=db, key="var1")
+
+        @thunk(n_outputs=1)
+        def step1(x):
+            return x * 2
+
+        output_thunk = step1(5)
+
+        @thunk(n_outputs=1)
+        def combine(a, b, c):
+            # a is from OutputThunk (10), b is from BaseVariable (10), c is plain (3)
+            assert a == 10
+            assert b == 10
+            assert c == 3
+            return a + b + c
+
+        result = combine(output_thunk, loaded, 3)
+        assert result.data == 23
+
+    def test_unwrap_false_with_mixed_inputs(self, db, scalar_class):
+        """unwrap=False preserves all wrapper types."""
+        scalar_class(10).save(db=db, key="var1")
+        loaded = scalar_class.load(db=db, key="var1")
+
+        @thunk(n_outputs=1)
+        def step1(x):
+            return x * 2
+
+        output_thunk = step1(5)
+
+        @thunk(n_outputs=1, unwrap=False)
+        def combine(a, b, c):
+            # a is OutputThunk, b is BaseVariable, c is plain int
+            assert isinstance(a, OutputThunk)
+            assert hasattr(b, 'vhash')
+            assert c == 3
+            return a.data + b.data + c
+
+        result = combine(output_thunk, loaded, 3)
+        assert result.data == 23
+
+    def test_unwrap_in_repr(self):
+        """unwrap should appear in Thunk repr."""
+        @thunk(n_outputs=1, unwrap=False)
+        def my_func(x):
+            return x
+
+        repr_str = repr(my_func)
+        assert "unwrap=False" in repr_str
+
+    def test_lineage_captured_regardless_of_unwrap(self, db, scalar_class):
+        """Lineage should be captured whether unwrap is True or False."""
+        scalar_class(42).save(db=db, key="input_var")
+        loaded = scalar_class.load(db=db, key="input_var")
+
+        @thunk(n_outputs=1)
+        def process_unwrapped(x):
+            return x * 2
+
+        @thunk(n_outputs=1, unwrap=False)
+        def process_wrapped(var):
+            return var.data * 2
+
+        result1 = process_unwrapped(loaded)
+        result2 = process_wrapped(loaded)
+
+        # Both should capture the loaded variable in their inputs
+        pt1 = result1.pipeline_thunk
+        pt2 = result2.pipeline_thunk
+
+        # Inputs should reference the same loaded variable
+        assert pt1.inputs['arg_0'] is loaded
+        assert pt2.inputs['arg_0'] is loaded

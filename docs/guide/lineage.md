@@ -15,7 +15,7 @@ def process_signal(signal: np.ndarray, factor: float) -> np.ndarray:
 
 # Returns OutputThunk, not raw array
 result = process_signal(data, 2.5)
-print(result.value)  # The actual array
+print(result.data)  # The actual array
 ```
 
 ### Multiple Outputs
@@ -240,7 +240,7 @@ db = configure_database("experiment.db")
 raw_signal = SignalData.load(subject=1, session="baseline")
 
 b, a = thunked_butter(N=4, Wn=[1, 40], btype='band', fs=1000)
-filtered = thunked_filtfilt(b.value, a.value, raw_signal.data)
+filtered = thunked_filtfilt(b.data, a.data, raw_signal.data)
 freqs, psd = thunked_welch(filtered, fs=1000)
 
 # Save with lineage
@@ -298,6 +298,60 @@ from my_project.thunks import thunk_filtfilt, thunk_welch
 filtered = thunk_filtfilt(b, a, data)
 freqs, psd = thunk_welch(filtered)
 ```
+
+## Cross-Script Lineage
+
+When pipelines are split across separate files/scripts, lineage is still tracked by passing the loaded variable to the thunk:
+
+```python
+# step1.py
+@thunk(n_outputs=1)
+def preprocess(data):
+    return data * 2
+
+result = preprocess(raw_data)
+Intermediate(result).save(db=db, subject=1, stage="preprocessed")
+```
+
+```python
+# step2.py (separate execution)
+loaded = Intermediate.load(db=db, subject=1, stage="preprocessed")
+
+@thunk(n_outputs=1)
+def analyze(data):
+    # Receives the raw numpy array (loaded.data)
+    return data.mean()
+
+# Pass the loaded variable - lineage links to loaded.vhash
+result = analyze(loaded)
+FinalResult(result).save(db=db, subject=1, stage="analyzed")
+
+# Lineage correctly shows: FinalResult <- analyze <- Intermediate
+```
+
+The key: pass the `BaseVariable` instance, not `loaded.data`. The thunk automatically unwraps it.
+
+## Debugging with `unwrap=False`
+
+By default, thunks unwrap `BaseVariable` and `OutputThunk` inputs to their raw data. Use `unwrap=False` to receive the wrapper objects for debugging:
+
+```python
+@thunk(n_outputs=1, unwrap=False)
+def debug_process(var):
+    # var is the BaseVariable, not raw data
+    print(f"Input vhash: {var.vhash}")
+    print(f"Input metadata: {var.metadata}")
+    print(f"Data shape: {var.data.shape}")
+    return var.data * 2
+
+# Lineage still captured, but function can inspect metadata
+result = debug_process(loaded)
+```
+
+This is useful for:
+- Tracing data provenance during debugging
+- Logging metadata alongside processing
+- Building introspection tools
 
 ## Limitations
 

@@ -16,27 +16,6 @@ db = configure_database("experiment.db")
 db = get_database()
 ```
 
-### Explicit Database
-
-```python
-from scidb import DatabaseManager
-
-db = DatabaseManager("experiment.db")
-
-# Pass explicitly to save/load
-MyVar(data).save(db=db, subject=1)
-MyVar.load(db=db, subject=1)
-```
-
-### Context Manager
-
-```python
-with DatabaseManager("experiment.db") as db:
-    db.register(MyVar)
-    MyVar(data).save(db=db, subject=1)
-# Connection closed automatically
-```
-
 ## Registration
 
 Variable types are **auto-registered** on first save or load. Manual registration is optional:
@@ -58,12 +37,6 @@ Registration creates the table if it doesn't exist. Re-registering is safe (idem
 ```python
 var = MyVariable(data)
 vhash = var.save(subject=1, trial=1, condition="A")
-```
-
-### With Explicit Database
-
-```python
-vhash = var.save(db=db, subject=1, trial=1)
 ```
 
 ### Idempotent Saves
@@ -95,12 +68,6 @@ vars = MyVariable.load(condition="A")  # May return list
 
 ```python
 var = MyVariable.load(version="abc123...")
-```
-
-### Load from Explicit Database
-
-```python
-var = MyVariable.load(db=db, subject=1)
 ```
 
 ## Version History
