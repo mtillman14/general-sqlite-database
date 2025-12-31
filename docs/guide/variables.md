@@ -4,6 +4,8 @@ Variables are the core data type in SciDB. Every piece of data you store is wrap
 
 ## Defining a Variable Type
 
+All variable types use `pd.DataFrame` as the intermediate storage format. Your `to_db()` method must return a DataFrame, and your `from_db()` method receives a DataFrame.
+
 ```python
 from scidb import BaseVariable
 import pandas as pd
@@ -13,11 +15,13 @@ class MyVariable(BaseVariable):
 
     def to_db(self) -> pd.DataFrame:
         """Convert self.data to a DataFrame for storage."""
+        # Must return a pd.DataFrame
         ...
 
     @classmethod
     def from_db(cls, df: pd.DataFrame) -> Any:
         """Convert DataFrame back to native type."""
+        # df is always a pd.DataFrame
         ...
 ```
 
@@ -26,8 +30,8 @@ class MyVariable(BaseVariable):
 | Component | Purpose |
 |-----------|---------|
 | `schema_version` | Integer version for schema migrations |
-| `to_db()` | Instance method converting `self.data` to DataFrame |
-| `from_db()` | Class method converting DataFrame to native type |
+| `to_db()` | Instance method converting `self.data` to `pd.DataFrame` |
+| `from_db()` | Class method converting `pd.DataFrame` to native type |
 
 ## Common Patterns
 
@@ -226,6 +230,60 @@ df = ScalarResult.load_to_dataframe(experiment="exp1", include_vhash=True)
 |----------|--------|
 | DataFrame is ONE unit of data (e.g., time series) | `MyVar(df).save(...)` |
 | Each row is SEPARATE data (e.g., subject/trial results) | `MyVar.save_from_dataframe(df, ...)` |
+
+## Metadata Reflects Dataset Structure
+
+The metadata keys you use in `save()` should reflect the natural structure of your dataset. Common patterns include subject/trial designs, session-based recordings, or hierarchical experimental structures.
+
+### Example: Subject × Trial Design
+
+```python
+class TrialResult(BaseVariable):
+    schema_version = 1
+    def to_db(self):
+        return pd.DataFrame({"value": [self.data]})
+    @classmethod
+    def from_db(cls, df):
+        return df["value"].iloc[0]
+
+# Save results for each subject and trial
+subjects = [1, 2, 3]
+trials = ["baseline", "treatment", "followup"]
+
+for subject in subjects:
+    for trial in trials:
+        # Process data for this subject/trial
+        result = analyze_trial(subject, trial)
+
+        # Metadata mirrors dataset structure
+        TrialResult(result).save(
+            subject=subject,
+            trial=trial,
+            experiment="exp_2024"
+        )
+
+# Later: load specific combinations
+baseline_s1 = TrialResult.load(subject=1, trial="baseline")
+all_baselines = TrialResult.load(trial="baseline")  # All subjects
+```
+
+### Example: Session-Based Recordings
+
+```python
+class Recording(BaseVariable):
+    schema_version = 1
+    # ... to_db/from_db
+
+sessions = ["morning", "afternoon", "evening"]
+days = ["day1", "day2", "day3"]
+
+for day in days:
+    for session in sessions:
+        data = record_session(day, session)
+        Recording(data).save(day=day, session=session, device="sensor_A")
+```
+
+The key insight: your metadata structure should make it easy to query the data the way you'll need to access it later.
 
 ## Reserved Metadata Keys
 

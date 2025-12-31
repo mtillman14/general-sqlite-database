@@ -378,19 +378,3 @@ def process_item(item):  # No @thunk
 def process_all(items):
     return [process_item(item) for item in items]
 ```
-
-### Large Constants
-
-Constants are stored in lineage. Avoid passing large data as literal arguments:
-
-```python
-# Don't pass large arrays as constants
-@thunk(n_outputs=1)
-def process(data, large_calibration_array):  # Bad
-    ...
-
-# Load from database instead
-@thunk(n_outputs=1)
-def process(data, calibration_var):  # Good - var has vhash
-    return data * calibration_var.data
-```

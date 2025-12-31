@@ -100,6 +100,13 @@ for fn, count in stats['entries_by_function'].items():
 
 ## Cache Invalidation
 
+Cache invalidation is primarily useful for:
+- **Space management**: Removing old entries you no longer need
+- **Testing**: Forcing recomputation during development
+- **Cleanup**: Removing entries from functions that no longer exist
+
+Note: If you fix a bug in a function, the function's bytecode hash changes automatically, so old cached results won't be hit. You don't need to manually invalidate.
+
 ### Invalidate All
 
 ```python
@@ -110,12 +117,13 @@ print(f"Removed {deleted} cache entries")
 ### Invalidate by Function Name
 
 ```python
+# Remove all cached results from a specific function
 deleted = db.invalidate_cache(function_name="process_signal")
 ```
 
 ### Invalidate by Function Hash
 
-When function code changes, old cache entries become stale:
+Remove entries for a specific version of a function:
 
 ```python
 deleted = db.invalidate_cache(function_hash="abc123...")
@@ -175,10 +183,6 @@ result = process(raw.data)
 result = process(np.array([1, 2, 3]))
 ```
 
-### 4. Invalidate When Needed
+### 4. Cache Keys Are Content-Based
 
-After fixing bugs or changing algorithms:
-
-```python
-db.invalidate_cache(function_name="buggy_function")
-```
+If you modify a function's code, the cache key changes automatically. You don't need to manually invalidate—the next run will simply compute fresh results.
