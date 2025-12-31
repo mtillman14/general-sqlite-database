@@ -16,6 +16,7 @@ from .exceptions import (
     NotRegisteredError,
 )
 from .hashing import generate_vhash
+from .preview import generate_preview
 from .storage import deserialize_dataframe, register_adapters, serialize_dataframe
 from .variable import BaseVariable
 
@@ -201,6 +202,7 @@ class DatabaseManager:
                 vhash TEXT UNIQUE NOT NULL,
                 schema_version INTEGER NOT NULL,
                 metadata JSON NOT NULL,
+                preview TEXT,
                 data BLOB NOT NULL,
                 created_at TEXT DEFAULT CURRENT_TIMESTAMP
             )
@@ -317,15 +319,16 @@ class DatabaseManager:
         df = variable.to_db()
         data_blob = serialize_dataframe(df)
         metadata_json = json.dumps(metadata, sort_keys=True)
+        preview_str = generate_preview(df)
 
         now = datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")
         self.connection.execute(
             f"""
             INSERT INTO {table_name}
-            (vhash, schema_version, metadata, data, created_at)
-            VALUES (?, ?, ?, ?, ?)
+            (vhash, schema_version, metadata, preview, data, created_at)
+            VALUES (?, ?, ?, ?, ?, ?)
         """,
-            (vhash, variable.schema_version, metadata_json, data_blob, now),
+            (vhash, variable.schema_version, metadata_json, preview_str, data_blob, now),
         )
 
         # Log to version history
@@ -977,6 +980,124 @@ class DatabaseManager:
             "functions": len(by_function),
             "entries_by_function": by_function,
         }
+
+    # -------------------------------------------------------------------------
+    # Export and Preview Methods
+    # -------------------------------------------------------------------------
+
+    def export_to_csv(
+        self,
+        variable_class: Type[BaseVariable],
+        path: str,
+        **metadata,
+    ) -> int:
+        """
+        Export matching variables to a CSV file.
+
+        Exports the underlying DataFrame representation (from to_db()) for
+        each matching variable. If multiple variables match, they are
+        concatenated with a 'vhash' column to distinguish them.
+
+        Args:
+            variable_class: The type to export
+            path: Output file path (will be overwritten if exists)
+            **metadata: Metadata filter for selecting records
+
+        Returns:
+            Number of records exported
+
+        Raises:
+            NotFoundError: If no matching data found
+            NotRegisteredError: If this type has never been saved
+        """
+        import pandas as pd
+
+        # Load matching variables
+        results = self.load(variable_class, metadata)
+        if not isinstance(results, list):
+            results = [results]
+
+        # Build combined DataFrame
+        all_dfs = []
+        for var in results:
+            df = variable_class(var.data).to_db()
+            df["_vhash"] = var.vhash
+            # Add metadata columns
+            if var.metadata:
+                for key, value in var.metadata.items():
+                    df[f"_meta_{key}"] = value
+            all_dfs.append(df)
+
+        combined = pd.concat(all_dfs, ignore_index=True)
+        combined.to_csv(path, index=False)
+
+        return len(results)
+
+    def preview_data(
+        self,
+        variable_class: Type[BaseVariable],
+        **metadata,
+    ) -> str:
+        """
+        Get a formatted preview of matching variables.
+
+        This retrieves the preview strings stored in the database,
+        providing a quick look at the data without full deserialization.
+
+        Args:
+            variable_class: The type to preview
+            **metadata: Metadata filter for selecting records
+
+        Returns:
+            Formatted string with previews of matching records
+
+        Raises:
+            NotFoundError: If no matching data found
+            NotRegisteredError: If this type has never been saved
+        """
+        table_name = self._ensure_registered(variable_class, auto_register=False)
+
+        # Build query
+        conditions = []
+        params = []
+        for key, value in metadata.items():
+            conditions.append(f"json_extract(metadata, '$.{key}') = ?")
+            if isinstance(value, (dict, list)):
+                params.append(json.dumps(value))
+            else:
+                params.append(value)
+
+        where_clause = " AND ".join(conditions) if conditions else "1=1"
+
+        cursor = self.connection.execute(
+            f"""SELECT vhash, metadata, preview, created_at FROM {table_name}
+                WHERE {where_clause}
+                ORDER BY created_at DESC""",
+            params,
+        )
+        rows = cursor.fetchall()
+
+        if not rows:
+            raise NotFoundError(
+                f"No {variable_class.__name__} found matching metadata: {metadata}"
+            )
+
+        # Format output
+        lines = [f"=== {variable_class.__name__} ({len(rows)} records) ===\n"]
+        for row in rows:
+            vhash_short = row["vhash"][:12]
+            meta = json.loads(row["metadata"])
+            meta_str = ", ".join(f"{k}={v}" for k, v in meta.items())
+            preview = row["preview"] or "(no preview)"
+
+            lines.append(f"vhash: {vhash_short}...")
+            if meta_str:
+                lines.append(f"  metadata: {meta_str}")
+            lines.append(f"  preview: {preview}")
+            lines.append(f"  created: {row['created_at']}")
+            lines.append("")
+
+        return "\n".join(lines)
 
     def close(self):
         """Close the database connection."""

@@ -36,6 +36,8 @@ class MyVariable(BaseVariable):
 | `load(db=None, version="latest", **metadata)` | Load from database |
 | `save_from_dataframe(df, data_column, metadata_columns, db=None, **common_metadata)` | Save each row as separate record |
 | `load_to_dataframe(db=None, include_vhash=False, **metadata)` | Load matching records as DataFrame |
+| `to_csv(path)` | Export data to CSV file |
+| `get_preview()` | Get human-readable data summary |
 | `for_type(type_name=None)` | Create specialized subclass |
 | `table_name()` | Get SQLite table name |
 | `get_type_suffix()` | Get type suffix (if specialized) |
@@ -63,6 +65,8 @@ db = DatabaseManager("path/to/db.sqlite")
 | `format_lineage(variable_class, version=None, **metadata)` | Get print-friendly lineage |
 | `get_derived_from(variable_class, version=None, **metadata)` | Find derived variables |
 | `has_lineage(vhash)` | Check if lineage exists |
+| `export_to_csv(variable_class, path, **metadata)` | Export matching records to CSV |
+| `preview_data(variable_class, **metadata)` | Get formatted preview of records |
 | `get_cached_computation(cache_key, variable_class)` | Look up cached result |
 | `cache_computation(...)` | Store computation in cache |
 | `invalidate_cache(function_name=None, function_hash=None)` | Clear cache entries |

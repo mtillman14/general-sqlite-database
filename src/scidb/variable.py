@@ -415,3 +415,36 @@ class BaseVariable(ABC):
             rows.append(row)
 
         return pd.DataFrame(rows)
+
+    def to_csv(self, path: str) -> None:
+        """
+        Export this variable's data to a CSV file.
+
+        Exports the DataFrame representation (from to_db()) to CSV format
+        for viewing in external tools.
+
+        Args:
+            path: Output file path (will be overwritten if exists)
+
+        Example:
+            var = TimeSeries.load(db=db, subject=1)
+            var.to_csv("subject1_data.csv")
+        """
+        df = self.to_db()
+        df.to_csv(path, index=False)
+
+    def get_preview(self) -> str:
+        """
+        Get a human-readable preview of this variable's data.
+
+        Returns:
+            A string summarizing the data (shape, sample values, stats)
+
+        Example:
+            var = TimeSeries.load(db=db, subject=1)
+            print(var.get_preview())
+        """
+        from .preview import generate_preview
+
+        df = self.to_db()
+        return generate_preview(df)
