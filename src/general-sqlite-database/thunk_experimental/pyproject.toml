@@ -1,0 +1,11 @@
+[project]
+name = "ross_thunk"
+version = "0.1.0"
+description = "A Python adaptation of the Thunk concept in Haskell for building data processing pipelines."
+authors = [
+    { name = "Mitchell Tillman", email = "mtillman14@gmail.com" }
+]
+readme = "README.md"
+license = "MIT"
+requires-python = ">=3.8"
+

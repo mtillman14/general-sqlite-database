@@ -1,0 +1,7 @@
+pyproject.toml
+src/ross_thunk/evaluate.py
+src/ross_thunk/thunk.py
+src/ross_thunk.egg-info/PKG-INFO
+src/ross_thunk.egg-info/SOURCES.txt
+src/ross_thunk.egg-info/dependency_links.txt
+src/ross_thunk.egg-info/top_level.txt
