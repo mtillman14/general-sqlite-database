@@ -223,6 +223,35 @@ class PipelineThunk:
             and hasattr(obj, "from_db")
         )
 
+    def compute_cache_key(self) -> str:
+        """
+        Compute a cache key for this pipeline invocation.
+
+        The cache key is based on:
+        - Function hash (bytecode + constants)
+        - Input hashes (vhash for saved variables, content hash for others)
+
+        Returns:
+            SHA-256 hash suitable for cache lookup
+        """
+        from .hashing import canonical_hash
+
+        input_hashes = []
+        for name in sorted(self.inputs.keys()):
+            value = self.inputs[name]
+            if isinstance(value, OutputThunk):
+                # Use the output thunk's hash
+                input_hashes.append((name, "output", value.hash))
+            elif self._is_base_variable(value) and value._vhash is not None:
+                # Use the saved variable's vhash
+                input_hashes.append((name, "variable", value._vhash))
+            else:
+                # Compute content hash for other values
+                input_hashes.append((name, "value", canonical_hash(value)))
+
+        cache_input = f"{self.thunk.hash}{STRING_REPR_DELIMITER}{input_hashes}"
+        return sha256(cache_input.encode()).hexdigest()
+
     def _matches(self, other: "PipelineThunk") -> bool:
         """Check if this is equivalent to another PipelineThunk."""
         if self.thunk.hash != other.thunk.hash:
@@ -280,6 +309,8 @@ class OutputThunk:
         is_complete: True if the value has been computed
         value: The actual computed value (None if not complete)
         hash: SHA-256 hash encoding the full lineage
+        was_cached: True if this result was loaded from cache
+        cached_vhash: The vhash of the cached result (if was_cached)
     """
 
     def __init__(
@@ -288,6 +319,8 @@ class OutputThunk:
         output_num: int,
         is_complete: bool,
         value: Any,
+        was_cached: bool = False,
+        cached_vhash: str | None = None,
     ):
         """
         Initialize an OutputThunk.
@@ -297,17 +330,31 @@ class OutputThunk:
             output_num: Index of this output
             is_complete: Whether the value has been computed
             value: The computed value (or None if not complete)
+            was_cached: Whether this result was loaded from cache
+            cached_vhash: The vhash if loaded from cache
         """
         self.pipeline_thunk = pipeline_thunk
         self.output_num = output_num
         self.is_complete = is_complete
         self.value = value if is_complete else None
+        self._was_cached = was_cached
+        self._cached_vhash = cached_vhash
 
         string_repr = (
             f"{pipeline_thunk.hash}{STRING_REPR_DELIMITER}"
             f"output{STRING_REPR_DELIMITER}{output_num}"
         )
         self.hash = sha256(string_repr.encode()).hexdigest()
+
+    @property
+    def was_cached(self) -> bool:
+        """True if this result was loaded from the computation cache."""
+        return self._was_cached
+
+    @property
+    def cached_vhash(self) -> str | None:
+        """The vhash of the cached result, if loaded from cache."""
+        return self._cached_vhash
 
     def __repr__(self) -> str:
         fcn_name = self.pipeline_thunk.thunk.fcn.__name__

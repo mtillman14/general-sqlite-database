@@ -55,7 +55,7 @@ from .exceptions import (
     ReservedMetadataKeyError,
     SciDBError,
 )
-from .lineage import LineageRecord, extract_lineage, get_raw_value
+from .lineage import LineageRecord, check_cache, extract_lineage, get_raw_value
 from .thunk import OutputThunk, PipelineThunk, Thunk, thunk
 from .variable import BaseVariable
 
@@ -73,10 +73,11 @@ __all__ = [
     "Thunk",
     "PipelineThunk",
     "OutputThunk",
-    # Lineage
+    # Lineage & Caching
     "LineageRecord",
     "extract_lineage",
     "get_raw_value",
+    "check_cache",
     # Exceptions
     "SciDBError",
     "NotRegisteredError",

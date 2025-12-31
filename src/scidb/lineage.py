@@ -19,9 +19,13 @@ Example:
 """
 
 from dataclasses import dataclass, field
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from .thunk import OutputThunk
+
+if TYPE_CHECKING:
+    from .database import DatabaseManager
+    from .thunk import PipelineThunk
 
 
 @dataclass
@@ -157,6 +161,63 @@ def get_raw_value(data: Any) -> Any:
     if isinstance(data, OutputThunk):
         return data.value
     return data
+
+
+def check_cache(
+    pipeline_thunk: "PipelineThunk",
+    variable_class: type,
+    db: "DatabaseManager | None" = None,
+) -> "OutputThunk | None":
+    """
+    Check if a computation result is cached.
+
+    This allows skipping execution when a result already exists.
+
+    Example:
+        @thunk(n_outputs=1)
+        def process(data):
+            return data * 2
+
+        # Create pipeline thunk without executing
+        pt = PipelineThunk(process, input_data)
+        cached = check_cache(pt, MyVar, db=db)
+        if cached:
+            result = cached
+        else:
+            result = process(input_data)
+            MyVar(result).save(db=db, ...)
+
+    Args:
+        pipeline_thunk: The PipelineThunk to check cache for
+        variable_class: The expected output type
+        db: Database to check (uses global if not provided)
+
+    Returns:
+        OutputThunk with cached value, or None if not cached
+    """
+    if db is None:
+        from .database import get_database
+        try:
+            db = get_database()
+        except Exception:
+            return None
+
+    cache_key = pipeline_thunk.compute_cache_key()
+    cached_var = db.get_cached_computation(cache_key, variable_class)
+
+    if cached_var is None:
+        return None
+
+    # Create an OutputThunk representing the cached result
+    from .thunk import OutputThunk
+    return OutputThunk(
+        pipeline_thunk=pipeline_thunk,
+        output_num=0,
+        is_complete=True,
+        value=cached_var.data,
+        was_cached=True,
+        cached_vhash=cached_var.vhash,
+    )
 
 
 def get_lineage_chain(output_thunk: OutputThunk, max_depth: int = 100) -> list[LineageRecord]:

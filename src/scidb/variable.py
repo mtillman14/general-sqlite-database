@@ -110,7 +110,8 @@ class BaseVariable(ABC):
         Save this variable to the database.
 
         If self.data is an OutputThunk (from a thunked computation),
-        lineage is automatically extracted and stored.
+        lineage is automatically extracted and stored, and the computation
+        is cached for future reuse.
 
         Args:
             db: Optional explicit database. If None, uses global database.
@@ -138,16 +139,30 @@ class BaseVariable(ABC):
 
         db = db or get_database()
 
-        # Extract lineage if data came from a thunk
+        # Extract lineage and cache info if data came from a thunk
         lineage = None
+        output_thunk = None
         if isinstance(self.data, OutputThunk):
-            lineage = extract_lineage(self.data)
+            output_thunk = self.data
+            lineage = extract_lineage(output_thunk)
             # Unwrap to get actual value for hashing and storage
-            self.data = get_raw_value(self.data)
+            self.data = get_raw_value(output_thunk)
 
         vhash = db.save(self, metadata, lineage=lineage)
         self._vhash = vhash
         self._metadata = metadata
+
+        # Populate computation cache if this came from a thunk
+        if output_thunk is not None:
+            cache_key = output_thunk.pipeline_thunk.compute_cache_key()
+            db.cache_computation(
+                cache_key=cache_key,
+                function_name=output_thunk.pipeline_thunk.thunk.fcn.__name__,
+                function_hash=output_thunk.pipeline_thunk.thunk.hash,
+                output_type=self.__class__.__name__,
+                output_vhash=vhash,
+            )
+
         return vhash
 
     @classmethod

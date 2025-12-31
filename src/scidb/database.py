@@ -154,6 +154,29 @@ class DatabaseManager:
         """
         )
 
+        # Computation cache table - maps (function + inputs) -> output vhash
+        self.connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS _computation_cache (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                cache_key TEXT UNIQUE NOT NULL,
+                function_name TEXT NOT NULL,
+                function_hash TEXT NOT NULL,
+                output_type TEXT NOT NULL,
+                output_vhash TEXT NOT NULL,
+                created_at TEXT DEFAULT CURRENT_TIMESTAMP
+            )
+        """
+        )
+
+        # Index for cache key lookup
+        self.connection.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_cache_key
+            ON _computation_cache(cache_key)
+        """
+        )
+
         self.connection.commit()
 
     def register(self, variable_class: Type[BaseVariable]) -> None:
@@ -564,6 +587,151 @@ class DatabaseManager:
             (vhash,),
         )
         return cursor.fetchone() is not None
+
+    # -------------------------------------------------------------------------
+    # Computation Cache Methods
+    # -------------------------------------------------------------------------
+
+    def get_cached_computation(
+        self,
+        cache_key: str,
+        variable_class: Type[BaseVariable],
+    ) -> BaseVariable | None:
+        """
+        Look up a cached computation result.
+
+        Args:
+            cache_key: The cache key (hash of function + inputs)
+            variable_class: The expected output type
+
+        Returns:
+            The cached variable instance, or None if not cached
+        """
+        cursor = self.connection.execute(
+            """SELECT output_vhash, output_type FROM _computation_cache
+               WHERE cache_key = ?""",
+            (cache_key,),
+        )
+        row = cursor.fetchone()
+
+        if row is None:
+            return None
+
+        # Verify type matches
+        if row["output_type"] != variable_class.__name__:
+            return None
+
+        # Load the cached result
+        try:
+            return self.load(variable_class, {}, version=row["output_vhash"])
+        except Exception:
+            # Cache entry exists but data is missing - stale cache
+            return None
+
+    def cache_computation(
+        self,
+        cache_key: str,
+        function_name: str,
+        function_hash: str,
+        output_type: str,
+        output_vhash: str,
+    ) -> None:
+        """
+        Store a computation result in the cache.
+
+        Args:
+            cache_key: The cache key (hash of function + inputs)
+            function_name: Name of the function
+            function_hash: Hash of the function bytecode
+            output_type: Name of the output variable class
+            output_vhash: Version hash of the saved output
+        """
+        now = datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")
+        self.connection.execute(
+            """
+            INSERT OR REPLACE INTO _computation_cache
+            (cache_key, function_name, function_hash, output_type, output_vhash, created_at)
+            VALUES (?, ?, ?, ?, ?, ?)
+        """,
+            (cache_key, function_name, function_hash, output_type, output_vhash, now),
+        )
+        self.connection.commit()
+
+    def load_by_vhash(
+        self,
+        variable_class: Type[BaseVariable],
+        vhash: str,
+    ) -> BaseVariable | None:
+        """
+        Load a variable by its exact vhash.
+
+        Args:
+            variable_class: The type to load
+            vhash: The version hash
+
+        Returns:
+            The variable instance, or None if not found
+        """
+        try:
+            return self.load(variable_class, {}, version=vhash)
+        except Exception:
+            return None
+
+    def invalidate_cache(
+        self,
+        function_name: str | None = None,
+        function_hash: str | None = None,
+    ) -> int:
+        """
+        Invalidate cached computations.
+
+        Args:
+            function_name: If provided, only invalidate for this function
+            function_hash: If provided, only invalidate for this function version
+
+        Returns:
+            Number of cache entries invalidated
+        """
+        if function_hash:
+            cursor = self.connection.execute(
+                "DELETE FROM _computation_cache WHERE function_hash = ?",
+                (function_hash,),
+            )
+        elif function_name:
+            cursor = self.connection.execute(
+                "DELETE FROM _computation_cache WHERE function_name = ?",
+                (function_name,),
+            )
+        else:
+            cursor = self.connection.execute("DELETE FROM _computation_cache")
+
+        self.connection.commit()
+        return cursor.rowcount
+
+    def get_cache_stats(self) -> dict:
+        """
+        Get statistics about the computation cache.
+
+        Returns:
+            Dict with total_entries, functions, and entries_by_function
+        """
+        cursor = self.connection.execute(
+            "SELECT COUNT(*) as total FROM _computation_cache"
+        )
+        total = cursor.fetchone()["total"]
+
+        cursor = self.connection.execute(
+            """SELECT function_name, COUNT(*) as count
+               FROM _computation_cache
+               GROUP BY function_name"""
+        )
+        by_function = {row["function_name"]: row["count"] for row in cursor.fetchall()}
+
+        return {
+            "total_entries": total,
+            "functions": len(by_function),
+            "entries_by_function": by_function,
+        }
 
     def close(self):
         """Close the database connection."""

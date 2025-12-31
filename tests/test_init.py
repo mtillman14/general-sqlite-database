@@ -79,6 +79,10 @@ class TestPublicAPIExports:
         from scidb import get_raw_value
         assert callable(get_raw_value)
 
+    def test_check_cache_exported(self):
+        from scidb import check_cache
+        assert callable(check_cache)
+
 
 class TestAllExports:
     """Test __all__ contains expected exports."""
@@ -119,6 +123,7 @@ class TestAllExports:
         assert "LineageRecord" in scidb.__all__
         assert "extract_lineage" in scidb.__all__
         assert "get_raw_value" in scidb.__all__
+        assert "check_cache" in scidb.__all__
 
     def test_all_exports_are_accessible(self):
         """Verify all items in __all__ are actually accessible."""

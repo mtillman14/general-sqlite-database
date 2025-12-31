@@ -87,6 +87,10 @@ pytest --ignore=tests/test_integration.py
 - `test_thunk.py` - Thunk decorator, PipelineThunk, OutputThunk
 - `test_lineage.py` - Lineage extraction and provenance tracking
 
+### Phase 3: Computation Caching
+
+- `test_caching.py` - Cache population, lookup, invalidation, and stats
+
 ### Integration Tests
 
 - `test_integration.py` - Full end-to-end workflows
