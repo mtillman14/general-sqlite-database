@@ -261,6 +261,7 @@ class BaseVariable(ABC):
                 function_hash=output_thunk.pipeline_thunk.thunk.hash,
                 output_type=self.__class__.__name__,
                 output_vhash=vhash,
+                output_num=output_thunk.output_num,
             )
 
         return vhash

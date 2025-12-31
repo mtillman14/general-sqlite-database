@@ -30,6 +30,7 @@ class TestCacheTableCreation:
         expected = {
             "id",
             "cache_key",
+            "output_num",
             "function_name",
             "function_hash",
             "output_type",
@@ -641,8 +642,8 @@ class TestAutomaticCacheChecking:
         assert execution_count[0] == 2  # Executed again
         assert result2.was_cached is False
 
-    def test_auto_cache_multi_output_not_cached(self, configured_db, scalar_class):
-        """Multi-output functions should not use auto-cache."""
+    def test_auto_cache_multi_output_all_saved(self, configured_db, scalar_class):
+        """Multi-output functions should use cache when ALL outputs are saved."""
         configured_db.register(scalar_class)
         execution_count = [0]
 
@@ -659,7 +660,33 @@ class TestAutomaticCacheChecking:
         scalar_class(a1).save(db=configured_db, subject=1, output="a")
         scalar_class(b1).save(db=configured_db, subject=1, output="b")
 
-        # Second run - multi-output, should still execute
+        # Second run - both outputs cached, should NOT execute
+        a2, b2 = split_compute(10)
+        assert execution_count[0] == 1  # Still 1! Not executed again
+        assert a2.was_cached is True
+        assert b2.was_cached is True
+        assert a2.data == 10
+        assert b2.data == 20
+
+    def test_auto_cache_multi_output_partial_save(self, configured_db, scalar_class):
+        """Multi-output should execute if only some outputs are saved."""
+        configured_db.register(scalar_class)
+        execution_count = [0]
+
+        @thunk(n_outputs=2)
+        def split_compute(x):
+            execution_count[0] += 1
+            return x, x * 2
+
+        # First run
+        a1, b1 = split_compute(10)
+        assert execution_count[0] == 1
+
+        # Save only first output
+        scalar_class(a1).save(db=configured_db, subject=1, output="a")
+        # Don't save b1
+
+        # Second run - not all outputs cached, should execute
         a2, b2 = split_compute(10)
         assert execution_count[0] == 2  # Executed again
         assert a2.was_cached is False
@@ -744,8 +771,8 @@ class TestGetCachedByKey:
         result = db.get_cached_by_key("nonexistent_key")
         assert result is None
 
-    def test_returns_data_and_vhash_when_cached(self, db, scalar_class):
-        """Should return (data, vhash) tuple when cached."""
+    def test_returns_list_with_data_and_vhash_when_cached(self, db, scalar_class):
+        """Should return list of (data, vhash) tuples when cached."""
         db.register(scalar_class)
 
         @thunk(n_outputs=1)
@@ -759,7 +786,8 @@ class TestGetCachedByKey:
         cached = db.get_cached_by_key(cache_key)
 
         assert cached is not None
-        data, cached_vhash = cached
+        assert len(cached) == 1
+        data, cached_vhash = cached[0]
         assert data == 20
         assert cached_vhash == vhash
 
@@ -799,4 +827,41 @@ class TestGetCachedByKey:
         db.connection.commit()
 
         cached = db.get_cached_by_key(cache_key)
+        assert cached is None
+
+    def test_multi_output_returns_all_outputs(self, db, scalar_class):
+        """Should return list with all outputs for multi-output functions."""
+        db.register(scalar_class)
+
+        @thunk(n_outputs=2)
+        def compute(x):
+            return x, x * 2
+
+        a, b = compute(10)
+        vhash_a = scalar_class(a).save(db=db, subject=1, output="a")
+        vhash_b = scalar_class(b).save(db=db, subject=1, output="b")
+
+        cache_key = a.pipeline_thunk.compute_cache_key()
+        cached = db.get_cached_by_key(cache_key, n_outputs=2)
+
+        assert cached is not None
+        assert len(cached) == 2
+        assert cached[0] == (10, vhash_a)
+        assert cached[1] == (20, vhash_b)
+
+    def test_multi_output_returns_none_when_partial(self, db, scalar_class):
+        """Should return None if not all outputs are cached."""
+        db.register(scalar_class)
+
+        @thunk(n_outputs=2)
+        def compute(x):
+            return x, x * 2
+
+        a, b = compute(10)
+        scalar_class(a).save(db=db, subject=1, output="a")
+        # Don't save b
+
+        cache_key = a.pipeline_thunk.compute_cache_key()
+        cached = db.get_cached_by_key(cache_key, n_outputs=2)
+
         assert cached is None

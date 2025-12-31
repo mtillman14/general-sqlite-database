@@ -25,7 +25,7 @@ SciDB automatically caches computation results. When you save a variable produce
 
 ## Automatic Caching
 
-Caching is fully automatic for single-output functions. Just save once, and future calls with the same inputs skip execution:
+Caching is fully automatic. Just save once, and future calls with the same inputs skip execution:
 
 ```python
 @thunk(n_outputs=1)
@@ -46,7 +46,39 @@ print(result2.data)        # Same result, no recomputation
 **Requirements for automatic caching:**
 - Database must be configured (`configure_database(...)`)
 - Variable class must be registered (happens on first `save()` or `load()`)
-- Function must have `n_outputs=1`
+
+### Multi-Output Functions
+
+Multi-output functions are also cached automatically. All outputs must be saved before caching takes effect:
+
+```python
+@thunk(n_outputs=2)
+def split_data(data):
+    print("Splitting...")  # Only prints on first run
+    return data[:len(data)//2], data[len(data)//2:]
+
+# First run: executes
+left, right = split_data(raw_data)
+LeftHalf(left).save(subject=1)
+RightHalf(right).save(subject=1)
+
+# Second run: cache hit for both outputs!
+left2, right2 = split_data(raw_data)  # No print
+print(left2.was_cached)   # True
+print(right2.was_cached)  # True
+```
+
+**Important:** If only some outputs are saved, no caching occurs:
+
+```python
+left, right = split_data(raw_data)
+LeftHalf(left).save(subject=1)  # Only save one output
+# right is not saved
+
+# Next run: cache miss (partial save)
+left2, right2 = split_data(raw_data)  # Executes again
+print(left2.was_cached)  # False
+```
 
 ## Manual Cache Checking
 

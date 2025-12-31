@@ -76,8 +76,8 @@ class Thunk:
         """
         Create a PipelineThunk and execute or defer.
 
-        Automatically checks the computation cache for single-output functions.
-        If a cached result exists, returns it without re-executing the function.
+        Automatically checks the computation cache. If all outputs are cached,
+        returns them without re-executing the function.
 
         Returns:
             OutputThunk or tuple of OutputThunks wrapping the result(s)
@@ -92,29 +92,34 @@ class Thunk:
         else:
             self.pipeline_thunks = (*self.pipeline_thunks, pipeline_thunk)
 
-        # Auto-cache check for single-output functions
-        if self.n_outputs == 1:
-            try:
-                from .database import get_database
+        # Auto-cache check
+        try:
+            from .database import get_database
 
-                db = get_database()
-                cache_key = pipeline_thunk.compute_cache_key()
-                cached = db.get_cached_by_key(cache_key)
+            db = get_database()
+            cache_key = pipeline_thunk.compute_cache_key()
+            cached = db.get_cached_by_key(cache_key, self.n_outputs)
 
-                if cached is not None:
-                    data, vhash = cached
-                    output = OutputThunk(
+            if cached is not None:
+                # Build OutputThunks from cached results
+                outputs = tuple(
+                    OutputThunk(
                         pipeline_thunk=pipeline_thunk,
-                        output_num=0,
+                        output_num=i,
                         is_complete=True,
                         data=data,
                         was_cached=True,
                         cached_vhash=vhash,
                     )
-                    pipeline_thunk.outputs = (output,)
-                    return output
-            except Exception:
-                pass  # No db configured or other error, execute normally
+                    for i, (data, vhash) in enumerate(cached)
+                )
+                pipeline_thunk.outputs = outputs
+
+                if len(outputs) == 1:
+                    return outputs[0]
+                return outputs
+        except Exception:
+            pass  # No db configured or other error, execute normally
 
         return pipeline_thunk(*args, **kwargs)
 

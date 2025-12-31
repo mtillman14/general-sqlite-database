@@ -155,17 +155,19 @@ class DatabaseManager:
         """
         )
 
-        # Computation cache table - maps (function + inputs) -> output vhash
+        # Computation cache table - maps (function + inputs + output_num) -> output vhash
         self.connection.execute(
             """
             CREATE TABLE IF NOT EXISTS _computation_cache (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
-                cache_key TEXT UNIQUE NOT NULL,
+                cache_key TEXT NOT NULL,
+                output_num INTEGER NOT NULL DEFAULT 0,
                 function_name TEXT NOT NULL,
                 function_hash TEXT NOT NULL,
                 output_type TEXT NOT NULL,
                 output_vhash TEXT NOT NULL,
-                created_at TEXT DEFAULT CURRENT_TIMESTAMP
+                created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE(cache_key, output_num)
             )
         """
         )
@@ -883,6 +885,7 @@ class DatabaseManager:
         function_hash: str,
         output_type: str,
         output_vhash: str,
+        output_num: int = 0,
     ) -> None:
         """
         Store a computation result in the cache.
@@ -893,15 +896,16 @@ class DatabaseManager:
             function_hash: Hash of the function bytecode
             output_type: Name of the output variable class
             output_vhash: Version hash of the saved output
+            output_num: Output index for multi-output functions (default 0)
         """
         now = datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")
         self.connection.execute(
             """
             INSERT OR REPLACE INTO _computation_cache
-            (cache_key, function_name, function_hash, output_type, output_vhash, created_at)
-            VALUES (?, ?, ?, ?, ?, ?)
+            (cache_key, output_num, function_name, function_hash, output_type, output_vhash, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
         """,
-            (cache_key, function_name, function_hash, output_type, output_vhash, now),
+            (cache_key, output_num, function_name, function_hash, output_type, output_vhash, now),
         )
         self.connection.commit()
 
@@ -925,7 +929,9 @@ class DatabaseManager:
         except Exception:
             return None
 
-    def get_cached_by_key(self, cache_key: str) -> tuple | None:
+    def get_cached_by_key(
+        self, cache_key: str, n_outputs: int = 1
+    ) -> list[tuple] | None:
         """
         Look up cached result by cache key only (without knowing variable type).
 
@@ -933,34 +939,47 @@ class DatabaseManager:
 
         Args:
             cache_key: The cache key (hash of function + inputs)
+            n_outputs: Number of outputs expected (default 1)
 
         Returns:
-            Tuple of (data, vhash) if found and loadable, None otherwise
+            List of (data, vhash) tuples if ALL outputs found and loadable,
+            None otherwise. For n_outputs=1, still returns a list with one tuple.
         """
         cursor = self.connection.execute(
-            """SELECT output_type, output_vhash FROM _computation_cache
-               WHERE cache_key = ?""",
+            """SELECT output_num, output_type, output_vhash FROM _computation_cache
+               WHERE cache_key = ?
+               ORDER BY output_num""",
             (cache_key,),
         )
-        row = cursor.fetchone()
+        rows = cursor.fetchall()
 
-        if row is None:
-            return None
+        if len(rows) != n_outputs:
+            return None  # Not all outputs cached
 
-        output_type = row["output_type"]
-        output_vhash = row["output_vhash"]
+        # Verify we have all expected output_nums (0 to n_outputs-1)
+        output_nums = {row["output_num"] for row in rows}
+        expected_nums = set(range(n_outputs))
+        if output_nums != expected_nums:
+            return None  # Missing some outputs
 
-        # Look up class from registry
-        var_class = self._registered_types.get(output_type)
-        if var_class is None:
-            return None  # Class not registered in this session
+        results = []
+        for row in rows:
+            output_type = row["output_type"]
+            output_vhash = row["output_vhash"]
 
-        # Load the variable by vhash
-        var = self.load_by_vhash(var_class, output_vhash)
-        if var is None:
-            return None  # Data was deleted or corrupted
+            # Look up class from registry
+            var_class = self._registered_types.get(output_type)
+            if var_class is None:
+                return None  # Class not registered in this session
 
-        return (var.data, output_vhash)
+            # Load the variable by vhash
+            var = self.load_by_vhash(var_class, output_vhash)
+            if var is None:
+                return None  # Data was deleted or corrupted
+
+            results.append((var.data, output_vhash))
+
+        return results
 
     def invalidate_cache(
         self,

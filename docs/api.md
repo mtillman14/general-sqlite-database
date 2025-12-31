@@ -127,7 +127,7 @@ result.data  # The actual result
 
 **Automatic caching:**
 
-For single-output functions, results are cached automatically. Once saved, subsequent calls with the same inputs skip execution:
+Results are cached automatically. Once saved, subsequent calls with the same inputs skip execution:
 
 ```python
 result = process(data)
@@ -135,6 +135,20 @@ MyVar(result).save(...)  # Populates cache
 
 result2 = process(data)  # Cache hit! No execution
 result2.was_cached       # True
+```
+
+For multi-output functions, all outputs must be saved before caching takes effect:
+
+```python
+@thunk(n_outputs=2)
+def split(data):
+    return data[:5], data[5:]
+
+left, right = split(data)
+LeftVar(left).save(...)   # Save all outputs
+RightVar(right).save(...)
+
+left2, right2 = split(data)  # Cache hit for both!
 ```
 
 **Cross-script lineage:**
