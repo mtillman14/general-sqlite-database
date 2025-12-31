@@ -369,3 +369,228 @@ class TestLineageIntegration:
         # The input to step3 should be from step2
         assert len(provenance["inputs"]) == 1
         assert provenance["inputs"][0]["source_function"] == "step2"
+
+
+class TestGetFullLineage:
+    """Test get_full_lineage and format_lineage methods."""
+
+    def test_get_full_lineage_single_step(self, db, scalar_class):
+        """Test full lineage for a single processing step."""
+        @thunk(n_outputs=1)
+        def double(x):
+            return x * 2
+
+        # Save input
+        input_var = scalar_class(10)
+        input_var.save(db=db, subject=1, stage="raw")
+
+        # Process and save
+        result = double(input_var)
+        output_var = scalar_class(result)
+        output_var.save(db=db, subject=1, stage="processed")
+
+        # Get full lineage
+        lineage = db.get_full_lineage(scalar_class, subject=1, stage="processed")
+
+        assert lineage["type"] == "ScalarValue"
+        assert lineage["function"] == "double"
+        assert "function_hash" in lineage
+        assert len(lineage["inputs"]) == 1
+        assert lineage["inputs"][0]["type"] == "ScalarValue"
+        assert lineage["inputs"][0]["function"] is None  # Source node
+        assert lineage["inputs"][0]["source"] == "manual"
+
+    def test_get_full_lineage_multi_step(self, db, scalar_class):
+        """Test full lineage through a multi-step pipeline."""
+        @thunk(n_outputs=1)
+        def step1(x):
+            return x * 2
+
+        @thunk(n_outputs=1)
+        def step2(x):
+            return x + 10
+
+        # Save input
+        input_var = scalar_class(5)
+        input_var.save(db=db, subject=1, stage="raw")
+
+        # Step 1
+        result1 = step1(input_var)
+        var1 = scalar_class(result1)
+        var1.save(db=db, subject=1, stage="step1")
+
+        # Step 2
+        result2 = step2(var1)
+        var2 = scalar_class(result2)
+        var2.save(db=db, subject=1, stage="step2")
+
+        # Get full lineage from final output
+        lineage = db.get_full_lineage(scalar_class, subject=1, stage="step2")
+
+        # Check top level
+        assert lineage["function"] == "step2"
+
+        # Check first input (step1 output)
+        step1_node = lineage["inputs"][0]
+        assert step1_node["function"] == "step1"
+
+        # Check step1's input (raw data)
+        raw_node = step1_node["inputs"][0]
+        assert raw_node["function"] is None
+        assert raw_node["source"] == "manual"
+
+    def test_get_full_lineage_with_constants(self, db, scalar_class):
+        """Test that constants are captured in full lineage."""
+        @thunk(n_outputs=1)
+        def multiply(x, factor):
+            return x * factor
+
+        input_var = scalar_class(10)
+        input_var.save(db=db, subject=1, stage="raw")
+
+        result = multiply(input_var, 5)
+        output_var = scalar_class(result)
+        output_var.save(db=db, subject=1, stage="scaled")
+
+        lineage = db.get_full_lineage(scalar_class, subject=1, stage="scaled")
+
+        assert lineage["function"] == "multiply"
+        assert len(lineage["constants"]) == 1
+        assert lineage["constants"][0]["name"] == "arg_1"
+
+    def test_get_full_lineage_no_lineage(self, db, scalar_class):
+        """Test full lineage for data without lineage (manually saved)."""
+        var = scalar_class(42)
+        var.save(db=db, subject=1)
+
+        lineage = db.get_full_lineage(scalar_class, subject=1)
+
+        assert lineage["type"] == "ScalarValue"
+        assert lineage["function"] is None
+        assert lineage["source"] == "manual"
+
+    def test_get_full_lineage_max_depth(self, db, scalar_class):
+        """Test max_depth parameter prevents infinite recursion."""
+        @thunk(n_outputs=1)
+        def increment(x):
+            return x + 1
+
+        # Build a chain of saves
+        var = scalar_class(0)
+        var.save(db=db, subject=1, step=0)
+
+        for i in range(5):
+            result = increment(var)
+            var = scalar_class(result)
+            var.save(db=db, subject=1, step=i + 1)
+
+        # With max_depth=2, should truncate
+        lineage = db.get_full_lineage(scalar_class, subject=1, step=5, max_depth=2)
+
+        # Should have truncated flag somewhere in the tree
+        def has_truncated(node):
+            if node.get("truncated"):
+                return True
+            for inp in node.get("inputs", []):
+                if has_truncated(inp):
+                    return True
+            return False
+
+        assert has_truncated(lineage)
+
+    def test_format_lineage_basic(self, db, scalar_class):
+        """Test format_lineage produces readable output."""
+        @thunk(n_outputs=1)
+        def process(x):
+            return x * 2
+
+        input_var = scalar_class(10)
+        input_var.save(db=db, subject=1, stage="raw")
+
+        result = process(input_var)
+        output_var = scalar_class(result)
+        output_var.save(db=db, subject=1, stage="processed")
+
+        formatted = db.format_lineage(scalar_class, subject=1, stage="processed")
+
+        # Should be a non-empty string
+        assert isinstance(formatted, str)
+        assert len(formatted) > 0
+
+        # Should contain key information
+        assert "ScalarValue" in formatted
+        assert "process" in formatted
+        assert "vhash:" in formatted
+
+    def test_format_lineage_shows_source(self, db, scalar_class):
+        """Test format_lineage shows source for manual data."""
+        var = scalar_class(42)
+        var.save(db=db, subject=1)
+
+        formatted = db.format_lineage(scalar_class, subject=1)
+
+        assert "[source: manual]" in formatted
+
+    def test_format_lineage_multi_step(self, db, scalar_class):
+        """Test format_lineage with multi-step pipeline."""
+        @thunk(n_outputs=1)
+        def step1(x):
+            return x * 2
+
+        @thunk(n_outputs=1)
+        def step2(x):
+            return x + 10
+
+        input_var = scalar_class(5)
+        input_var.save(db=db, subject=1, stage="raw")
+
+        result1 = step1(input_var)
+        var1 = scalar_class(result1)
+        var1.save(db=db, subject=1, stage="step1")
+
+        result2 = step2(var1)
+        var2 = scalar_class(result2)
+        var2.save(db=db, subject=1, stage="step2")
+
+        formatted = db.format_lineage(scalar_class, subject=1, stage="step2")
+
+        # Should show the chain
+        assert "step1" in formatted
+        assert "step2" in formatted
+        assert "[source: manual]" in formatted
+
+    def test_format_lineage_with_constants(self, db, scalar_class):
+        """Test format_lineage shows constants."""
+        @thunk(n_outputs=1)
+        def scale(x, factor):
+            return x * factor
+
+        input_var = scalar_class(10)
+        input_var.save(db=db, subject=1, stage="raw")
+
+        result = scale(input_var, 3)
+        output_var = scalar_class(result)
+        output_var.save(db=db, subject=1, stage="scaled")
+
+        formatted = db.format_lineage(scalar_class, subject=1, stage="scaled")
+
+        assert "constants:" in formatted
+
+    def test_get_full_lineage_by_vhash(self, db, scalar_class):
+        """Test get_full_lineage with explicit vhash."""
+        @thunk(n_outputs=1)
+        def double(x):
+            return x * 2
+
+        input_var = scalar_class(10)
+        input_var.save(db=db, subject=1, stage="raw")
+
+        result = double(input_var)
+        output_var = scalar_class(result)
+        vhash = output_var.save(db=db, subject=1, stage="processed")
+
+        # Query by vhash
+        lineage = db.get_full_lineage(scalar_class, version=vhash)
+
+        assert lineage["vhash"] == vhash
+        assert lineage["function"] == "double"

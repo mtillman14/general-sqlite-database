@@ -340,7 +340,14 @@ class BaseVariable(ABC):
 
         for _, row in df.iterrows():
             # Extract row-specific metadata from columns
-            row_metadata = {col: row[col] for col in metadata_columns}
+            # Convert numpy types to native Python types for JSON serialization
+            row_metadata = {}
+            for col in metadata_columns:
+                val = row[col]
+                # Convert numpy types to native Python types
+                if hasattr(val, "item"):
+                    val = val.item()
+                row_metadata[col] = val
 
             # Combine with common metadata
             full_metadata = {**common_metadata, **row_metadata}

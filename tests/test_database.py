@@ -295,10 +295,12 @@ class TestSave:
 
         assert vhash1 != vhash2
 
-    def test_save_requires_registration(self, db, scalar_class):
+    def test_save_auto_registers(self, db, scalar_class):
+        """Save should auto-register the variable type."""
         var = scalar_class(42)
-        with pytest.raises(NotRegisteredError):
-            var.save(db=db, subject=1)
+        # Should not raise - auto-registers on save
+        vhash = var.save(db=db, subject=1)
+        assert isinstance(vhash, str)
 
     def test_save_array(self, db, array_class):
         db.register(array_class)

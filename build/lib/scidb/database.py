@@ -230,12 +230,21 @@ class DatabaseManager:
         # Cache locally
         self._registered_types[type_name] = variable_class
 
-    def _check_registered(self, variable_class: Type[BaseVariable]) -> str:
+    def _ensure_registered(
+        self, variable_class: Type[BaseVariable], auto_register: bool = True
+    ) -> str:
         """
-        Check if a variable type is registered, return table name.
+        Ensure a variable type is registered.
+
+        Args:
+            variable_class: The BaseVariable subclass to check
+            auto_register: If True, auto-register if not found. If False, raise error.
+
+        Returns:
+            The table name for this variable type
 
         Raises:
-            NotRegisteredError: If not registered
+            NotRegisteredError: If not registered and auto_register is False
         """
         type_name = variable_class.__name__
 
@@ -251,10 +260,15 @@ class DatabaseManager:
         row = cursor.fetchone()
 
         if row is None:
-            raise NotRegisteredError(
-                f"Variable type '{type_name}' is not registered. "
-                f"Call db.register({type_name}) first."
-            )
+            if auto_register:
+                # Auto-register the type
+                self.register(variable_class)
+                return variable_class.table_name()
+            else:
+                raise NotRegisteredError(
+                    f"Variable type '{type_name}' is not registered. "
+                    f"No data has been saved for this type yet."
+                )
 
         # Update local cache
         self._registered_types[type_name] = variable_class
@@ -280,7 +294,7 @@ class DatabaseManager:
         Returns:
             The vhash of the saved/existing data
         """
-        table_name = self._check_registered(type(variable))
+        table_name = self._ensure_registered(type(variable))
         type_name = variable.__class__.__name__
 
         # Generate vhash
@@ -376,8 +390,9 @@ class DatabaseManager:
 
         Raises:
             NotFoundError: If no matches found
+            NotRegisteredError: If this type has never been saved
         """
-        table_name = self._check_registered(variable_class)
+        table_name = self._ensure_registered(variable_class, auto_register=False)
 
         if version != "latest" and version is not None:
             # Load specific version by vhash
@@ -453,8 +468,11 @@ class DatabaseManager:
 
         Returns:
             List of dicts with vhash, metadata, created_at
+
+        Raises:
+            NotRegisteredError: If this type has never been saved
         """
-        table_name = self._check_registered(variable_class)
+        table_name = self._ensure_registered(variable_class, auto_register=False)
 
         conditions = []
         params = []
@@ -587,6 +605,233 @@ class DatabaseManager:
             (vhash,),
         )
         return cursor.fetchone() is not None
+
+    def get_full_lineage(
+        self,
+        variable_class: Type[BaseVariable],
+        version: str | None = None,
+        max_depth: int = 100,
+        **metadata,
+    ) -> dict:
+        """
+        Get the complete lineage chain for a variable.
+
+        Recursively traverses the lineage graph to show the full
+        computation history from original inputs to final output.
+
+        Args:
+            variable_class: The type to query
+            version: Specific vhash, or None to use metadata lookup
+            max_depth: Maximum recursion depth to prevent infinite loops
+            **metadata: Metadata to match (if version not specified)
+
+        Returns:
+            Nested dict representing the full computation graph:
+            {
+                "type": "FinalResult",
+                "vhash": "abc123...",
+                "function": "compute_stats",
+                "function_hash": "def456...",
+                "constants": [{"name": "threshold", "value": 0.5}],
+                "inputs": [
+                    {
+                        "type": "FilteredData",
+                        "vhash": "...",
+                        "function": "filter",
+                        ...
+                    }
+                ]
+            }
+        """
+        # Find the vhash
+        if version:
+            vhash = version
+            type_name = variable_class.__name__
+        else:
+            var = self.load(variable_class, metadata)
+            if isinstance(var, list):
+                var = var[0]  # Latest
+            vhash = var.vhash
+            type_name = variable_class.__name__
+
+        return self._build_lineage_tree(vhash, type_name, max_depth, set())
+
+    def _build_lineage_tree(
+        self,
+        vhash: str,
+        type_name: str,
+        max_depth: int,
+        visited: set,
+    ) -> dict:
+        """Recursively build the lineage tree for a vhash."""
+        # Prevent infinite loops
+        if max_depth <= 0 or vhash in visited:
+            return {
+                "type": type_name,
+                "vhash": vhash,
+                "truncated": True,
+            }
+
+        visited = visited | {vhash}
+
+        # Get lineage for this vhash
+        cursor = self.connection.execute(
+            """SELECT function_name, function_hash, inputs, constants
+               FROM _lineage WHERE output_vhash = ?""",
+            (vhash,),
+        )
+        row = cursor.fetchone()
+
+        if row is None:
+            # No lineage - this is a source/leaf node
+            return {
+                "type": type_name,
+                "vhash": vhash,
+                "function": None,
+                "source": "manual",
+            }
+
+        inputs_json = json.loads(row["inputs"])
+        constants_json = json.loads(row["constants"])
+
+        # Recursively process inputs
+        processed_inputs = []
+        for inp in inputs_json:
+            if inp.get("source_type") == "variable" and "vhash" in inp:
+                # Saved variable - recurse
+                child = self._build_lineage_tree(
+                    inp["vhash"],
+                    inp.get("type", "Unknown"),
+                    max_depth - 1,
+                    visited,
+                )
+                child["input_name"] = inp.get("name")
+                processed_inputs.append(child)
+            elif inp.get("source_type") == "thunk":
+                # Output from another thunk - try to find by hash
+                # This is trickier since we need to find the vhash
+                processed_inputs.append({
+                    "type": "ThunkOutput",
+                    "input_name": inp.get("name"),
+                    "source_function": inp.get("source_function"),
+                    "source_hash": inp.get("source_hash"),
+                    "output_num": inp.get("output_num"),
+                    "note": "Intermediate thunk output (not saved separately)",
+                })
+            else:
+                # Unknown input type
+                processed_inputs.append({
+                    "type": "Unknown",
+                    "input_name": inp.get("name"),
+                    "raw": inp,
+                })
+
+        return {
+            "type": type_name,
+            "vhash": vhash,
+            "function": row["function_name"],
+            "function_hash": row["function_hash"],
+            "constants": constants_json,
+            "inputs": processed_inputs,
+        }
+
+    def format_lineage(
+        self,
+        variable_class: Type[BaseVariable],
+        version: str | None = None,
+        **metadata,
+    ) -> str:
+        """
+        Get a print-friendly representation of the full lineage.
+
+        Args:
+            variable_class: The type to query
+            version: Specific vhash, or None to use metadata lookup
+            **metadata: Metadata to match (if version not specified)
+
+        Returns:
+            A formatted string showing the computation graph.
+
+        Example output:
+            FinalResult (vhash: abc123...)
+            └── compute_stats [hash: def456...]
+                ├── constants: threshold=0.5
+                └── inputs:
+                    └── FilteredData (vhash: ghi789...)
+                        └── filter [hash: jkl012...]
+                            ├── constants: cutoff=10
+                            └── inputs:
+                                └── RawData (vhash: mno345...)
+                                    └── [source: manual]
+        """
+        lineage = self.get_full_lineage(variable_class, version, **metadata)
+        lines = []
+        self._format_lineage_node(lineage, lines, prefix="", is_last=True)
+        return "\n".join(lines)
+
+    def _format_lineage_node(
+        self,
+        node: dict,
+        lines: list,
+        prefix: str,
+        is_last: bool,
+    ) -> None:
+        """Recursively format a lineage node for printing."""
+        connector = "└── " if is_last else "├── "
+        child_prefix = prefix + ("    " if is_last else "│   ")
+
+        # Format the node header
+        vhash_short = node.get("vhash", "???")[:12]
+        type_name = node.get("type", "Unknown")
+
+        if node.get("truncated"):
+            lines.append(f"{prefix}{connector}{type_name} (vhash: {vhash_short}...) [truncated]")
+            return
+
+        lines.append(f"{prefix}{connector}{type_name} (vhash: {vhash_short}...)")
+
+        # Format function info
+        function = node.get("function")
+        if function is None:
+            source = node.get("source", "unknown")
+            lines.append(f"{child_prefix}└── [source: {source}]")
+            return
+
+        function_hash_short = node.get("function_hash", "???")[:12]
+        lines.append(f"{child_prefix}├── function: {function} [hash: {function_hash_short}...]")
+
+        # Format constants
+        constants = node.get("constants", [])
+        if constants:
+            const_strs = []
+            for c in constants:
+                name = c.get("name", "?")
+                value_repr = c.get("value_repr", str(c.get("value", "?")))
+                # Truncate long values
+                if len(value_repr) > 50:
+                    value_repr = value_repr[:47] + "..."
+                const_strs.append(f"{name}={value_repr}")
+            lines.append(f"{child_prefix}├── constants: {', '.join(const_strs)}")
+
+        # Format inputs
+        inputs = node.get("inputs", [])
+        if inputs:
+            lines.append(f"{child_prefix}└── inputs:")
+            for i, inp in enumerate(inputs):
+                is_last_input = (i == len(inputs) - 1)
+                input_prefix = child_prefix + "    "
+
+                if inp.get("note"):
+                    # Thunk output that wasn't saved
+                    connector2 = "└── " if is_last_input else "├── "
+                    input_name = inp.get("input_name", "?")
+                    src_fn = inp.get("source_function", "?")
+                    lines.append(f"{input_prefix}{connector2}[{input_name}] {src_fn}() -> (not saved)")
+                else:
+                    # Recurse into saved variable
+                    self._format_lineage_node(inp, lines, input_prefix, is_last_input)
+        else:
+            lines.append(f"{child_prefix}└── inputs: (none)")
 
     # -------------------------------------------------------------------------
     # Computation Cache Methods

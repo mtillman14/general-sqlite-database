@@ -293,3 +293,118 @@ class BaseVariable(ABC):
 
         db = db or get_database()
         return db.load(cls, metadata, version=version)
+
+    @classmethod
+    def save_from_dataframe(
+        cls,
+        df: pd.DataFrame,
+        data_column: str,
+        metadata_columns: list[str],
+        db: "DatabaseManager | None" = None,
+        **common_metadata,
+    ) -> list[str]:
+        """
+        Save each row of a DataFrame as a separate database record.
+
+        Use this when a DataFrame contains multiple independent data items,
+        each with its own metadata (e.g., different subjects/trials per row).
+
+        Args:
+            df: DataFrame where each row is a separate data item
+            data_column: Column name containing the data to store
+            metadata_columns: Column names to use as metadata for each row
+            db: Optional explicit database. If None, uses global database.
+            **common_metadata: Additional metadata applied to all rows
+
+        Returns:
+            List of vhashes for each saved record
+
+        Example:
+            # DataFrame with 10 rows (2 subjects x 5 trials)
+            #   Subject  Trial  MyVar
+            #   1        1      0.5
+            #   1        2      0.6
+            #   ...
+
+            vhashes = ScalarValue.save_from_dataframe(
+                df=results_df,
+                data_column="MyVar",
+                metadata_columns=["Subject", "Trial"],
+                experiment="exp1"  # Applied to all rows
+            )
+        """
+        from .database import get_database
+
+        db = db or get_database()
+        vhashes = []
+
+        for _, row in df.iterrows():
+            # Extract row-specific metadata from columns
+            row_metadata = {col: row[col] for col in metadata_columns}
+
+            # Combine with common metadata
+            full_metadata = {**common_metadata, **row_metadata}
+
+            # Extract data and save
+            data = row[data_column]
+            instance = cls(data)
+            vhash = instance.save(db=db, **full_metadata)
+            vhashes.append(vhash)
+
+        return vhashes
+
+    @classmethod
+    def load_to_dataframe(
+        cls,
+        db: "DatabaseManager | None" = None,
+        include_vhash: bool = False,
+        **metadata,
+    ) -> pd.DataFrame:
+        """
+        Load matching records and reconstruct a DataFrame.
+
+        This is the inverse of save_from_dataframe(). Loads all matching
+        records and returns them as a DataFrame with metadata as columns.
+
+        Args:
+            db: Optional explicit database. If None, uses global database.
+            include_vhash: If True, include vhash as a column
+            **metadata: Metadata filter (loads all matching records)
+
+        Returns:
+            DataFrame with columns for each metadata key plus 'data' column
+
+        Example:
+            # Load all records for experiment
+            df = ScalarValue.load_to_dataframe(experiment="exp1")
+            # Returns:
+            #   Subject  Trial  data   (vhash)
+            #   1        1      0.5    abc123...
+            #   1        2      0.6    def456...
+            #   ...
+
+        Raises:
+            NotFoundError: If no matching data found
+            NotRegisteredError: If this variable type is not registered
+        """
+        from .database import get_database
+
+        db = db or get_database()
+
+        # Load all matching records
+        results = db.load(cls, metadata, version="latest")
+
+        # Ensure it's a list
+        if not isinstance(results, list):
+            results = [results]
+
+        # Build DataFrame rows
+        rows = []
+        for var in results:
+            row = dict(var.metadata) if var.metadata else {}
+            row["data"] = var.data
+            if include_vhash:
+                row["vhash"] = var.vhash
+            rows.append(row)
+
+        return pd.DataFrame(rows)
