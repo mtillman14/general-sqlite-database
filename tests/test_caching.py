@@ -619,9 +619,9 @@ class TestAutomaticCacheChecking:
         assert result.data == 20
         assert result.was_cached is False
 
-    def test_auto_cache_class_not_registered(self, configured_db, scalar_class):
-        """If class not registered, function should execute normally."""
-        # Don't register the class - it's not in _registered_types
+    def test_auto_cache_with_registry_cleared(self, configured_db, scalar_class):
+        """Auto-registration via global registry should enable cache hit even when db registry is cleared."""
+        # Save registers the class automatically
         execution_count = [0]
 
         @thunk(n_outputs=1)
@@ -634,13 +634,14 @@ class TestAutomaticCacheChecking:
         scalar_class(result1).save(db=configured_db, subject=1)
         assert execution_count[0] == 1
 
-        # Clear the registered types to simulate new session
+        # Clear the db's registered types to simulate new session
+        # But class is still in global registry via __init_subclass__
         configured_db._registered_types.clear()
 
-        # Second run - class not in registry, should execute
+        # Second run - auto-registration via global registry should find the class
         result2 = compute(10)
-        assert execution_count[0] == 2  # Executed again
-        assert result2.was_cached is False
+        assert execution_count[0] == 1  # NOT executed again - cache hit!
+        assert result2.was_cached is True
 
     def test_auto_cache_multi_output_all_saved(self, configured_db, scalar_class):
         """Multi-output functions should use cache when ALL outputs are saved."""
@@ -791,8 +792,8 @@ class TestGetCachedByKey:
         assert data == 20
         assert cached_vhash == vhash
 
-    def test_returns_none_when_class_not_registered(self, db, scalar_class):
-        """Should return None if variable class not in registry."""
+    def test_returns_cached_via_auto_registration(self, db, scalar_class):
+        """Should return cached results via auto-registration from global registry."""
         db.register(scalar_class)
 
         @thunk(n_outputs=1)
@@ -800,15 +801,18 @@ class TestGetCachedByKey:
             return x * 2
 
         result = compute(10)
-        scalar_class(result).save(db=db, subject=1)
+        vhash = scalar_class(result).save(db=db, subject=1)
 
-        # Clear registry
+        # Clear db registry - but class is still in global registry via __init_subclass__
         db._registered_types.clear()
 
         cache_key = result.pipeline_thunk.compute_cache_key()
         cached = db.get_cached_by_key(cache_key)
 
-        assert cached is None
+        # Auto-registration via global registry should find the class and return cached result
+        assert cached is not None
+        assert len(cached) == 1
+        assert cached[0] == (20, vhash)
 
     def test_returns_none_when_data_deleted(self, db, scalar_class):
         """Should return None if underlying data was deleted."""
@@ -971,12 +975,11 @@ class TestAutoRegistration:
         assert cached[0][0] == 84  # 42 * 2
         assert "AutoRegVar" in db._registered_types  # Now registered
 
-    def test_auto_cache_works_without_explicit_registration(self, db):
+    def test_auto_cache_works_without_explicit_registration(self, configured_db):
         """Full auto-caching should work even without explicit registration."""
         import pandas as pd
-        from scidb import configure_database, get_database
 
-        # Define class (goes into global registry)
+        # Define class (goes into global registry via __init_subclass__)
         class PipelineVar(BaseVariable):
             schema_version = 1
 
@@ -995,15 +998,16 @@ class TestAutoRegistration:
             execution_count += 1
             return x * 10
 
-        # First run: executes
+        # First run: executes (no cache yet)
         result1 = expensive_fn(5)
         assert execution_count == 1
-        PipelineVar(result1).save(db=db, run=1)
+        PipelineVar(result1).save(db=configured_db, run=1)
 
         # Remove from db registry to simulate fresh session
-        del db._registered_types["PipelineVar"]
+        # Class is still in global registry via __init_subclass__
+        del configured_db._registered_types["PipelineVar"]
 
-        # Second run: should hit cache via auto-registration
+        # Second run: should hit cache via auto-registration from global registry
         result2 = expensive_fn(5)
 
         assert result2.was_cached

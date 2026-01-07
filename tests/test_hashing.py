@@ -269,78 +269,91 @@ class TestGenerateVhash:
     """Test generate_vhash function."""
 
     def test_basic_vhash(self):
+        # generate_vhash now takes content_hash (pre-computed) instead of data
+        content_hash = canonical_hash({"value": 42})
         vhash = generate_vhash(
             class_name="TestClass",
             schema_version=1,
-            data={"value": 42},
+            content_hash=content_hash,
             metadata={"subject": 1},
         )
         assert isinstance(vhash, str)
         assert len(vhash) == 16
 
     def test_vhash_deterministic(self):
+        content_hash = canonical_hash({"value": 42})
         vhash1 = generate_vhash(
             class_name="TestClass",
             schema_version=1,
-            data={"value": 42},
+            content_hash=content_hash,
             metadata={"subject": 1},
         )
         vhash2 = generate_vhash(
             class_name="TestClass",
             schema_version=1,
-            data={"value": 42},
+            content_hash=content_hash,
             metadata={"subject": 1},
         )
         assert vhash1 == vhash2
 
     def test_vhash_different_class_name(self):
-        vhash1 = generate_vhash("ClassA", 1, {"value": 42}, {"subject": 1})
-        vhash2 = generate_vhash("ClassB", 1, {"value": 42}, {"subject": 1})
+        content_hash = canonical_hash({"value": 42})
+        vhash1 = generate_vhash("ClassA", 1, content_hash, {"subject": 1})
+        vhash2 = generate_vhash("ClassB", 1, content_hash, {"subject": 1})
         assert vhash1 != vhash2
 
     def test_vhash_different_schema_version(self):
-        vhash1 = generate_vhash("TestClass", 1, {"value": 42}, {"subject": 1})
-        vhash2 = generate_vhash("TestClass", 2, {"value": 42}, {"subject": 1})
+        content_hash = canonical_hash({"value": 42})
+        vhash1 = generate_vhash("TestClass", 1, content_hash, {"subject": 1})
+        vhash2 = generate_vhash("TestClass", 2, content_hash, {"subject": 1})
         assert vhash1 != vhash2
 
     def test_vhash_different_data(self):
-        vhash1 = generate_vhash("TestClass", 1, {"value": 42}, {"subject": 1})
-        vhash2 = generate_vhash("TestClass", 1, {"value": 43}, {"subject": 1})
+        content_hash1 = canonical_hash({"value": 42})
+        content_hash2 = canonical_hash({"value": 43})
+        vhash1 = generate_vhash("TestClass", 1, content_hash1, {"subject": 1})
+        vhash2 = generate_vhash("TestClass", 1, content_hash2, {"subject": 1})
         assert vhash1 != vhash2
 
     def test_vhash_different_metadata(self):
-        vhash1 = generate_vhash("TestClass", 1, {"value": 42}, {"subject": 1})
-        vhash2 = generate_vhash("TestClass", 1, {"value": 42}, {"subject": 2})
+        content_hash = canonical_hash({"value": 42})
+        vhash1 = generate_vhash("TestClass", 1, content_hash, {"subject": 1})
+        vhash2 = generate_vhash("TestClass", 1, content_hash, {"subject": 2})
         assert vhash1 != vhash2
 
     def test_vhash_with_numpy_data(self):
         arr = np.array([1.0, 2.0, 3.0])
-        vhash = generate_vhash("ArrayClass", 1, arr, {"subject": 1})
+        content_hash = canonical_hash(arr)
+        vhash = generate_vhash("ArrayClass", 1, content_hash, {"subject": 1})
         assert isinstance(vhash, str)
         assert len(vhash) == 16
 
     def test_vhash_with_numpy_deterministic(self):
         arr1 = np.array([1.0, 2.0, 3.0])
         arr2 = np.array([1.0, 2.0, 3.0])
-        vhash1 = generate_vhash("ArrayClass", 1, arr1, {"subject": 1})
-        vhash2 = generate_vhash("ArrayClass", 1, arr2, {"subject": 1})
+        content_hash1 = canonical_hash(arr1)
+        content_hash2 = canonical_hash(arr2)
+        vhash1 = generate_vhash("ArrayClass", 1, content_hash1, {"subject": 1})
+        vhash2 = generate_vhash("ArrayClass", 1, content_hash2, {"subject": 1})
         assert vhash1 == vhash2
 
     def test_vhash_metadata_order_independent(self):
         """Metadata order should not affect vhash."""
+        content_hash = canonical_hash({"value": 42})
         vhash1 = generate_vhash(
-            "TestClass", 1, {"value": 42}, {"subject": 1, "trial": 2}
+            "TestClass", 1, content_hash, {"subject": 1, "trial": 2}
         )
         vhash2 = generate_vhash(
-            "TestClass", 1, {"value": 42}, {"trial": 2, "subject": 1}
+            "TestClass", 1, content_hash, {"trial": 2, "subject": 1}
         )
         assert vhash1 == vhash2
 
     def test_vhash_complex_metadata(self):
+        content_hash = canonical_hash({"value": 42})
         vhash = generate_vhash(
             "TestClass",
             1,
-            {"value": 42},
+            content_hash,
             {
                 "subject": 1,
                 "trial": 2,

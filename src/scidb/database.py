@@ -1,6 +1,7 @@
 """Database connection and management."""
 
 import json
+import os
 import sqlite3
 import threading
 from datetime import datetime
@@ -15,7 +16,7 @@ from .exceptions import (
     NotFoundError,
     NotRegisteredError,
 )
-from .hashing import generate_vhash
+from .hashing import generate_vhash, canonical_hash
 from .preview import generate_preview
 from .storage import deserialize_dataframe, register_adapters, serialize_dataframe
 from .variable import BaseVariable
@@ -23,6 +24,19 @@ from .variable import BaseVariable
 
 # Global database instance (thread-local for safety)
 _local = threading.local()
+
+
+def get_user_id() -> str | None:
+    """
+    Get the current user ID from environment.
+
+    The user ID is used for attribution in cross-user provenance tracking.
+    Set the SCIDB_USER_ID environment variable to identify the current user.
+
+    Returns:
+        The user ID string, or None if not set.
+    """
+    return os.environ.get("SCIDB_USER_ID")
 
 
 def configure_database(db_path: str | Path) -> "DatabaseManager":
@@ -123,6 +137,18 @@ class DatabaseManager:
         """
         )
 
+        # Content-addressed data storage (deduplicated)
+        self.connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS _data (
+                content_hash TEXT PRIMARY KEY,
+                data BLOB NOT NULL,
+                created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                created_by TEXT
+            )
+        """
+        )
+
         # Lineage tracking table
         self.connection.execute(
             """
@@ -134,6 +160,7 @@ class DatabaseManager:
                 function_hash TEXT NOT NULL,
                 inputs JSON NOT NULL,
                 constants JSON NOT NULL,
+                user_id TEXT,
                 created_at TEXT DEFAULT CURRENT_TIMESTAMP
             )
         """
@@ -196,17 +223,20 @@ class DatabaseManager:
         table_name = variable_class.table_name()
         schema_version = variable_class.schema_version
 
-        # Create the data table
+        # Create the metadata table (data is stored in _data table)
         self.connection.execute(
             f"""
             CREATE TABLE IF NOT EXISTS {table_name} (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 vhash TEXT UNIQUE NOT NULL,
+                content_hash TEXT NOT NULL,
+                lineage_hash TEXT,
                 schema_version INTEGER NOT NULL,
                 metadata JSON NOT NULL,
                 preview TEXT,
-                data BLOB NOT NULL,
-                created_at TEXT DEFAULT CURRENT_TIMESTAMP
+                user_id TEXT,
+                created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (content_hash) REFERENCES _data(content_hash)
             )
         """
         )
@@ -216,6 +246,22 @@ class DatabaseManager:
             f"""
             CREATE INDEX IF NOT EXISTS idx_{table_name}_vhash
             ON {table_name}(vhash)
+        """
+        )
+
+        # Create index on content_hash for deduplication lookups
+        self.connection.execute(
+            f"""
+            CREATE INDEX IF NOT EXISTS idx_{table_name}_content_hash
+            ON {table_name}(content_hash)
+        """
+        )
+
+        # Create index on lineage_hash for cache lookups
+        self.connection.execute(
+            f"""
+            CREATE INDEX IF NOT EXISTS idx_{table_name}_lineage_hash
+            ON {table_name}(lineage_hash)
         """
         )
 
@@ -283,9 +329,13 @@ class DatabaseManager:
         variable: BaseVariable,
         metadata: dict,
         lineage: "LineageRecord | None" = None,
+        lineage_hash: str | None = None,
     ) -> str:
         """
         Save a variable to the database.
+
+        Data is stored in the shared _data table (content-addressed, deduplicated).
+        Metadata entries are stored in the variable-specific table.
 
         If the exact same data+metadata already exists (same vhash),
         this is a no-op and returns the existing vhash.
@@ -294,22 +344,29 @@ class DatabaseManager:
             variable: The variable instance to save
             metadata: Addressing metadata
             lineage: Optional lineage record if data came from a thunk
+            lineage_hash: Optional pre-computed lineage hash for cache key computation
 
         Returns:
             The vhash of the saved/existing data
         """
         table_name = self._ensure_registered(type(variable))
         type_name = variable.__class__.__name__
+        user_id = get_user_id()
 
-        # Generate vhash
+        # Serialize data and compute content hash
+        df = variable.to_db()
+        data_blob = serialize_dataframe(df)
+        content_hash = canonical_hash(variable.data)
+
+        # Generate vhash (using content_hash, not raw data)
         vhash = generate_vhash(
             class_name=type_name,
             schema_version=variable.schema_version,
-            data=variable.data,
+            content_hash=content_hash,
             metadata=metadata,
         )
 
-        # Check if already exists (idempotent save)
+        # Check if metadata entry already exists (idempotent save)
         cursor = self.connection.execute(
             f"SELECT vhash FROM {table_name} WHERE vhash = ?",
             (vhash,),
@@ -317,20 +374,33 @@ class DatabaseManager:
         if cursor.fetchone() is not None:
             return vhash  # Already saved
 
-        # Serialize and save
-        df = variable.to_db()
-        data_blob = serialize_dataframe(df)
+        now = datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")
+
+        # Store data in _data table if not already there (deduplicated)
+        cursor = self.connection.execute(
+            "SELECT content_hash FROM _data WHERE content_hash = ?",
+            (content_hash,),
+        )
+        if cursor.fetchone() is None:
+            self.connection.execute(
+                """
+                INSERT INTO _data (content_hash, data, created_at, created_by)
+                VALUES (?, ?, ?, ?)
+            """,
+                (content_hash, data_blob, now, user_id),
+            )
+
+        # Store metadata entry in variable table
         metadata_json = json.dumps(metadata, sort_keys=True)
         preview_str = generate_preview(df)
 
-        now = datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")
         self.connection.execute(
             f"""
             INSERT INTO {table_name}
-            (vhash, schema_version, metadata, preview, data, created_at)
-            VALUES (?, ?, ?, ?, ?, ?)
+            (vhash, content_hash, lineage_hash, schema_version, metadata, preview, user_id, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
         """,
-            (vhash, variable.schema_version, metadata_json, preview_str, data_blob, now),
+            (vhash, content_hash, lineage_hash, variable.schema_version, metadata_json, preview_str, user_id, now),
         )
 
         # Log to version history
@@ -345,7 +415,7 @@ class DatabaseManager:
 
         # Save lineage if provided
         if lineage is not None:
-            self._save_lineage(vhash, type_name, lineage, now)
+            self._save_lineage(vhash, type_name, lineage, now, user_id)
 
         self.connection.commit()
         return vhash
@@ -356,14 +426,15 @@ class DatabaseManager:
         output_type: str,
         lineage: "LineageRecord",
         timestamp: str,
+        user_id: str | None = None,
     ) -> None:
         """Save lineage record for a variable."""
         self.connection.execute(
             """
             INSERT OR REPLACE INTO _lineage
             (output_vhash, output_type, function_name, function_hash,
-             inputs, constants, created_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
+             inputs, constants, user_id, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
         """,
             (
                 output_vhash,
@@ -372,6 +443,7 @@ class DatabaseManager:
                 lineage.function_hash,
                 json.dumps(lineage.inputs),
                 json.dumps(lineage.constants),
+                user_id,
                 timestamp,
             ),
         )
@@ -402,7 +474,10 @@ class DatabaseManager:
         if version != "latest" and version is not None:
             # Load specific version by vhash
             cursor = self.connection.execute(
-                f"SELECT vhash, metadata, data FROM {table_name} WHERE vhash = ?",
+                f"""SELECT v.vhash, v.content_hash, v.lineage_hash, v.metadata, d.data
+                    FROM {table_name} v
+                    JOIN _data d ON v.content_hash = d.content_hash
+                    WHERE v.vhash = ?""",
                 (version,),
             )
             row = cursor.fetchone()
@@ -416,7 +491,7 @@ class DatabaseManager:
         conditions = []
         params = []
         for key, value in metadata.items():
-            conditions.append(f"json_extract(metadata, '$.{key}') = ?")
+            conditions.append(f"json_extract(v.metadata, '$.{key}') = ?")
             if isinstance(value, (dict, list)):
                 params.append(json.dumps(value))
             else:
@@ -425,9 +500,11 @@ class DatabaseManager:
         where_clause = " AND ".join(conditions) if conditions else "1=1"
 
         cursor = self.connection.execute(
-            f"""SELECT vhash, metadata, data FROM {table_name}
+            f"""SELECT v.vhash, v.content_hash, v.lineage_hash, v.metadata, d.data
+                FROM {table_name} v
+                JOIN _data d ON v.content_hash = d.content_hash
                 WHERE {where_clause}
-                ORDER BY created_at DESC""",
+                ORDER BY v.created_at DESC""",
             params,
         )
         rows = cursor.fetchall()
@@ -456,6 +533,8 @@ class DatabaseManager:
         instance = variable_class(data)
         instance._vhash = row["vhash"]
         instance._metadata = json.loads(row["metadata"])
+        instance._content_hash = row["content_hash"]
+        instance._lineage_hash = row["lineage_hash"]  # May be None for raw data
 
         return instance
 

@@ -85,16 +85,19 @@ def _serialize_for_hash(obj: Any) -> bytes:
 def generate_vhash(
     class_name: str,
     schema_version: int,
-    data: Any,
+    content_hash: str,
     metadata: dict,
 ) -> str:
     """
     Generate a version hash for a variable.
 
+    The vhash uniquely identifies a variable by its type, schema, content,
+    and metadata. It is used for addressing/querying data.
+
     Components:
     - class_name: The variable type (e.g., "RotationMatrix")
     - schema_version: Integer version of the to_db/from_db schema
-    - data: The actual data being stored
+    - content_hash: Pre-computed hash of the data content
     - metadata: The addressing metadata (subject, trial, etc.)
 
     Returns:
@@ -103,7 +106,7 @@ def generate_vhash(
     components = [
         f"class:{class_name}",
         f"schema:{schema_version}",
-        f"data:{canonical_hash(data)}",
+        f"content:{content_hash}",
         f"meta:{canonical_hash(metadata)}",
     ]
     combined = "|".join(components).encode("utf-8")

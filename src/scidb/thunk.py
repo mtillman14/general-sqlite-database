@@ -164,18 +164,28 @@ class PipelineThunk:
 
     @property
     def hash(self) -> str:
-        """Dynamic hash based on thunk + inputs."""
-        # Create a stable hash of inputs
+        """Dynamic hash based on thunk + inputs (lineage-based, metadata-agnostic)."""
+        from .hashing import canonical_hash
+
+        # Create a stable hash of inputs based on lineage
         input_parts = []
         for name in sorted(self.inputs.keys()):
             value = self.inputs[name]
             if isinstance(value, OutputThunk):
+                # Freshly computed: use pipeline hash (already lineage-based)
                 input_parts.append((name, "output", value.hash))
-            elif self._is_base_variable(value) and value._vhash is not None:
-                input_parts.append((name, "variable", value._vhash))
+            elif self._is_base_variable(value):
+                # Loaded from DB: use stored lineage_hash if available
+                if hasattr(value, "_lineage_hash") and value._lineage_hash is not None:
+                    input_parts.append((name, "lineage", value._lineage_hash))
+                else:
+                    # Raw data with no lineage: use content + type
+                    content_hash = canonical_hash(value.data)
+                    type_name = value.__class__.__name__
+                    input_parts.append((name, "raw", type_name, content_hash))
             else:
-                # For other values, use repr (may not be perfectly stable)
-                input_parts.append((name, "value", repr(value)))
+                # Literal value: use content hash
+                input_parts.append((name, "value", canonical_hash(value)))
 
         input_str = str(input_parts)
         combined = f"{self.thunk.hash}{STRING_REPR_DELIMITER}{input_str}"
@@ -273,9 +283,14 @@ class PipelineThunk:
         """
         Compute a cache key for this pipeline invocation.
 
-        The cache key is based on:
+        The cache key is based on LINEAGE (how values were computed), not metadata:
         - Function hash (bytecode + constants)
-        - Input hashes (vhash for saved variables, content hash for others)
+        - For OutputThunk inputs: use lineage-based hash
+        - For BaseVariable inputs: use lineage_hash if computed, else content+type
+        - For raw values: use content hash
+
+        This enables cross-user caching (different metadata, same computation)
+        while preventing false cache hits (same content, different computation).
 
         Returns:
             SHA-256 hash suitable for cache lookup
@@ -286,13 +301,19 @@ class PipelineThunk:
         for name in sorted(self.inputs.keys()):
             value = self.inputs[name]
             if isinstance(value, OutputThunk):
-                # Use the output thunk's hash
+                # Freshly computed: use pipeline hash (already lineage-based)
                 input_hashes.append((name, "output", value.hash))
-            elif self._is_base_variable(value) and value._vhash is not None:
-                # Use the saved variable's vhash
-                input_hashes.append((name, "variable", value._vhash))
+            elif self._is_base_variable(value):
+                # Loaded from DB: use stored lineage_hash if available
+                if hasattr(value, "_lineage_hash") and value._lineage_hash is not None:
+                    input_hashes.append((name, "lineage", value._lineage_hash))
+                else:
+                    # Raw data with no lineage: use content + type
+                    content_hash = canonical_hash(value.data)
+                    type_name = value.__class__.__name__
+                    input_hashes.append((name, "raw", type_name, content_hash))
             else:
-                # Compute content hash for other values
+                # Literal value: use content hash
                 input_hashes.append((name, "value", canonical_hash(value)))
 
         cache_input = f"{self.thunk.hash}{STRING_REPR_DELIMITER}{input_hashes}"

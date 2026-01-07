@@ -183,7 +183,9 @@ class TestRegister:
         assert "vhash" in columns
         assert "schema_version" in columns
         assert "metadata" in columns
-        assert "data" in columns
+        assert "content_hash" in columns  # Data is now in _data table, referenced by content_hash
+        assert "lineage_hash" in columns  # For lineage-based caching
+        assert "user_id" in columns  # For cross-user attribution
         assert "created_at" in columns
 
 

@@ -66,6 +66,8 @@ class BaseVariable(ABC):
         self.data = data
         self._vhash: str | None = None
         self._metadata: dict | None = None
+        self._content_hash: str | None = None
+        self._lineage_hash: str | None = None
 
     @property
     def vhash(self) -> str | None:
@@ -76,6 +78,21 @@ class BaseVariable(ABC):
     def metadata(self) -> dict | None:
         """The metadata, set after save() or load()."""
         return self._metadata
+
+    @property
+    def content_hash(self) -> str | None:
+        """The content hash (data identity), set after save() or load()."""
+        return self._content_hash
+
+    @property
+    def lineage_hash(self) -> str | None:
+        """
+        The lineage hash (computational identity), set after save() or load().
+
+        For raw data (not from a thunk), this is None.
+        For computed data, this captures how the value was computed.
+        """
+        return self._lineage_hash
 
     @abstractmethod
     def to_db(self) -> pd.DataFrame:
@@ -254,20 +271,23 @@ class BaseVariable(ABC):
 
         # Extract lineage and cache info if data came from a thunk
         lineage = None
+        lineage_hash = None
         output_thunk = None
         if isinstance(self.data, OutputThunk):
             output_thunk = self.data
             lineage = extract_lineage(output_thunk)
+            # Compute lineage_hash for cache key computation on reload
+            lineage_hash = output_thunk.pipeline_thunk.compute_cache_key()
             # Unwrap to get actual value for hashing and storage
             self.data = get_raw_value(output_thunk)
 
-        vhash = db.save(self, metadata, lineage=lineage)
+        vhash = db.save(self, metadata, lineage=lineage, lineage_hash=lineage_hash)
         self._vhash = vhash
         self._metadata = metadata
 
         # Populate computation cache if this came from a thunk
         if output_thunk is not None:
-            cache_key = output_thunk.pipeline_thunk.compute_cache_key()
+            cache_key = lineage_hash  # Already computed above
             db.cache_computation(
                 cache_key=cache_key,
                 function_name=output_thunk.pipeline_thunk.thunk.fcn.__name__,

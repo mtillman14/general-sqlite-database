@@ -47,7 +47,7 @@ Example:
     provenance = db.get_provenance(RotationMatrix, subject=1, trial=1, stage="processed")
 """
 
-from .database import DatabaseManager, configure_database, get_database
+from .database import DatabaseManager, configure_database, get_database, get_user_id
 from .exceptions import (
     DatabaseNotConfiguredError,
     NotFoundError,
@@ -68,6 +68,7 @@ __all__ = [
     # Configuration
     "configure_database",
     "get_database",
+    "get_user_id",
     # Thunk system
     "thunk",
     "Thunk",
