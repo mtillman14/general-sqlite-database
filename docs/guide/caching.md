@@ -95,7 +95,7 @@ result = process(input_data)
 cached = check_cache(result.pipeline_thunk, OutputVar, db=db)
 
 if cached:
-    print(f"Cache hit! vhash: {cached.cached_vhash}")
+    print(f"Cache hit! vhash: {cached.cached_id}")
 else:
     print("Cache miss, saving...")
     OutputVar(result).save(db=db, subject=1)
@@ -168,7 +168,7 @@ cached = check_cache(result.pipeline_thunk, MyVar, db=db)
 
 if cached:
     cached.was_cached     # True
-    cached.cached_vhash   # "abc123..."
+    cached.cached_id   # "abc123..."
     cached.data           # The cached data
 ```
 

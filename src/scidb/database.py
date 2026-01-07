@@ -43,13 +43,20 @@ def configure_database(db_path: str | Path) -> "DatabaseManager":
     """
     Configure the global database connection.
 
+    Also registers the database as a cache backend for the thunk library,
+    enabling automatic computation caching.
+
     Args:
         db_path: Path to the SQLite database file
 
     Returns:
         The DatabaseManager instance
     """
+    from thunk import configure_cache
+
     _local.database = DatabaseManager(db_path)
+    # Register as cache backend for thunk library
+    configure_cache(_local.database)
     return _local.database
 
 
@@ -1063,6 +1070,24 @@ class DatabaseManager:
             results.append((var.data, output_vhash))
 
         return results
+
+    def get_cached(
+        self, cache_key: str, n_outputs: int = 1
+    ) -> list[tuple] | None:
+        """
+        Look up cached results by cache key.
+
+        This method implements the thunk.CacheBackend protocol.
+
+        Args:
+            cache_key: The cache key (hash of function + inputs)
+            n_outputs: Number of outputs expected
+
+        Returns:
+            List of (data, identifier) tuples if ALL outputs found,
+            None otherwise.
+        """
+        return self.get_cached_by_key(cache_key, n_outputs)
 
     def invalidate_cache(
         self,

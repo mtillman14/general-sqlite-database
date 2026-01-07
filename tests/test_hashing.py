@@ -4,7 +4,7 @@ import pytest
 import numpy as np
 import pandas as pd
 
-from scidb.hashing import canonical_hash, generate_vhash, _serialize_for_hash
+from scidb.hashing import canonical_hash, generate_vhash
 
 
 # Module-level class for pickle fallback test (pickle can't serialize local classes)

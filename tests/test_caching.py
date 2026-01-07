@@ -280,8 +280,8 @@ class TestCheckCacheHelper:
 
         assert cached is None
 
-    def test_check_cache_cached_vhash(self, db, scalar_class):
-        """Cached OutputThunk should have cached_vhash set."""
+    def test_check_cache_cached_id(self, db, scalar_class):
+        """Cached OutputThunk should have cached_id set."""
         db.register(scalar_class)
 
         @thunk(n_outputs=1)
@@ -295,7 +295,7 @@ class TestCheckCacheHelper:
         result2 = process(10)
         cached = check_cache(result2.pipeline_thunk, scalar_class, db=db)
 
-        assert cached.cached_vhash == original_vhash
+        assert cached.cached_id == original_vhash
 
 
 class TestOutputThunkCacheProperties:
@@ -309,13 +309,13 @@ class TestOutputThunkCacheProperties:
         result = process(10)
         assert result.was_cached is False
 
-    def test_cached_vhash_none_by_default(self):
+    def test_cached_id_none_by_default(self):
         @thunk(n_outputs=1)
         def process(x):
             return x * 2
 
         result = process(10)
-        assert result.cached_vhash is None
+        assert result.cached_id is None
 
     def test_was_cached_true_when_from_cache(self, db, scalar_class):
         """OutputThunk from cache should have was_cached=True."""
@@ -564,7 +564,7 @@ class TestAutomaticCacheChecking:
         result2 = compute(7)
         assert result2.data == 21
         assert result2.was_cached is True
-        assert result2.cached_vhash == vhash
+        assert result2.cached_id == vhash
         assert result2.is_complete is True
 
     def test_auto_cache_miss_executes_function(self, configured_db, scalar_class):
@@ -788,9 +788,9 @@ class TestGetCachedByKey:
 
         assert cached is not None
         assert len(cached) == 1
-        data, cached_vhash = cached[0]
+        data, cached_id = cached[0]
         assert data == 20
-        assert cached_vhash == vhash
+        assert cached_id == vhash
 
     def test_returns_cached_via_auto_registration(self, db, scalar_class):
         """Should return cached results via auto-registration from global registry."""

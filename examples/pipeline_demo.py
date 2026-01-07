@@ -316,7 +316,7 @@ def main():
         if cached:
             print(f"    CACHE HIT! Found cached result.")
             print(f"    was_cached: {cached.was_cached}")
-            print(f"    cached_vhash: {cached.cached_vhash[:16]}...")
+            print(f"    cached_id: {cached.cached_id[:16]}...")
             print(f"    Value matches: {cached.data == temp_stats_2.data}")
         else:
             print("    Cache miss (unexpected)")

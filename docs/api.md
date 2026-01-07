@@ -229,7 +229,7 @@ Wraps a function output with lineage.
 | `data` | `Any` | Computed result |
 | `is_complete` | `bool` | Whether computed |
 | `was_cached` | `bool` | From cache |
-| `cached_vhash` | `str \| None` | Cached version hash |
+| `cached_id` | `str \| None` | Cached version hash |
 | `hash` | `str` | Lineage hash |
 
 ---
