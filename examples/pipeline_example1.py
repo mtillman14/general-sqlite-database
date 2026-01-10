@@ -25,9 +25,19 @@ class EMGData(BaseVariable):
 
 
 # Create specialized types for each processing stage
-RawEMGData = EMGData.for_type("raw")
-FilteredEMGData = EMGData.for_type("filtered")
-MaxEMGData = EMGData.for_type("max")
+class RawEMGData(EMGData):
+    """Raw EMG data before filtering."""
+    pass
+
+
+class FilteredEMGData(EMGData):
+    """Filtered EMG data."""
+    pass
+
+
+class MaxEMGData(EMGData):
+    """Maximum EMG values."""
+    pass
 
 
 # =============================================================================

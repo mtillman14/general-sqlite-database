@@ -892,8 +892,8 @@ class TestAutoRegistration:
         assert "MyTestVar" in BaseVariable._all_subclasses
         assert BaseVariable._all_subclasses["MyTestVar"] is MyTestVar
 
-    def test_for_type_adds_to_global_registry(self):
-        """for_type() created classes should be in global registry."""
+    def test_subclass_adds_to_global_registry(self):
+        """Subclasses should be added to global registry."""
 
         class TypedVar(BaseVariable):
             schema_version = 1
@@ -907,10 +907,11 @@ class TestAutoRegistration:
             def from_db(cls, df):
                 return df["value"].iloc[0]
 
-        SpecializedVar = TypedVar.for_type("specialized")
+        class SpecializedVar(TypedVar):
+            pass
 
-        assert "TypedVarSpecialized" in BaseVariable._all_subclasses
-        assert BaseVariable._all_subclasses["TypedVarSpecialized"] is SpecializedVar
+        assert "SpecializedVar" in BaseVariable._all_subclasses
+        assert BaseVariable._all_subclasses["SpecializedVar"] is SpecializedVar
 
     def test_get_subclass_by_name(self):
         """get_subclass_by_name should find classes in global registry."""

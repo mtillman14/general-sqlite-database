@@ -38,9 +38,7 @@ class MyVariable(BaseVariable):
 | `load_to_dataframe(db=None, include_vhash=False, **metadata)` | Load matching records as DataFrame |
 | `to_csv(path)` | Export data to CSV file |
 | `get_preview()` | Get human-readable data summary |
-| `for_type(type_name=None)` | Create specialized subclass |
 | `table_name()` | Get SQLite table name |
-| `get_type_suffix()` | Get type suffix (if specialized) |
 
 ---
 

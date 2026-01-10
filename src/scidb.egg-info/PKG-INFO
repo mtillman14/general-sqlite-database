@@ -18,6 +18,7 @@ Description-Content-Type: text/markdown
 Requires-Dist: numpy>=1.20.0
 Requires-Dist: pandas>=1.3.0
 Requires-Dist: pyarrow>=10.0.0
+Requires-Dist: thunk>=0.1.0
 Provides-Extra: dev
 Requires-Dist: pytest>=7.0.0; extra == "dev"
 Requires-Dist: pytest-cov>=4.0.0; extra == "dev"

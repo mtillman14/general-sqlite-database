@@ -107,6 +107,7 @@ def extract_lineage(output_thunk: OutputThunk) -> LineageRecord:
             )
 
             if vhash is not None:
+                # Saved variable - can be dereferenced later
                 inputs.append(
                     {
                         "name": name,
@@ -117,21 +118,36 @@ def extract_lineage(output_thunk: OutputThunk) -> LineageRecord:
                     }
                 )
             else:
-                # Unsaved variable - treat as constant
-                try:
-                    data = getattr(value, "data", value)
-                    value_hash = canonical_hash(data)
-                except Exception:
-                    value_hash = "unhashable"
+                # Unsaved variable - still an input, but no vhash to reference
+                inner_data = getattr(value, "data", None)
+                if isinstance(inner_data, OutputThunk):
+                    # Unsaved variable wrapping an OutputThunk - can trace lineage
+                    inputs.append(
+                        {
+                            "name": name,
+                            "source_type": "unsaved_variable",
+                            "type": type(value).__name__,
+                            "inner_source": "thunk",
+                            "source_function": inner_data.pipeline_thunk.thunk.fcn.__name__,
+                            "source_hash": inner_data.hash,
+                            "output_num": inner_data.output_num,
+                        }
+                    )
+                else:
+                    # Unsaved variable with raw data - store content hash
+                    try:
+                        value_hash = canonical_hash(inner_data if inner_data is not None else value)
+                    except Exception:
+                        value_hash = "unhashable"
 
-                constants.append(
-                    {
-                        "name": name,
-                        "value_hash": value_hash,
-                        "value_repr": repr(value)[:200],
-                        "value_type": type(value).__name__,
-                    }
-                )
+                    inputs.append(
+                        {
+                            "name": name,
+                            "source_type": "unsaved_variable",
+                            "type": type(value).__name__,
+                            "content_hash": value_hash,
+                        }
+                    )
         else:
             # Input is a constant/literal
             try:
@@ -209,3 +225,107 @@ def _is_trackable_variable(obj: Any) -> bool:
         and hasattr(obj, "to_db")
         and hasattr(obj, "from_db")
     )
+
+
+def find_unsaved_variables(
+    output_thunk: OutputThunk,
+    max_depth: int = 100,
+) -> list[tuple[Any, str]]:
+    """
+    Find all unsaved BaseVariables in the upstream chain of an OutputThunk.
+
+    Traverses the in-memory lineage chain to find any BaseVariable that
+    hasn't been saved (has no vhash). This is used by strict lineage mode
+    to validate that all intermediates are saved.
+
+    Args:
+        output_thunk: The OutputThunk to start traversal from
+        max_depth: Maximum recursion depth to prevent infinite loops
+
+    Returns:
+        List of (variable, path) tuples where:
+        - variable: The unsaved BaseVariable instance
+        - path: String describing how we got there (e.g., "filter() -> arg_0")
+    """
+    unsaved = []
+    visited = set()
+
+    def traverse(thunk_or_var: Any, path: str, depth: int) -> None:
+        if depth <= 0:
+            return
+
+        # Avoid cycles
+        obj_id = id(thunk_or_var)
+        if obj_id in visited:
+            return
+        visited.add(obj_id)
+
+        if isinstance(thunk_or_var, OutputThunk):
+            # Traverse into the pipeline thunk's inputs
+            pt = thunk_or_var.pipeline_thunk
+            func_name = pt.thunk.fcn.__name__
+            for name, value in pt.inputs.items():
+                input_path = f"{func_name}() -> {name}" if not path else f"{path} -> {func_name}() -> {name}"
+                traverse(value, input_path, depth - 1)
+
+        elif _is_trackable_variable(thunk_or_var):
+            vhash = getattr(thunk_or_var, "_vhash", None) or getattr(thunk_or_var, "vhash", None)
+            if vhash is None:
+                # Found an unsaved variable
+                unsaved.append((thunk_or_var, path))
+
+                # Check if it wraps an OutputThunk - if so, continue traversing
+                inner_data = getattr(thunk_or_var, "data", None)
+                if isinstance(inner_data, OutputThunk):
+                    traverse(inner_data, path, depth - 1)
+
+    traverse(output_thunk, "", max_depth)
+    return unsaved
+
+
+def get_upstream_lineage(
+    output_thunk: OutputThunk,
+    max_depth: int = 100,
+) -> list[dict]:
+    """
+    Get lineage information for all upstream computations, including through
+    unsaved variables.
+
+    This traverses the full in-memory chain, extracting lineage even for
+    unsaved intermediate variables (ephemeral mode).
+
+    Args:
+        output_thunk: The OutputThunk to start from
+        max_depth: Maximum recursion depth
+
+    Returns:
+        List of lineage dicts, one per upstream computation
+    """
+    lineages = []
+    visited = set()
+
+    def traverse(thunk: OutputThunk, depth: int) -> None:
+        if depth <= 0:
+            return
+
+        thunk_id = id(thunk)
+        if thunk_id in visited:
+            return
+        visited.add(thunk_id)
+
+        # Extract lineage for this thunk
+        lineage = extract_lineage(thunk)
+        lineages.append(lineage.to_dict())
+
+        # Recurse into input OutputThunks
+        for name, value in thunk.pipeline_thunk.inputs.items():
+            if isinstance(value, OutputThunk):
+                traverse(value, depth - 1)
+            elif _is_trackable_variable(value):
+                # Check if unsaved variable wraps an OutputThunk
+                inner = getattr(value, "data", None)
+                if isinstance(inner, OutputThunk):
+                    traverse(inner, depth - 1)
+
+    traverse(output_thunk, max_depth)
+    return lineages

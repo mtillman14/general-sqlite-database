@@ -120,20 +120,21 @@ filtered = thunked_filtfilt(b.data, a.data, raw_data)
 SignalData(filtered).save(subject=1, stage="filtered")
 ```
 
-## 7. Specialized Types with `for_type()`
+## 7. Specialized Types via Subclassing
 
-When one variable class represents multiple data types:
+When one variable class represents multiple data types, create subclasses:
 
 ```python
 # Create specialized types - each gets its own table
-Temperature = SignalData.for_type("temperature")
-Humidity = SignalData.for_type("humidity")
+class Temperature(SignalData):
+    pass  # Table: temperature
+
+class Humidity(SignalData):
+    pass  # Table: humidity
 
 # Data stored in separate tables (auto-registered on first save)
 Temperature(temp_array).save(sensor=1, day="monday")
 Humidity(humid_array).save(sensor=1, day="monday")
-
-# Tables: signal_data_temperature, signal_data_humidity
 ```
 
 ## Next Steps

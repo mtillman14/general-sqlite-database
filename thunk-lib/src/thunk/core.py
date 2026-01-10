@@ -245,10 +245,16 @@ class PipelineThunk:
                 if lineage_hash is not None:
                     input_parts.append((name, "lineage", lineage_hash))
                 else:
-                    # Raw data with no lineage: use content + type
-                    content_hash = canonical_hash(getattr(value, "data", value))
-                    type_name = value.__class__.__name__
-                    input_parts.append((name, "raw", type_name, content_hash))
+                    # Raw data with no lineage: check if it wraps an OutputThunk
+                    inner_data = getattr(value, "data", value)
+                    if isinstance(inner_data, OutputThunk):
+                        # Unsaved variable wrapping OutputThunk - use the thunk's hash
+                        input_parts.append((name, "unsaved_thunk", value.__class__.__name__, inner_data.hash))
+                    else:
+                        # Raw data: use content + type
+                        content_hash = canonical_hash(inner_data)
+                        type_name = value.__class__.__name__
+                        input_parts.append((name, "raw", type_name, content_hash))
             else:
                 # Literal value: use content hash
                 input_parts.append((name, "value", canonical_hash(value)))
@@ -288,13 +294,7 @@ class PipelineThunk:
             resolved_args = []
             for arg in args:
                 if self.unwrap:
-                    # Unwrap OutputThunk and trackable variables to raw data
-                    if isinstance(arg, OutputThunk):
-                        resolved_args.append(arg.data)
-                    elif self._is_trackable_variable(arg):
-                        resolved_args.append(getattr(arg, "data", arg))
-                    else:
-                        resolved_args.append(arg)
+                    resolved_args.append(self._deep_unwrap(arg))
                 else:
                     # Pass through as-is (for debugging/inspection)
                     resolved_args.append(arg)
@@ -302,12 +302,7 @@ class PipelineThunk:
             resolved_kwargs = {}
             for k, v in kwargs.items():
                 if self.unwrap:
-                    if isinstance(v, OutputThunk):
-                        resolved_kwargs[k] = v.data
-                    elif self._is_trackable_variable(v):
-                        resolved_kwargs[k] = getattr(v, "data", v)
-                    else:
-                        resolved_kwargs[k] = v
+                    resolved_kwargs[k] = self._deep_unwrap(v)
                 else:
                     resolved_kwargs[k] = v
 
@@ -347,6 +342,28 @@ class PipelineThunk:
             and hasattr(obj, "from_db")
         )
 
+    def _deep_unwrap(self, value: Any) -> Any:
+        """Recursively unwrap OutputThunks and trackable variables to raw data.
+
+        Handles cases like:
+        - OutputThunk -> raw data
+        - BaseVariable -> raw data
+        - BaseVariable wrapping OutputThunk -> raw data (recursive)
+        """
+        # Unwrap OutputThunk
+        if isinstance(value, OutputThunk):
+            return value.data
+
+        # Unwrap trackable variable (e.g., BaseVariable)
+        if self._is_trackable_variable(value):
+            inner = getattr(value, "data", value)
+            # If the variable's data is itself an OutputThunk, unwrap that too
+            if isinstance(inner, OutputThunk):
+                return inner.data
+            return inner
+
+        return value
+
     def compute_cache_key(self) -> str:
         """
         Compute a cache key for this pipeline invocation.
@@ -377,10 +394,16 @@ class PipelineThunk:
                 if lineage_hash is not None:
                     input_hashes.append((name, "lineage", lineage_hash))
                 else:
-                    # Raw data with no lineage: use content + type
-                    content_hash = canonical_hash(getattr(value, "data", value))
-                    type_name = value.__class__.__name__
-                    input_hashes.append((name, "raw", type_name, content_hash))
+                    # Raw data with no lineage: check if it wraps an OutputThunk
+                    inner_data = getattr(value, "data", value)
+                    if isinstance(inner_data, OutputThunk):
+                        # Unsaved variable wrapping OutputThunk - use the thunk's hash
+                        input_hashes.append((name, "unsaved_thunk", value.__class__.__name__, inner_data.hash))
+                    else:
+                        # Raw data: use content + type
+                        content_hash = canonical_hash(inner_data)
+                        type_name = value.__class__.__name__
+                        input_hashes.append((name, "raw", type_name, content_hash))
             else:
                 # Literal value: use content hash
                 input_hashes.append((name, "value", canonical_hash(value)))

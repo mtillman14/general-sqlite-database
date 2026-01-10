@@ -53,8 +53,10 @@ from .hashing import canonical_hash
 from .lineage import (
     LineageRecord,
     extract_lineage,
+    find_unsaved_variables,
     get_lineage_chain,
     get_raw_value,
+    get_upstream_lineage,
 )
 
 __version__ = "0.1.0"
@@ -73,8 +75,10 @@ __all__ = [
     # Lineage
     "LineageRecord",
     "extract_lineage",
+    "find_unsaved_variables",
     "get_lineage_chain",
     "get_raw_value",
+    "get_upstream_lineage",
     # Hashing
     "canonical_hash",
 ]

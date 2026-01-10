@@ -47,6 +47,7 @@ tests/test_hashing.py
 tests/test_init.py
 tests/test_integration.py
 tests/test_lineage.py
+tests/test_lineage_mode.py
 tests/test_preview.py
 tests/test_storage.py
 tests/test_thunk.py

@@ -116,50 +116,33 @@ class DictValue(BaseVariable):
         return df.iloc[0].to_dict()
 ```
 
-## Specialized Types with `for_type()`
+## Specialized Types via Subclassing
 
-When one variable class can represent multiple logical data types, use `for_type()` to create specialized subclasses with separate tables:
+When one variable class can represent multiple logical data types, create subclasses to store each in separate tables:
 
 ```python
 class TimeSeries(BaseVariable):
     schema_version = 1
     # ... to_db/from_db implementation
 
-# Create specialized types
-Temperature = TimeSeries.for_type("temperature")
-Humidity = TimeSeries.for_type("humidity")
-Pressure = TimeSeries.for_type("pressure")
+# Create specialized types - each gets its own table
+class Temperature(TimeSeries):
+    """Temperature time series data."""
+    pass  # Table: temperature
 
-# Each gets its own table
-# time_series_temperature, time_series_humidity, time_series_pressure
+class Humidity(TimeSeries):
+    """Humidity time series data."""
+    pass  # Table: humidity
+
+class Pressure(TimeSeries):
+    """Pressure time series data."""
+    pass  # Table: pressure
 ```
 
-### Migrating from One-to-One to One-to-Many
-
-If you start with a single type and later need specialization:
-
-```python
-# Original usage (one-to-one)
-TimeSeries(data).save(db=db, sensor=1)  # -> time_series table
-
-# Later, migrate to one-to-many
-DefaultSeries = TimeSeries.for_type()  # Access old data
-Temperature = TimeSeries.for_type("temperature")
-
-# Old data still accessible via TimeSeries or DefaultSeries
-# New typed data goes to time_series_temperature
-```
-
-### Type Suffix Normalization
-
-Type names are normalized automatically:
-
-| Input | Table Suffix |
-|-------|--------------|
-| `"temperature"` | `_temperature` |
-| `"Temperature"` | `_temperature` |
-| `"ambient temperature"` | `_ambient_temperature` |
-| `"air-quality"` | `_air_quality` |
+Each subclass:
+- Inherits `to_db()` and `from_db()` from the parent
+- Gets its own table named after the class (CamelCase → snake_case)
+- Can define custom methods specific to that data type
 
 ## Instance Properties
 
