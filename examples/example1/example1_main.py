@@ -15,7 +15,6 @@ Documentation: See docs/quickstart.md for the getting started guide.
 """
 
 import numpy as np
-import pandas as pd
 from pathlib import Path
 
 # -----------------------------------------------------------------------------
@@ -23,89 +22,19 @@ from pathlib import Path
 # Documentation: See docs/api.md for the complete API reference
 # -----------------------------------------------------------------------------
 
-from scidb import (
-    BaseVariable,      # Base class for all storable data types
+from scidb import (    
     configure_database,  # Configure the global database
-    get_database,      # Access the configured database
     thunk,             # Decorator for lineage tracking
 )
+
+from vars import * # Import all of the variables from vars.py
 
 # Set a breakpoint here to start debugging
 print("Starting scidb debug example 1: Core Concepts")
 
 
 # -----------------------------------------------------------------------------
-# STEP 2: Define Custom Variable Types
-# Documentation: See docs/guide/variables.md for patterns and best practices
-#
-# Key concept: Each variable type needs to implement:
-#   - to_db(): Convert native data to pandas DataFrame for storage
-#   - from_db(): Convert DataFrame back to native type
-#
-# The schema_version attribute enables future schema migrations.
-# -----------------------------------------------------------------------------
-
-class SensorReading(BaseVariable):
-    """
-    A time series of sensor readings.
-
-    Implementation notes (docs/guide/variables.md):
-    - to_db() must return a DataFrame with your data
-    - from_db() receives that DataFrame and reconstructs your data
-    - Use schema_version for future-proofing migrations
-    """
-    schema_version = 1
-
-    def to_db(self) -> pd.DataFrame:
-        # Convert numpy array to DataFrame for Parquet serialization
-        # The 'value' column name is arbitrary - you control the schema
-        return pd.DataFrame({'value': self.data})
-
-    @classmethod
-    def from_db(cls, df: pd.DataFrame) -> np.ndarray:
-        # Reconstruct the numpy array from the stored DataFrame
-        return df['value'].values
-
-
-class ProcessedSignal(BaseVariable):
-    """
-    A processed signal (filtered, normalized, etc.)
-
-    This is a separate type from SensorReading to demonstrate:
-    - Each type gets its own table in the database
-    - Lineage can track transformations between types
-    """
-    schema_version = 1
-
-    def to_db(self) -> pd.DataFrame:
-        return pd.DataFrame({'value': self.data})
-
-    @classmethod
-    def from_db(cls, df: pd.DataFrame) -> np.ndarray:
-        return df['value'].values
-
-
-class SignalStatistics(BaseVariable):
-    """
-    Summary statistics for a signal.
-
-    Demonstrates storing a dictionary as a DataFrame.
-    Documentation: See docs/guide/variables.md section "Dictionary Pattern"
-    """
-    schema_version = 1
-
-    def to_db(self) -> pd.DataFrame:
-        # Store dict as single-row DataFrame with columns for each key
-        return pd.DataFrame([self.data])
-
-    @classmethod
-    def from_db(cls, df: pd.DataFrame) -> dict:
-        # Convert single-row DataFrame back to dict
-        return df.iloc[0].to_dict()
-
-
-# -----------------------------------------------------------------------------
-# STEP 3: Configure the Database
+# STEP 2: Configure the Database
 # Documentation: See docs/guide/database.md for configuration options
 #
 # Key concept: configure_database() creates/opens a SQLite database and
@@ -124,7 +53,7 @@ print(f"Database configured: {db_path}")
 
 
 # -----------------------------------------------------------------------------
-# STEP 4: Create and Save Raw Data
+# STEP 3: Create and Save Raw Data
 # Documentation: See docs/guide/variables.md section "Saving Variables"
 #
 # Key concepts:

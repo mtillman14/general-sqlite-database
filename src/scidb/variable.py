@@ -81,8 +81,16 @@ class BaseVariable(ABC):
 
     @property
     def content_hash(self) -> str | None:
-        """The content hash (data identity), set after save() or load()."""
-        return self._content_hash
+        """The content hash (data identity). Always computed fresh from current data."""
+        if self.data is None:
+            return None
+        from .hashing import canonical_hash
+        from .thunk import OutputThunk
+        data = self.data
+        if isinstance(data, OutputThunk):
+            from .lineage import get_raw_value
+            data = get_raw_value(data)
+        return canonical_hash(data)
 
     @property
     def lineage_hash(self) -> str | None:
