@@ -16,6 +16,10 @@ from scidb import DatabaseManager, BaseVariable, configure_database
 from scidb.database import _local
 
 
+# Default schema keys for testing - covers common test metadata patterns
+DEFAULT_TEST_SCHEMA_KEYS = ["subject", "trial", "experiment", "name", "sensor", "condition", "channel", "session", "category"]
+
+
 @pytest.fixture
 def temp_db_path(tmp_path):
     """Provide a temporary database path."""
@@ -25,7 +29,7 @@ def temp_db_path(tmp_path):
 @pytest.fixture
 def db(temp_db_path):
     """Provide a fresh DatabaseManager instance."""
-    db = DatabaseManager(temp_db_path)
+    db = DatabaseManager(temp_db_path, schema_keys=DEFAULT_TEST_SCHEMA_KEYS)
     yield db
     db.close()
 
@@ -33,7 +37,7 @@ def db(temp_db_path):
 @pytest.fixture
 def configured_db(temp_db_path):
     """Provide a configured global database."""
-    db = configure_database(temp_db_path)
+    db = configure_database(temp_db_path, schema_keys=DEFAULT_TEST_SCHEMA_KEYS)
     yield db
     db.close()
     # Clear the global state

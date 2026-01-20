@@ -289,9 +289,15 @@ class BaseVariable(ABC):
         db: "DatabaseManager | None" = None,
         version: str = "latest",
         **metadata,
-    ) -> Self | list[Self]:
+    ) -> Self:
         """
-        Load variable(s) from the database.
+        Load a single variable from the database.
+
+        Metadata keys are split into schema keys (dataset identity) and version
+        keys (computational identity) based on the configured schema_keys.
+
+        - If only schema keys are provided: returns the latest version at that location
+        - If version keys are also provided: returns the exact matching version
 
         Args:
             db: Optional explicit database. If None, uses global database.
@@ -299,8 +305,7 @@ class BaseVariable(ABC):
             **metadata: Addressing metadata to match
 
         Returns:
-            If exactly one match: returns that instance
-            If multiple matches: returns list of instances
+            The matching variable instance (latest if multiple versions exist)
 
         Raises:
             NotFoundError: If no matching data found
@@ -311,6 +316,73 @@ class BaseVariable(ABC):
 
         db = db or get_database()
         return db.load(cls, metadata, version=version)
+
+    @classmethod
+    def load_all(
+        cls,
+        db: "DatabaseManager | None" = None,
+        **metadata,
+    ):
+        """
+        Load all matching variables from the database as a generator.
+
+        This is useful for loading multiple records with partial schema keys,
+        e.g., all records for a given subject across all visits.
+
+        Args:
+            db: Optional explicit database. If None, uses global database.
+            **metadata: Addressing metadata to match (partial matching supported)
+
+        Yields:
+            Variable instances matching the metadata
+
+        Raises:
+            NotRegisteredError: If this variable type is not registered
+            DatabaseNotConfiguredError: If no database is available
+
+        Example:
+            # Load all ProcessedSignal records for subject 1
+            for signal in ProcessedSignal.load_all(subject=1):
+                print(signal.metadata, signal.data.shape)
+        """
+        from .database import get_database
+
+        db = db or get_database()
+        yield from db.load_all(cls, metadata)
+
+    @classmethod
+    def list_versions(
+        cls,
+        db: "DatabaseManager | None" = None,
+        **metadata,
+    ) -> list[dict]:
+        """
+        List all versions at a schema location.
+
+        Shows all saved versions (including those with empty version {})
+        at a given schema location. This is useful for seeing what
+        computational variants exist for a given dataset location.
+
+        Args:
+            db: Optional explicit database. If None, uses global database.
+            **metadata: Schema metadata to match
+
+        Returns:
+            List of dicts with record_id, schema, version, created_at
+
+        Raises:
+            NotRegisteredError: If this variable type is not registered
+            DatabaseNotConfiguredError: If no database is available
+
+        Example:
+            versions = ProcessedSignal.list_versions(subject=1, visit=2)
+            for v in versions:
+                print(f"record_id: {v['record_id']}, version: {v['version']}")
+        """
+        from .database import get_database
+
+        db = db or get_database()
+        return db.list_versions(cls, **metadata)
 
     @classmethod
     def save_from_dataframe(

@@ -47,6 +47,7 @@ def get_user_id() -> str | None:
 
 def configure_database(
     db_path: str | Path,
+    schema_keys: list[str],
     lineage_mode: str = "strict",
 ) -> "DatabaseManager":
     """
@@ -57,6 +58,11 @@ def configure_database(
 
     Args:
         db_path: Path to the SQLite database file
+        schema_keys: List of metadata keys that define the dataset schema
+            (e.g., ["subject", "visit", "channel"]). These keys identify the
+            logical location of data and are used for the folder hierarchy.
+            Any metadata keys not in this list are treated as version parameters
+            that distinguish different computational versions of the same data.
         lineage_mode: How to handle intermediate variables in lineage tracking.
             - "strict" (default): All upstream BaseVariables must be saved
               before saving downstream results. Raises UnsavedIntermediateError
@@ -74,7 +80,7 @@ def configure_database(
     """
     from thunk import configure_cache
 
-    _local.database = DatabaseManager(db_path, lineage_mode=lineage_mode)
+    _local.database = DatabaseManager(db_path, schema_keys=schema_keys, lineage_mode=lineage_mode)
     # Register as cache backend for thunk library
     configure_cache(_local.database)
     return _local.database
@@ -113,12 +119,21 @@ class DatabaseManager:
 
     VALID_LINEAGE_MODES = ("strict", "ephemeral")
 
-    def __init__(self, db_path: str | Path, lineage_mode: str = "strict"):
+    def __init__(
+        self,
+        db_path: str | Path,
+        schema_keys: list[str],
+        lineage_mode: str = "strict",
+    ):
         """
         Initialize database connection.
 
         Args:
             db_path: Path to SQLite database file (created if doesn't exist)
+            schema_keys: List of metadata keys that define the dataset schema
+                (e.g., ["subject", "visit", "channel"]). These keys identify the
+                logical location of data. Any other metadata keys are treated as
+                version parameters.
             lineage_mode: How to handle intermediate variables ("strict" or "ephemeral")
 
         Raises:
@@ -132,6 +147,7 @@ class DatabaseManager:
 
         self.db_path = Path(db_path)
         self.lineage_mode = lineage_mode
+        self.schema_keys = list(schema_keys)  # Store a copy
         self._registered_types: dict[str, Type[BaseVariable]] = {}
 
         # Set up Parquet file storage root
@@ -247,6 +263,47 @@ class DatabaseManager:
         )
 
         self.connection.commit()
+
+    def _split_metadata(self, flat_metadata: dict) -> dict:
+        """
+        Split flat metadata into nested schema/version structure.
+
+        Keys in schema_keys go to "schema", all other keys go to "version".
+
+        Args:
+            flat_metadata: Flat dict of metadata key-value pairs
+
+        Returns:
+            Nested dict with "schema" and "version" keys
+        """
+        schema = {}
+        version = {}
+        for key, value in flat_metadata.items():
+            if key in self.schema_keys:
+                schema[key] = value
+            else:
+                version[key] = value
+
+        return {"schema": schema, "version": version}
+
+    def _flatten_metadata(self, nested_metadata: dict) -> dict:
+        """
+        Flatten nested schema/version metadata back to flat dict.
+
+        Args:
+            nested_metadata: Dict with "schema" and "version" keys
+
+        Returns:
+            Flat dict combining all keys
+        """
+        flat = {}
+        flat.update(nested_metadata.get("schema", {}))
+        flat.update(nested_metadata.get("version", {}))
+        return flat
+
+    def _is_nested_metadata(self, metadata: dict) -> bool:
+        """Check if metadata is in nested format."""
+        return "schema" in metadata and isinstance(metadata.get("schema"), dict)
 
     def register(self, variable_class: Type[BaseVariable]) -> None:
         """
@@ -380,7 +437,7 @@ class DatabaseManager:
 
         Args:
             variable: The variable instance to save
-            metadata: Addressing metadata
+            metadata: Addressing metadata (flat dict, will be split into schema/version)
             lineage: Optional lineage record if data came from a thunk
             lineage_hash: Optional pre-computed lineage hash for cache key computation
 
@@ -391,16 +448,19 @@ class DatabaseManager:
         type_name = variable.__class__.__name__
         user_id = get_user_id()
 
+        # Split metadata into schema (dataset identity) and version (computational identity)
+        nested_metadata = self._split_metadata(metadata)
+
         # Convert to DataFrame and compute content hash
         df = variable.to_db()
         content_hash = canonical_hash(variable.data)
 
-        # Generate record_id (using content_hash, not raw data)
+        # Generate record_id using the full nested metadata for uniqueness
         record_id = generate_record_id(
             class_name=type_name,
             schema_version=variable.schema_version,
             content_hash=content_hash,
-            metadata=metadata,
+            metadata=nested_metadata,  # Use nested structure for record_id
         )
 
         # Check if metadata entry already exists (idempotent save)
@@ -413,17 +473,17 @@ class DatabaseManager:
 
         now = datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")
 
-        # Write data to Parquet file
+        # Write data to Parquet file (use only schema keys for folder structure)
         parquet_path = compute_parquet_path(
             table_name=table_name,
             record_id=record_id,
-            metadata=metadata,
+            metadata=nested_metadata["schema"],  # Only schema keys for folder hierarchy
             parquet_root=self.parquet_root,
         )
         write_parquet(df, parquet_path)
 
-        # Store metadata entry in variable table
-        metadata_json = json.dumps(metadata, sort_keys=True)
+        # Store nested metadata in variable table
+        metadata_json = json.dumps(nested_metadata, sort_keys=True)
         preview_str = generate_preview(df)
 
         self.connection.execute(
@@ -535,17 +595,25 @@ class DatabaseManager:
         variable_class: Type[BaseVariable],
         metadata: dict,
         version: str = "latest",
-    ) -> BaseVariable | list[BaseVariable]:
+    ) -> BaseVariable:
         """
-        Load variable(s) matching the given metadata.
+        Load a single variable matching the given metadata.
+
+        Metadata keys are split into schema keys (dataset identity) and version
+        keys (computational identity) based on the configured schema_keys.
+
+        - If only schema keys are provided: returns the latest version at that location
+        - If version keys are also provided: returns the exact matching version
+        - Version keys only match records with explicit version values (records with
+          empty version {} do not match version-specific queries)
 
         Args:
             variable_class: The type to load
-            metadata: Metadata to match (partial matching supported)
-            version: "latest" or specific record_id
+            metadata: Flat metadata dict (will be split into schema/version internally)
+            version: "latest" for most recent, or specific record_id
 
         Returns:
-            Single instance if one match, list if multiple matches
+            The matching variable instance (latest if multiple versions exist)
 
         Raises:
             NotFoundError: If no matches found
@@ -567,12 +635,137 @@ class DatabaseManager:
 
             return self._row_to_variable(variable_class, table_name, row)
 
-        # Build query for metadata matching
-        # Match all provided metadata keys
+        # Split incoming metadata into schema and version parts
+        split = self._split_metadata(metadata)
+        schema_filter = split["schema"]
+        version_filter = split["version"]
+
+        # Build query conditions for nested metadata structure
         conditions = []
         params = []
-        for key, value in metadata.items():
-            conditions.append(f"json_extract(metadata, '$.{key}') = ?")
+
+        # Match schema keys
+        for key, value in schema_filter.items():
+            conditions.append(f"json_extract(metadata, '$.schema.{key}') = ?")
+            if isinstance(value, (dict, list)):
+                params.append(json.dumps(value))
+            else:
+                params.append(value)
+
+        # Match version keys (only if provided)
+        for key, value in version_filter.items():
+            conditions.append(f"json_extract(metadata, '$.version.{key}') = ?")
+            if isinstance(value, (dict, list)):
+                params.append(json.dumps(value))
+            else:
+                params.append(value)
+
+        where_clause = " AND ".join(conditions) if conditions else "1=1"
+
+        cursor = self.connection.execute(
+            f"""SELECT record_id, content_hash, lineage_hash, metadata
+                FROM {table_name}
+                WHERE {where_clause}
+                ORDER BY created_at DESC
+                LIMIT 1""",
+            params,
+        )
+        row = cursor.fetchone()
+
+        if row is None:
+            raise NotFoundError(
+                f"No {variable_class.__name__} found matching metadata: {metadata}"
+            )
+
+        return self._row_to_variable(variable_class, table_name, row)
+
+    def _row_to_variable(
+        self,
+        variable_class: Type[BaseVariable],
+        table_name: str,
+        row: sqlite3.Row,
+    ) -> BaseVariable:
+        """Convert a database row to a variable instance."""
+        # Parse metadata (stored in nested format)
+        nested_metadata = json.loads(row["metadata"])
+        record_id = row["record_id"]
+
+        # Handle both nested and legacy flat metadata formats
+        if self._is_nested_metadata(nested_metadata):
+            schema_metadata = nested_metadata["schema"]
+            # Flatten for user-facing property
+            flat_metadata = self._flatten_metadata(nested_metadata)
+        else:
+            # Legacy flat format (for backwards compatibility during migration)
+            schema_metadata = nested_metadata
+            flat_metadata = nested_metadata
+
+        # Compute path using only schema keys and read Parquet file
+        parquet_path = compute_parquet_path(
+            table_name=table_name,
+            record_id=record_id,
+            metadata=schema_metadata,
+            parquet_root=self.parquet_root,
+        )
+        df = read_parquet(parquet_path)
+        data = variable_class.from_db(df)
+
+        instance = variable_class(data)
+        instance._record_id = record_id
+        instance._metadata = flat_metadata  # User sees flat metadata
+        instance._content_hash = row["content_hash"]
+        instance._lineage_hash = row["lineage_hash"]  # May be None for raw data
+
+        return instance
+
+    def load_all(
+        self,
+        variable_class: Type[BaseVariable],
+        metadata: dict,
+    ):
+        """
+        Load all variables matching the given metadata as a generator.
+
+        This is useful for loading multiple records with partial schema keys,
+        e.g., all records for a given subject across all visits.
+
+        Args:
+            variable_class: The type to load
+            metadata: Flat metadata dict (will be split into schema/version internally)
+
+        Yields:
+            BaseVariable instances matching the metadata
+
+        Raises:
+            NotRegisteredError: If this type has never been saved
+
+        Example:
+            # Load all records for subject 1
+            for var in db.load_all(ProcessedSignal, {"subject": 1}):
+                print(var.metadata, var.data)
+        """
+        table_name = self._ensure_registered(variable_class, auto_register=False)
+
+        # Split incoming metadata into schema and version parts
+        split = self._split_metadata(metadata)
+        schema_filter = split["schema"]
+        version_filter = split["version"]
+
+        # Build query conditions for nested metadata structure
+        conditions = []
+        params = []
+
+        # Match schema keys
+        for key, value in schema_filter.items():
+            conditions.append(f"json_extract(metadata, '$.schema.{key}') = ?")
+            if isinstance(value, (dict, list)):
+                params.append(json.dumps(value))
+            else:
+                params.append(value)
+
+        # Match version keys (only if provided)
+        for key, value in version_filter.items():
+            conditions.append(f"json_extract(metadata, '$.version.{key}') = ?")
             if isinstance(value, (dict, list)):
                 params.append(json.dumps(value))
             else:
@@ -587,48 +780,10 @@ class DatabaseManager:
                 ORDER BY created_at DESC""",
             params,
         )
-        rows = cursor.fetchall()
 
-        if not rows:
-            raise NotFoundError(
-                f"No {variable_class.__name__} found matching metadata: {metadata}"
-            )
-
-        # Return single or list based on count
-        results = [self._row_to_variable(variable_class, table_name, row) for row in rows]
-
-        if len(results) == 1:
-            return results[0]
-        return results
-
-    def _row_to_variable(
-        self,
-        variable_class: Type[BaseVariable],
-        table_name: str,
-        row: sqlite3.Row,
-    ) -> BaseVariable:
-        """Convert a database row to a variable instance."""
-        # Parse metadata to compute Parquet path
-        metadata = json.loads(row["metadata"])
-        record_id = row["record_id"]
-
-        # Compute path and read Parquet file
-        parquet_path = compute_parquet_path(
-            table_name=table_name,
-            record_id=record_id,
-            metadata=metadata,
-            parquet_root=self.parquet_root,
-        )
-        df = read_parquet(parquet_path)
-        data = variable_class.from_db(df)
-
-        instance = variable_class(data)
-        instance._record_id = record_id
-        instance._metadata = metadata
-        instance._content_hash = row["content_hash"]
-        instance._lineage_hash = row["lineage_hash"]  # May be None for raw data
-
-        return instance
+        # Yield variables one at a time (generator)
+        for row in cursor:
+            yield self._row_to_variable(variable_class, table_name, row)
 
     def list_versions(
         self,
@@ -636,25 +791,36 @@ class DatabaseManager:
         **metadata,
     ) -> list[dict]:
         """
-        List all versions matching the metadata.
+        List all versions at a schema location.
+
+        Shows all saved versions (including those with empty version {})
+        at a given schema location. This is useful for seeing what
+        computational variants exist for a given dataset location.
 
         Args:
             variable_class: The type to query
-            **metadata: Metadata to match
+            **metadata: Schema metadata to match (version keys are ignored for listing)
 
         Returns:
-            List of dicts with record_id, metadata, created_at
+            List of dicts with record_id, schema, version, created_at
 
         Raises:
             NotRegisteredError: If this type has never been saved
         """
         table_name = self._ensure_registered(variable_class, auto_register=False)
 
+        # Split metadata - only use schema keys for the query
+        split = self._split_metadata(metadata)
+        schema_filter = split["schema"]
+
         conditions = []
         params = []
-        for key, value in metadata.items():
-            conditions.append(f"json_extract(metadata, '$.{key}') = ?")
-            params.append(value)
+        for key, value in schema_filter.items():
+            conditions.append(f"json_extract(metadata, '$.schema.{key}') = ?")
+            if isinstance(value, (dict, list)):
+                params.append(json.dumps(value))
+            else:
+                params.append(value)
 
         where_clause = " AND ".join(conditions) if conditions else "1=1"
 
@@ -665,14 +831,25 @@ class DatabaseManager:
             params,
         )
 
-        return [
-            {
-                "record_id": row["record_id"],
-                "metadata": json.loads(row["metadata"]),
-                "created_at": row["created_at"],
-            }
-            for row in cursor.fetchall()
-        ]
+        results = []
+        for row in cursor.fetchall():
+            nested_metadata = json.loads(row["metadata"])
+            if self._is_nested_metadata(nested_metadata):
+                results.append({
+                    "record_id": row["record_id"],
+                    "schema": nested_metadata.get("schema", {}),
+                    "version": nested_metadata.get("version", {}),
+                    "created_at": row["created_at"],
+                })
+            else:
+                # Legacy flat format
+                results.append({
+                    "record_id": row["record_id"],
+                    "schema": nested_metadata,
+                    "version": {},
+                    "created_at": row["created_at"],
+                })
+        return results
 
     def get_provenance(
         self,
@@ -697,8 +874,6 @@ class DatabaseManager:
             record_id = version
         else:
             var = self.load(variable_class, metadata)
-            if isinstance(var, list):
-                var = var[0]  # Latest
             record_id = var.record_id
 
         cursor = self.connection.execute(
@@ -742,8 +917,6 @@ class DatabaseManager:
             record_id = version
         else:
             var = self.load(variable_class, metadata)
-            if isinstance(var, list):
-                var = var[0]
             record_id = var.record_id
 
         # Search for this record_id in any lineage inputs
@@ -825,8 +998,6 @@ class DatabaseManager:
             type_name = variable_class.__name__
         else:
             var = self.load(variable_class, metadata)
-            if isinstance(var, list):
-                var = var[0]  # Latest
             record_id = var.record_id
             type_name = variable_class.__name__
 
@@ -1300,17 +1471,20 @@ class DatabaseManager:
         """
         import pandas as pd
 
-        # Load matching variables
-        results = self.load(variable_class, metadata)
-        if not isinstance(results, list):
-            results = [results]
+        # Load all matching variables using the generator
+        results = list(self.load_all(variable_class, metadata))
+
+        if not results:
+            raise NotFoundError(
+                f"No {variable_class.__name__} found matching metadata: {metadata}"
+            )
 
         # Build combined DataFrame
         all_dfs = []
         for var in results:
             df = variable_class(var.data).to_db()
             df["_record_id"] = var.record_id
-            # Add metadata columns
+            # Add metadata columns (already flattened by load_all)
             if var.metadata:
                 for key, value in var.metadata.items():
                     df[f"_meta_{key}"] = value
@@ -1345,11 +1519,24 @@ class DatabaseManager:
         """
         table_name = self._ensure_registered(variable_class, auto_register=False)
 
-        # Build query
+        # Split metadata into schema and version parts
+        split = self._split_metadata(metadata)
+        schema_filter = split["schema"]
+        version_filter = split["version"]
+
+        # Build query with nested metadata structure
         conditions = []
         params = []
-        for key, value in metadata.items():
-            conditions.append(f"json_extract(metadata, '$.{key}') = ?")
+
+        for key, value in schema_filter.items():
+            conditions.append(f"json_extract(metadata, '$.schema.{key}') = ?")
+            if isinstance(value, (dict, list)):
+                params.append(json.dumps(value))
+            else:
+                params.append(value)
+
+        for key, value in version_filter.items():
+            conditions.append(f"json_extract(metadata, '$.version.{key}') = ?")
             if isinstance(value, (dict, list)):
                 params.append(json.dumps(value))
             else:
@@ -1374,13 +1561,23 @@ class DatabaseManager:
         lines = [f"=== {variable_class.__name__} ({len(rows)} records) ===\n"]
         for row in rows:
             record_id_short = row["record_id"][:12]
-            meta = json.loads(row["metadata"])
-            meta_str = ", ".join(f"{k}={v}" for k, v in meta.items())
+            nested_meta = json.loads(row["metadata"])
+
+            # Format metadata for display
+            if self._is_nested_metadata(nested_meta):
+                schema_str = ", ".join(f"{k}={v}" for k, v in nested_meta.get("schema", {}).items())
+                version_str = ", ".join(f"{k}={v}" for k, v in nested_meta.get("version", {}).items())
+            else:
+                schema_str = ", ".join(f"{k}={v}" for k, v in nested_meta.items())
+                version_str = ""
+
             preview = row["preview"] or "(no preview)"
 
             lines.append(f"record_id: {record_id_short}...")
-            if meta_str:
-                lines.append(f"  metadata: {meta_str}")
+            if schema_str:
+                lines.append(f"  schema: {schema_str}")
+            if version_str:
+                lines.append(f"  version: {version_str}")
             lines.append(f"  preview: {preview}")
             lines.append(f"  created: {row['created_at']}")
             lines.append("")

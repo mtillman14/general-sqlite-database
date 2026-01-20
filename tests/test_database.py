@@ -19,23 +19,24 @@ from scidb.exceptions import (
     NotFoundError,
     NotRegisteredError,
 )
+from conftest import DEFAULT_TEST_SCHEMA_KEYS
 
 
 class TestConfigureDatabase:
     """Test configure_database function."""
 
     def test_returns_database_manager(self, temp_db_path):
-        db = configure_database(temp_db_path)
+        db = configure_database(temp_db_path, schema_keys=DEFAULT_TEST_SCHEMA_KEYS)
         assert isinstance(db, DatabaseManager)
         db.close()
 
     def test_creates_database_file(self, temp_db_path):
-        db = configure_database(temp_db_path)
+        db = configure_database(temp_db_path, schema_keys=DEFAULT_TEST_SCHEMA_KEYS)
         assert temp_db_path.exists()
         db.close()
 
     def test_sets_global_database(self, temp_db_path):
-        db = configure_database(temp_db_path)
+        db = configure_database(temp_db_path, schema_keys=DEFAULT_TEST_SCHEMA_KEYS)
         assert get_database() is db
         db.close()
 
@@ -43,8 +44,8 @@ class TestConfigureDatabase:
         path1 = tmp_path / "db1.sqlite"
         path2 = tmp_path / "db2.sqlite"
 
-        db1 = configure_database(path1)
-        db2 = configure_database(path2)
+        db1 = configure_database(path1, schema_keys=DEFAULT_TEST_SCHEMA_KEYS)
+        db2 = configure_database(path2, schema_keys=DEFAULT_TEST_SCHEMA_KEYS)
 
         assert get_database() is db2
         assert db1 is not db2
@@ -68,23 +69,23 @@ class TestDatabaseManagerInit:
     """Test DatabaseManager initialization."""
 
     def test_creates_connection(self, temp_db_path):
-        db = DatabaseManager(temp_db_path)
+        db = DatabaseManager(temp_db_path, schema_keys=DEFAULT_TEST_SCHEMA_KEYS)
         assert db.connection is not None
         db.close()
 
     def test_creates_database_file(self, temp_db_path):
-        db = DatabaseManager(temp_db_path)
+        db = DatabaseManager(temp_db_path, schema_keys=DEFAULT_TEST_SCHEMA_KEYS)
         assert temp_db_path.exists()
         db.close()
 
     def test_accepts_string_path(self, tmp_path):
         path = str(tmp_path / "test.db")
-        db = DatabaseManager(path)
+        db = DatabaseManager(path, schema_keys=DEFAULT_TEST_SCHEMA_KEYS)
         assert Path(path).exists()
         db.close()
 
     def test_accepts_path_object(self, temp_db_path):
-        db = DatabaseManager(temp_db_path)
+        db = DatabaseManager(temp_db_path, schema_keys=DEFAULT_TEST_SCHEMA_KEYS)
         assert temp_db_path.exists()
         db.close()
 
@@ -110,11 +111,11 @@ class TestDatabaseManagerContextManager:
     """Test DatabaseManager context manager protocol."""
 
     def test_context_manager_enter(self, temp_db_path):
-        with DatabaseManager(temp_db_path) as db:
+        with DatabaseManager(temp_db_path, schema_keys=DEFAULT_TEST_SCHEMA_KEYS) as db:
             assert db.connection is not None
 
     def test_context_manager_closes_connection(self, temp_db_path):
-        db = DatabaseManager(temp_db_path)
+        db = DatabaseManager(temp_db_path, schema_keys=DEFAULT_TEST_SCHEMA_KEYS)
         with db:
             pass
         # After context, connection should be closed
@@ -217,9 +218,10 @@ class TestSave:
         )
         row = cursor.fetchone()
         metadata = json.loads(row[0])
-        assert metadata["subject"] == 1
-        assert metadata["trial"] == 2
-        assert metadata["condition"] == "test"
+        # Metadata is now stored in nested format
+        assert metadata["schema"]["subject"] == 1
+        assert metadata["schema"]["trial"] == 2
+        assert metadata["schema"]["condition"] == "test"
 
     def test_save_stores_schema_version(self, db, scalar_class):
         db.register(scalar_class)
@@ -328,6 +330,7 @@ class TestLoad:
         scalar_class.save(42, db=db, subject=1, trial=2)
 
         loaded = scalar_class.load(db=db, subject=1, trial=2)
+        # Loaded variable has flattened metadata
         assert loaded.metadata == {"subject": 1, "trial": 2}
 
     def test_load_by_record_id(self, db, scalar_class):
@@ -351,15 +354,27 @@ class TestLoad:
         with pytest.raises(NotRegisteredError):
             scalar_class.load(db=db, subject=1)
 
-    def test_load_multiple_matches_returns_list(self, db, scalar_class):
+    def test_load_returns_latest_when_multiple_exist(self, db, scalar_class):
+        """load() now always returns single instance (latest version)."""
         db.register(scalar_class)
 
         # Save multiple with same partial metadata
         scalar_class.save(42, db=db, subject=1, trial=1)
         scalar_class.save(43, db=db, subject=1, trial=2)
 
+        # load() returns the latest matching record
         loaded = scalar_class.load(db=db, subject=1)
-        assert isinstance(loaded, list)
+        assert isinstance(loaded, scalar_class)
+        assert loaded.data == 43  # Latest saved
+
+    def test_load_all_returns_generator(self, db, scalar_class):
+        """load_all() returns a generator for multiple matches."""
+        db.register(scalar_class)
+
+        scalar_class.save(42, db=db, subject=1, trial=1)
+        scalar_class.save(43, db=db, subject=1, trial=2)
+
+        loaded = list(scalar_class.load_all(db=db, subject=1))
         assert len(loaded) == 2
 
     def test_load_single_match_returns_instance(self, db, scalar_class):
@@ -370,16 +385,15 @@ class TestLoad:
         assert isinstance(loaded, scalar_class)
         assert not isinstance(loaded, list)
 
-    def test_load_partial_metadata(self, db, scalar_class):
+    def test_load_all_partial_metadata(self, db, scalar_class):
         db.register(scalar_class)
 
         scalar_class.save(42, db=db, subject=1, trial=1, condition="a")
         scalar_class.save(43, db=db, subject=1, trial=2, condition="b")
         scalar_class.save(44, db=db, subject=2, trial=1, condition="a")
 
-        # Load by subject only
-        loaded = scalar_class.load(db=db, subject=1)
-        assert isinstance(loaded, list)
+        # Load all by subject only using load_all()
+        loaded = list(scalar_class.load_all(db=db, subject=1))
         assert len(loaded) == 2
 
     def test_load_array(self, db, array_class):
@@ -410,7 +424,7 @@ class TestLoad:
 class TestLoadLatestOrdering:
     """Test that load returns latest version when multiple exist."""
 
-    def test_load_returns_latest_first(self, db, scalar_class):
+    def test_load_returns_latest(self, db, scalar_class):
         db.register(scalar_class)
 
         # Save multiple versions with same metadata
@@ -419,12 +433,22 @@ class TestLoadLatestOrdering:
         scalar_class.save(2, db=db, subject=1, trial=1)
         scalar_class.save(3, db=db, subject=1, trial=1)
 
+        # load() returns the latest (single instance)
         loaded = scalar_class.load(db=db, subject=1, trial=1)
+        assert isinstance(loaded, scalar_class)
+        assert loaded.data == 3  # The last saved
 
-        # Since all have different data, should return list ordered by created_at DESC
-        assert isinstance(loaded, list)
-        # The last saved should be first in the list
-        assert loaded[0].data == 3
+    def test_load_all_returns_ordered_by_created_at_desc(self, db, scalar_class):
+        db.register(scalar_class)
+
+        scalar_class.save(1, db=db, subject=1, trial=1)
+        scalar_class.save(2, db=db, subject=1, trial=1)
+        scalar_class.save(3, db=db, subject=1, trial=1)
+
+        # load_all() returns all, ordered by created_at DESC
+        loaded = list(scalar_class.load_all(db=db, subject=1, trial=1))
+        assert len(loaded) == 3
+        assert loaded[0].data == 3  # Latest first
 
 
 class TestListVersions:
@@ -445,12 +469,14 @@ class TestListVersions:
         assert len(versions) == 1
         assert versions[0]["record_id"] == record_id
 
-    def test_list_versions_contains_metadata(self, db, scalar_class):
+    def test_list_versions_contains_schema_and_version(self, db, scalar_class):
         db.register(scalar_class)
         scalar_class.save(42, db=db, subject=1, trial=2)
 
         versions = db.list_versions(scalar_class, subject=1)
-        assert versions[0]["metadata"] == {"subject": 1, "trial": 2}
+        # list_versions now returns schema and version separately
+        assert versions[0]["schema"] == {"subject": 1, "trial": 2}
+        assert versions[0]["version"] == {}
 
     def test_list_versions_contains_created_at(self, db, scalar_class):
         db.register(scalar_class)
@@ -476,7 +502,7 @@ class TestListVersions:
 
         versions = db.list_versions(scalar_class, subject=1)
         # Latest should be first
-        assert versions[0]["metadata"]["trial"] == 3
+        assert versions[0]["schema"]["trial"] == 3
 
     def test_list_versions_empty(self, db, scalar_class):
         db.register(scalar_class)

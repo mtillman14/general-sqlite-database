@@ -1,3 +1,7 @@
+# Other general questions:
+
+1. What's the role of BaseVariable.load_to_dataframe() vs. BaseVariable.load_all()?
+
 # debug_example2_advanced.py
 
 1. database.py DatabaseManager.\_ensure_meta_tables(): Why doesn't \_lineage table have output_number?

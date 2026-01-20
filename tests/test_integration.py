@@ -8,9 +8,9 @@ from scidb import (
     BaseVariable,
     DatabaseManager,
     NotFoundError,
-    configure_database,
 )
 
+from conftest import DEFAULT_TEST_SCHEMA_KEYS
 
 class TestEndToEndScalarWorkflow:
     """Test complete workflow with scalar values."""
@@ -225,13 +225,13 @@ class TestDatabasePersistence:
     def test_data_persists_after_reconnect(self, temp_db_path, scalar_class):
         """Data should persist after closing and reopening database."""
         # First connection - save data
-        db1 = DatabaseManager(temp_db_path)
+        db1 = DatabaseManager(temp_db_path, schema_keys=DEFAULT_TEST_SCHEMA_KEYS)
         db1.register(scalar_class)
         record_id = scalar_class.save(42, db=db1, subject=1, trial=1)
         db1.close()
 
         # Second connection - load data
-        db2 = DatabaseManager(temp_db_path)
+        db2 = DatabaseManager(temp_db_path, schema_keys=DEFAULT_TEST_SCHEMA_KEYS)
         db2.register(scalar_class)
         loaded = scalar_class.load(db=db2, subject=1, trial=1)
         db2.close()
@@ -244,7 +244,7 @@ class TestDatabasePersistence:
     ):
         """Multiple types should persist after reconnect."""
         # First connection
-        db1 = DatabaseManager(temp_db_path)
+        db1 = DatabaseManager(temp_db_path, schema_keys=DEFAULT_TEST_SCHEMA_KEYS)
         db1.register(scalar_class)
         db1.register(array_class)
         scalar_class.save(42, db=db1, subject=1)
@@ -252,7 +252,7 @@ class TestDatabasePersistence:
         db1.close()
 
         # Second connection
-        db2 = DatabaseManager(temp_db_path)
+        db2 = DatabaseManager(temp_db_path, schema_keys=DEFAULT_TEST_SCHEMA_KEYS)
         db2.register(scalar_class)
         db2.register(array_class)
 
