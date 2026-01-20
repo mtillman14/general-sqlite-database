@@ -5,6 +5,7 @@ import pandas as pd
 import pytest
 
 from scidb import BaseVariable, configure_database
+from conftest import DEFAULT_TEST_SCHEMA_KEYS
 
 # Skip all tests if DuckDB not installed
 pytest.importorskip("duckdb")
@@ -45,20 +46,18 @@ class ProcessedSignal(BaseVariable):
 @pytest.fixture
 def db_with_data(tmp_path):
     """Create a database with test data."""
-    db = configure_database(tmp_path / "test.db")
+    db = configure_database(tmp_path / "test.db", schema_keys=DEFAULT_TEST_SCHEMA_KEYS)
 
     # Save some sensor readings
     for exp in ["exp1", "exp2"]:
         for trial in [1, 2]:
             data = np.random.randn(100) * (10 if exp == "exp1" else 5)
-            reading = SensorReading(data)
-            reading.save(experiment=exp, trial=trial)
+            SensorReading.save(data, experiment=exp, trial=trial)
 
     # Save some processed signals
     for exp in ["exp1", "exp2"]:
         data = np.random.randn(100) * 2
-        signal = ProcessedSignal(data)
-        signal.save(experiment=exp, stage="final")
+        ProcessedSignal.save(data, experiment=exp, stage="final")
 
     return db
 
@@ -251,7 +250,7 @@ class TestEdgeCases:
 
     def test_empty_table(self, tmp_path):
         """Test querying empty/unregistered table."""
-        db = configure_database(tmp_path / "empty.db")
+        db = configure_database(tmp_path / "empty.db", schema_keys=DEFAULT_TEST_SCHEMA_KEYS)
         db.register(SensorReading)
 
         qi = QueryInterface(db)

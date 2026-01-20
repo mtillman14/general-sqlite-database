@@ -17,7 +17,11 @@ from scidb.database import _local
 
 
 # Default schema keys for testing - covers common test metadata patterns
-DEFAULT_TEST_SCHEMA_KEYS = ["subject", "trial", "experiment", "name", "sensor", "condition", "channel", "session", "category"]
+DEFAULT_TEST_SCHEMA_KEYS = [
+    "subject", "trial", "experiment", "name", "sensor", "condition",
+    "channel", "session", "category", "key", "group", "item", "stage",
+    "half", "version", "stat_type", "processing"
+]
 
 
 @pytest.fixture

@@ -38,7 +38,12 @@ class SignalData(BaseVariable):
 ```python
 from scidb import configure_database
 
-db = configure_database("my_experiment.db")
+# schema_keys defines which metadata keys identify dataset location
+# (vs. computational variants at that location)
+db = configure_database(
+    "my_experiment.db",
+    schema_keys=["subject", "trial", "condition"]
+)
 ```
 
 ## 3. Save Data with Metadata

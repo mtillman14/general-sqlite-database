@@ -33,9 +33,10 @@ class MyVariable(BaseVariable):
 | Method | Description |
 |--------|-------------|
 | `save(data, db=None, **metadata)` | Save data to database, returns record_id |
-| `load(db=None, version="latest", **metadata)` | Load from database |
+| `load(db=None, version="latest", **metadata)` | Load single result (latest version at schema location) |
+| `load_all(db=None, as_df=False, include_record_id=False, **metadata)` | Load all matching as generator or DataFrame |
+| `list_versions(db=None, **metadata)` | List all versions at a schema location |
 | `save_from_dataframe(df, data_column, metadata_columns, db=None, **common_metadata)` | Save each row as separate record |
-| `load_to_dataframe(db=None, include_record_id=False, **metadata)` | Load matching records as DataFrame |
 | `table_name()` | Get SQLite table name |
 
 **Instance Methods:**
@@ -52,8 +53,19 @@ class MyVariable(BaseVariable):
 Manages database connection and operations.
 
 ```python
-db = DatabaseManager("path/to/db.sqlite")
+db = DatabaseManager(
+    "path/to/db.sqlite",
+    schema_keys=["subject", "trial", "condition"]
+)
 ```
+
+**Constructor Parameters:**
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `db_path` | `str \| Path` | Path to SQLite database file |
+| `schema_keys` | `list[str]` | **Required.** Metadata keys that identify dataset location |
+| `lineage_mode` | `str` | `"strict"` (default) or `"ephemeral"` |
 
 **Methods:**
 
@@ -61,8 +73,9 @@ db = DatabaseManager("path/to/db.sqlite")
 |--------|-------------|
 | `register(variable_class)` | Register a variable type (optional, auto-registers on save/load) |
 | `save(variable, metadata, lineage=None)` | Save variable (internal) |
-| `load(variable_class, metadata, version="latest")` | Load variable(s) |
-| `list_versions(variable_class, **metadata)` | List all matching versions |
+| `load(variable_class, metadata, version="latest")` | Load single variable (latest at schema location) |
+| `load_all(variable_class, metadata)` | Generator yielding all matching variables |
+| `list_versions(variable_class, **metadata)` | List all versions at schema location |
 | `get_provenance(variable_class, version=None, **metadata)` | Get immediate lineage info |
 | `get_full_lineage(variable_class, version=None, max_depth=100, **metadata)` | Get complete lineage chain |
 | `format_lineage(variable_class, version=None, **metadata)` | Get print-friendly lineage |
@@ -81,13 +94,24 @@ db = DatabaseManager("path/to/db.sqlite")
 
 ## Configuration Functions
 
-### `configure_database(db_path)`
+### `configure_database(db_path, schema_keys, lineage_mode="strict")`
 
 Configure the global database.
 
 ```python
-db = configure_database("experiment.db")
+db = configure_database(
+    "experiment.db",
+    schema_keys=["subject", "trial", "condition"]
+)
 ```
+
+**Parameters:**
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `db_path` | `str \| Path` | Path to SQLite database file |
+| `schema_keys` | `list[str]` | **Required.** Metadata keys that identify dataset location |
+| `lineage_mode` | `str` | `"strict"` (default) or `"ephemeral"` |
 
 **Returns:** `DatabaseManager`
 

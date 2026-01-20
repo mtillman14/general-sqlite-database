@@ -321,33 +321,71 @@ class BaseVariable(ABC):
     def load_all(
         cls,
         db: "DatabaseManager | None" = None,
+        as_df: bool = False,
+        include_record_id: bool = False,
         **metadata,
     ):
         """
-        Load all matching variables from the database as a generator.
+        Load all matching variables from the database.
 
-        This is useful for loading multiple records with partial schema keys,
-        e.g., all records for a given subject across all visits.
+        By default returns a generator for memory-efficient iteration.
+        Use as_df=True to load all records into a pandas DataFrame.
 
         Args:
             db: Optional explicit database. If None, uses global database.
+            as_df: If True, return a DataFrame instead of a generator.
+                   The DataFrame has columns for each metadata key plus 'data'.
+            include_record_id: If True and as_df=True, include record_id column.
             **metadata: Addressing metadata to match (partial matching supported)
 
-        Yields:
-            Variable instances matching the metadata
+        Returns:
+            Generator of variable instances (default), or
+            pandas DataFrame if as_df=True
 
         Raises:
             NotRegisteredError: If this variable type is not registered
             DatabaseNotConfiguredError: If no database is available
+            NotFoundError: If as_df=True and no matching data found
 
         Example:
-            # Load all ProcessedSignal records for subject 1
+            # Iterate over records (memory-efficient)
             for signal in ProcessedSignal.load_all(subject=1):
                 print(signal.metadata, signal.data.shape)
+
+            # Load all as DataFrame for analysis
+            df = ProcessedSignal.load_all(subject=1, as_df=True)
         """
+        import pandas as pd
         from .database import get_database
+        from .exceptions import NotFoundError
 
         db = db or get_database()
+
+        if not as_df:
+            # Return generator via helper to avoid making this function a generator
+            return cls._load_all_generator(db, metadata)
+        else:
+            # Collect into DataFrame
+            results = list(db.load_all(cls, metadata))
+
+            if not results:
+                raise NotFoundError(
+                    f"No {cls.__name__} found matching metadata: {metadata}"
+                )
+
+            rows = []
+            for var in results:
+                row = dict(var.metadata) if var.metadata else {}
+                row["data"] = var.data
+                if include_record_id:
+                    row["record_id"] = var.record_id
+                rows.append(row)
+
+            return pd.DataFrame(rows)
+
+    @classmethod
+    def _load_all_generator(cls, db: "DatabaseManager", metadata: dict):
+        """Helper generator for load_all() to avoid making load_all a generator."""
         yield from db.load_all(cls, metadata)
 
     @classmethod
@@ -448,62 +486,6 @@ class BaseVariable(ABC):
             record_ides.append(record_id)
 
         return record_ides
-
-    @classmethod
-    def load_to_dataframe(
-        cls,
-        db: "DatabaseManager | None" = None,
-        include_record_id: bool = False,
-        **metadata,
-    ) -> pd.DataFrame:
-        """
-        Load matching records and reconstruct a DataFrame.
-
-        This is the inverse of save_from_dataframe(). Loads all matching
-        records and returns them as a DataFrame with metadata as columns.
-
-        Args:
-            db: Optional explicit database. If None, uses global database.
-            include_record_id: If True, include record_id as a column
-            **metadata: Metadata filter (loads all matching records)
-
-        Returns:
-            DataFrame with columns for each metadata key plus 'data' column
-
-        Example:
-            # Load all records for experiment
-            df = ScalarValue.load_to_dataframe(experiment="exp1")
-            # Returns:
-            #   Subject  Trial  data   (record_id)
-            #   1        1      0.5    abc123...
-            #   1        2      0.6    def456...
-            #   ...
-
-        Raises:
-            NotFoundError: If no matching data found
-            NotRegisteredError: If this variable type is not registered
-        """
-        from .database import get_database
-
-        db = db or get_database()
-
-        # Load all matching records
-        results = db.load(cls, metadata, version="latest")
-
-        # Ensure it's a list
-        if not isinstance(results, list):
-            results = [results]
-
-        # Build DataFrame rows
-        rows = []
-        for var in results:
-            row = dict(var.metadata) if var.metadata else {}
-            row["data"] = var.data
-            if include_record_id:
-                row["record_id"] = var.record_id
-            rows.append(row)
-
-        return pd.DataFrame(rows)
 
     def to_csv(self, path: str) -> None:
         """

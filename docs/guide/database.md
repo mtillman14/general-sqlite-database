@@ -10,11 +10,22 @@ The `DatabaseManager` handles all storage operations. SciDB uses SQLite with Par
 from scidb import configure_database, get_database
 
 # Configure once at startup
-db = configure_database("experiment.db")
+# schema_keys defines which metadata keys identify dataset location
+db = configure_database(
+    "experiment.db",
+    schema_keys=["subject", "trial", "condition"]
+)
 
 # Access anywhere
 db = get_database()
 ```
+
+### Schema Keys
+
+The `schema_keys` parameter is **required** and defines which metadata keys identify the "location" in your dataset (e.g., subject, trial, sensor) versus computational variants at that location.
+
+- **Schema keys**: Identify the dataset location (used for folder structure)
+- **Version keys**: Everything else - distinguish computational variants at the same location
 
 ## Registration
 
@@ -50,23 +61,36 @@ assert record_id1 == record_id2  # No duplicate created
 
 ## Load Operations
 
-### Load by Metadata
+### Load Single Result
+
+`load()` returns the **latest version** at the specified schema location:
 
 ```python
-# Exact match
+# Load by schema keys - returns latest version
 var = MyVariable.load(subject=1, trial=1, condition="A")
 
-# Partial match (returns latest matching)
+# Partial match on schema - returns latest at that location
 var = MyVariable.load(subject=1)
-
-# Multiple matches returns list
-vars = MyVariable.load(condition="A")  # May return list
 ```
 
 ### Load by Version Hash
 
 ```python
 var = MyVariable.load(version="abc123...")
+```
+
+### Load All Matching
+
+Use `load_all()` to iterate over all matching records:
+
+```python
+# Generator (memory-efficient)
+for var in MyVariable.load_all(condition="A"):
+    print(var.data)
+
+# Load all into DataFrame
+df = MyVariable.load_all(condition="A", as_df=True)
+df = MyVariable.load_all(condition="A", as_df=True, include_record_id=True)
 ```
 
 ## Version History
@@ -77,7 +101,8 @@ var = MyVariable.load(version="abc123...")
 versions = db.list_versions(MyVariable, subject=1)
 for v in versions:
     print(f"{v['record_id'][:16]} - {v['created_at']}")
-    print(f"  Metadata: {v['metadata']}")
+    print(f"  Schema: {v['schema']}")    # Dataset location keys
+    print(f"  Version: {v['version']}")  # Computational variant keys
 ```
 
 ### Load Specific Version

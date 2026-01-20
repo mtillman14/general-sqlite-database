@@ -161,7 +161,7 @@ var.metadata  # Metadata dict (set after load)
 
 ## Batch Operations: DataFrames with Multiple Records
 
-When a DataFrame contains multiple independent data items (e.g., one row per subject/trial), use `save_from_dataframe()` and `load_to_dataframe()`:
+When a DataFrame contains multiple independent data items (e.g., one row per subject/trial), use `save_from_dataframe()` and `load_all(as_df=True)`:
 
 ### Saving Each Row Separately
 
@@ -195,7 +195,7 @@ record_ides = ScalarResult.save_from_dataframe(
 
 ```python
 # Load all records matching criteria
-df = ScalarResult.load_to_dataframe(experiment="exp1")
+df = ScalarResult.load_all(experiment="exp1", as_df=True)
 #   Subject  Trial  data
 #   1        1      0.52
 #   1        2      0.61
@@ -203,7 +203,7 @@ df = ScalarResult.load_to_dataframe(experiment="exp1")
 #   2        2      0.55
 
 # Include record_id for traceability
-df = ScalarResult.load_to_dataframe(experiment="exp1", include_record_id=True)
+df = ScalarResult.load_all(experiment="exp1", as_df=True, include_record_id=True)
 #   Subject  Trial  data   record_id
 #   1        1      0.52   abc123...
 #   ...
@@ -215,6 +215,9 @@ df = ScalarResult.load_to_dataframe(experiment="exp1", include_record_id=True)
 |----------|--------|
 | DataFrame is ONE unit of data (e.g., time series) | `MyVar.save(df, ...)` |
 | Each row is SEPARATE data (e.g., subject/trial results) | `MyVar.save_from_dataframe(df, ...)` |
+| Load single result (latest version) | `MyVar.load(...)` |
+| Load all matching as generator | `MyVar.load_all(...)` |
+| Load all matching as DataFrame | `MyVar.load_all(..., as_df=True)` |
 
 ## Metadata Reflects Dataset Structure
 
@@ -249,7 +252,10 @@ for subject in subjects:
 
 # Later: load specific combinations
 baseline_s1 = TrialResult.load(subject=1, trial="baseline")
-all_baselines = TrialResult.load(trial="baseline")  # All subjects
+
+# Iterate over all baselines (generator)
+for var in TrialResult.load_all(trial="baseline"):
+    print(var.metadata["subject"], var.data)
 ```
 
 ### Example: Session-Based Recordings

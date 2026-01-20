@@ -365,18 +365,18 @@ class TestSaveFromDataFrame:
         assert record_ides == []
 
 
-class TestLoadToDataFrame:
-    """Test load_to_dataframe() batch load method."""
+class TestLoadAllAsDataFrame:
+    """Test load_all(as_df=True) batch load method."""
 
-    def test_load_to_dataframe_basic(self, db, scalar_class):
-        """Basic load_to_dataframe returns correct structure."""
+    def test_load_all_as_df_basic(self, db, scalar_class):
+        """Basic load_all(as_df=True) returns correct structure."""
         # Save some records
         scalar_class.save(10.0, db=db, subject=1, experiment="test")
         scalar_class.save(20.0, db=db, subject=2, experiment="test")
         scalar_class.save(30.0, db=db, subject=3, experiment="test")
 
         # Load as DataFrame
-        df = scalar_class.load_to_dataframe(db=db, experiment="test")
+        df = scalar_class.load_all(db=db, as_df=True, experiment="test")
 
         assert isinstance(df, pd.DataFrame)
         assert len(df) == 3
@@ -384,12 +384,12 @@ class TestLoadToDataFrame:
         assert "subject" in df.columns
         assert "experiment" in df.columns
 
-    def test_load_to_dataframe_data_values(self, db, scalar_class):
-        """load_to_dataframe returns correct data values."""
+    def test_load_all_as_df_data_values(self, db, scalar_class):
+        """load_all(as_df=True) returns correct data values."""
         scalar_class.save(100, db=db, key="a", group="test")
         scalar_class.save(200, db=db, key="b", group="test")
 
-        df = scalar_class.load_to_dataframe(db=db, group="test")
+        df = scalar_class.load_all(db=db, as_df=True, group="test")
 
         # Sort by key for consistent testing
         df = df.sort_values("key").reset_index(drop=True)
@@ -399,35 +399,35 @@ class TestLoadToDataFrame:
         assert df.loc[1, "data"] == 200
         assert df.loc[1, "key"] == "b"
 
-    def test_load_to_dataframe_include_record_id(self, db, scalar_class):
-        """load_to_dataframe with include_record_id=True."""
+    def test_load_all_as_df_include_record_id(self, db, scalar_class):
+        """load_all(as_df=True) with include_record_id=True."""
         scalar_class.save(42, db=db, item=1, experiment="test")
 
-        df = scalar_class.load_to_dataframe(db=db, experiment="test", include_record_id=True)
+        df = scalar_class.load_all(db=db, as_df=True, experiment="test", include_record_id=True)
 
         assert "record_id" in df.columns
         assert isinstance(df.loc[0, "record_id"], str)
         assert len(df.loc[0, "record_id"]) > 0
 
-    def test_load_to_dataframe_exclude_record_id(self, db, scalar_class):
-        """load_to_dataframe with include_record_id=False (default)."""
+    def test_load_all_as_df_exclude_record_id(self, db, scalar_class):
+        """load_all(as_df=True) with include_record_id=False (default)."""
         scalar_class.save(42, db=db, item=1, experiment="test")
 
-        df = scalar_class.load_to_dataframe(db=db, experiment="test")
+        df = scalar_class.load_all(db=db, as_df=True, experiment="test")
 
         assert "record_id" not in df.columns
 
-    def test_load_to_dataframe_single_record(self, db, scalar_class):
-        """load_to_dataframe works with single matching record."""
+    def test_load_all_as_df_single_record(self, db, scalar_class):
+        """load_all(as_df=True) works with single matching record."""
         scalar_class.save(99, db=db, unique_key="only_one")
 
-        df = scalar_class.load_to_dataframe(db=db, unique_key="only_one")
+        df = scalar_class.load_all(db=db, as_df=True, unique_key="only_one")
 
         assert len(df) == 1
         assert df.loc[0, "data"] == 99
 
-    def test_load_to_dataframe_not_found(self, db, scalar_class):
-        """load_to_dataframe raises NotFoundError when no matches."""
+    def test_load_all_as_df_not_found(self, db, scalar_class):
+        """load_all(as_df=True) raises NotFoundError when no matches."""
         from scidb.exceptions import NotFoundError
 
         # First save something to register the type
@@ -435,14 +435,14 @@ class TestLoadToDataFrame:
 
         # Now query for something that doesn't exist
         with pytest.raises(NotFoundError):
-            scalar_class.load_to_dataframe(db=db, nonexistent="value")
+            scalar_class.load_all(db=db, as_df=True, nonexistent="value")
 
 
 class TestSaveLoadDataFrameRoundtrip:
-    """Test roundtrip of save_from_dataframe and load_to_dataframe."""
+    """Test roundtrip of save_from_dataframe and load_all(as_df=True)."""
 
     def test_roundtrip_preserves_data(self, db, scalar_class):
-        """Data survives save_from_dataframe -> load_to_dataframe."""
+        """Data survives save_from_dataframe -> load_all(as_df=True)."""
         original_df = pd.DataFrame({
             "subject": [1, 2, 3, 4],
             "trial": [1, 1, 2, 2],
@@ -459,8 +459,9 @@ class TestSaveLoadDataFrameRoundtrip:
         )
 
         # Load
-        loaded_df = scalar_class.load_to_dataframe(
+        loaded_df = scalar_class.load_all(
             db=db,
+            as_df=True,
             experiment="roundtrip_test",
         )
 
@@ -489,8 +490,9 @@ class TestSaveLoadDataFrameRoundtrip:
             db=db,
         )
 
-        loaded_df = scalar_class.load_to_dataframe(
+        loaded_df = scalar_class.load_all(
             db=db,
+            as_df=True,
             item_id=1,
             include_record_id=True,
         )
@@ -523,7 +525,7 @@ class TestSaveLoadDataFrameRoundtrip:
             db=db,
         )
 
-        loaded_df = StringValue.load_to_dataframe(db=db, key="b")
+        loaded_df = StringValue.load_all(db=db, as_df=True, key="b")
 
         assert loaded_df.loc[0, "data"] == "world"
 
