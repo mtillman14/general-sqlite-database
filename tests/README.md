@@ -8,7 +8,7 @@ Comprehensive pytest-compatible test suite for scidb implementation.
 tests/
 ├── conftest.py          # Shared fixtures and sample variable classes
 ├── test_exceptions.py   # Tests for custom exceptions
-├── test_hashing.py      # Tests for canonical_hash() and generate_vhash()
+├── test_hashing.py      # Tests for canonical_hash() and generate_record_id()
 ├── test_storage.py      # Tests for DataFrame serialization
 ├── test_variable.py     # Tests for BaseVariable ABC
 ├── test_database.py     # Tests for DatabaseManager
@@ -56,7 +56,7 @@ pytest tests/test_database.py::TestSave
 ### Run specific test
 
 ```bash
-pytest tests/test_database.py::TestSave::test_save_returns_vhash
+pytest tests/test_database.py::TestSave::test_save_returns_record_id
 ```
 
 ### Run with coverage

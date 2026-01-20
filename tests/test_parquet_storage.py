@@ -12,7 +12,7 @@ from scidb.parquet_storage import (
     delete_parquet,
     extract_metadata_from_path,
     extract_table_name_from_path,
-    extract_vhash_from_filename,
+    extract_record_id_from_filename,
     get_parquet_root,
     list_parquet_files,
     parse_metadata_order,
@@ -152,7 +152,7 @@ class TestComputeParquetPath:
         """Test complete path generation."""
         path = compute_parquet_path(
             table_name="sensor_reading",
-            vhash="abc123def456",
+            record_id="abc123def456",
             metadata={"subject": 1, "visit": 2},
             parquet_root=Path("/data/parquet"),
         )
@@ -163,7 +163,7 @@ class TestComputeParquetPath:
         """Test with custom metadata order."""
         path = compute_parquet_path(
             table_name="sensor_reading",
-            vhash="abc123",
+            record_id="abc123",
             metadata={"subject": 1, "visit": 2},
             parquet_root=Path("/data/parquet"),
             metadata_order=["visit", "subject"],
@@ -175,7 +175,7 @@ class TestComputeParquetPath:
         """Test with no metadata (flat storage within table folder)."""
         path = compute_parquet_path(
             table_name="sensor_reading",
-            vhash="abc123",
+            record_id="abc123",
             metadata={},
             parquet_root=Path("/data/parquet"),
         )
@@ -374,7 +374,7 @@ class TestExtractMetadataFromPath:
     def test_extracts_metadata(self, tmp_path):
         """Test metadata extraction from path (skips table_name folder)."""
         root = tmp_path / "parquet"
-        # Structure: parquet_root / table_name / key / value / ... / vhash.parquet
+        # Structure: parquet_root / table_name / key / value / ... / record_id.parquet
         path = root / "sensor_reading" / "subject" / "1" / "visit" / "2" / "abc123.parquet"
 
         metadata = extract_metadata_from_path(path, root)
@@ -445,18 +445,18 @@ class TestExtractTableNameFromPath:
 
 
 class TestExtractVhashFromFilename:
-    """Tests for extract_vhash_from_filename."""
+    """Tests for extract_record_id_from_filename."""
 
-    def test_extract_vhash(self):
-        """Test vhash extraction (filename is just vhash.parquet)."""
-        assert extract_vhash_from_filename("abc123def456.parquet") == "abc123def456"
-        assert extract_vhash_from_filename("xyz.parquet") == "xyz"
+    def test_extract_record_id(self):
+        """Test record_id extraction (filename is just record_id.parquet)."""
+        assert extract_record_id_from_filename("abc123def456.parquet") == "abc123def456"
+        assert extract_record_id_from_filename("xyz.parquet") == "xyz"
 
     def test_not_parquet_extension(self):
         """Test with non-parquet extension."""
-        assert extract_vhash_from_filename("abc123.csv") is None
-        assert extract_vhash_from_filename("abc123") is None
+        assert extract_record_id_from_filename("abc123.csv") is None
+        assert extract_record_id_from_filename("abc123") is None
 
     def test_empty_filename(self):
         """Test with just the extension."""
-        assert extract_vhash_from_filename(".parquet") is None
+        assert extract_record_id_from_filename(".parquet") is None

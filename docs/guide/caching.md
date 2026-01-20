@@ -95,7 +95,7 @@ result = process(input_data)
 cached = check_cache(result.pipeline_thunk, OutputVar, db=db)
 
 if cached:
-    print(f"Cache hit! vhash: {cached.cached_id}")
+    print(f"Cache hit! record_id: {cached.cached_id}")
 else:
     print("Cache miss, saving...")
     OutputVar.save(result, db=db, subject=1)
@@ -108,7 +108,7 @@ The cache key is a SHA-256 hash of:
 | Component | Source |
 |-----------|--------|
 | Function hash | Bytecode + constants |
-| Input vhashes | For saved variables |
+| Input record_ides | For saved variables |
 | Input content hashes | For unsaved values |
 | Output thunk hashes | For chained computations |
 
@@ -203,10 +203,10 @@ if cached:
 
 ### 3. Use Saved Variables as Inputs
 
-Variables with vhashes have stable cache keys:
+Variables with record_ides have stable cache keys:
 
 ```python
-# Good: loaded variable has vhash
+# Good: loaded variable has record_id
 raw = RawData.load(subject=1)
 result = process(raw.data)
 

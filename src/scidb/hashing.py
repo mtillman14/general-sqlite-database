@@ -1,7 +1,7 @@
 """Deterministic hashing for arbitrary Python objects.
 
 This module re-exports the thunk library's hashing functionality and provides
-scidb-specific extensions for version hash generation.
+scidb-specific extensions for record ID generation.
 """
 
 import hashlib
@@ -9,19 +9,19 @@ import hashlib
 # Re-export canonical_hash from thunk library
 from thunk import canonical_hash
 
-__all__ = ["canonical_hash", "generate_vhash"]
+__all__ = ["canonical_hash", "generate_record_id"]
 
 
-def generate_vhash(
+def generate_record_id(
     class_name: str,
     schema_version: int,
     content_hash: str,
     metadata: dict,
 ) -> str:
     """
-    Generate a version hash for a variable.
+    Generate a unique record ID for a variable.
 
-    The vhash uniquely identifies a variable by its type, schema, content,
+    The record_id uniquely identifies a saved record by its type, schema, content,
     and metadata. It is used for addressing/querying data.
 
     Components:

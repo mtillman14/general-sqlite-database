@@ -35,17 +35,17 @@ Registration creates the table if it doesn't exist. Re-registering is safe (idem
 ### Basic Save
 
 ```python
-vhash = MyVariable.save(data, subject=1, trial=1, condition="A")
+record_id = MyVariable.save(data, subject=1, trial=1, condition="A")
 ```
 
 ### Idempotent Saves
 
-Saving identical data+metadata returns the existing vhash without duplicating:
+Saving identical data+metadata returns the existing record_id without duplicating:
 
 ```python
-vhash1 = MyVar.save(data, subject=1)
-vhash2 = MyVar.save(data, subject=1)  # Same data+metadata
-assert vhash1 == vhash2  # No duplicate created
+record_id1 = MyVar.save(data, subject=1)
+record_id2 = MyVar.save(data, subject=1)  # Same data+metadata
+assert record_id1 == record_id2  # No duplicate created
 ```
 
 ## Load Operations
@@ -76,14 +76,14 @@ var = MyVariable.load(version="abc123...")
 ```python
 versions = db.list_versions(MyVariable, subject=1)
 for v in versions:
-    print(f"{v['vhash'][:16]} - {v['created_at']}")
+    print(f"{v['record_id'][:16]} - {v['created_at']}")
     print(f"  Metadata: {v['metadata']}")
 ```
 
 ### Load Specific Version
 
 ```python
-# By vhash
+# By record_id
 var = MyVariable.load(version="abc123...")
 
 # By metadata (returns latest matching)
@@ -113,7 +113,7 @@ for d in derived:
 ### Check Lineage Exists
 
 ```python
-if db.has_lineage(vhash):
+if db.has_lineage(record_id):
     print("This variable was produced by a thunked function")
 ```
 

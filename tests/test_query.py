@@ -133,16 +133,16 @@ class TestQueryInterface:
         )
         assert df["n"].iloc[0] == 200
 
-    def test_include_vhash(self, db_with_data):
-        """Test including vhash in results."""
+    def test_include_record_id(self, db_with_data):
+        """Test including record_id in results."""
         qi = QueryInterface(db_with_data)
         df = qi.query(
             "SELECT * FROM sensor_reading LIMIT 10",
-            include_vhash=True
+            include_record_id=True
         )
 
-        assert "_vhash" in df.columns
-        assert df["_vhash"].notna().all()
+        assert "_record_id" in df.columns
+        assert df["_record_id"].notna().all()
 
     def test_include_metadata(self, db_with_data):
         """Test including metadata columns in results."""
@@ -237,11 +237,11 @@ class TestQueryConvenienceFunction:
             "SELECT * FROM sensor_reading LIMIT 5",
             metadata_filter={"experiment": "exp1"},
             include_metadata=True,
-            include_vhash=True,
+            include_record_id=True,
         )
 
         assert len(df) == 5
-        assert "_vhash" in df.columns
+        assert "_record_id" in df.columns
         assert "_meta_experiment" in df.columns
         assert (df["_meta_experiment"] == "exp1").all()
 

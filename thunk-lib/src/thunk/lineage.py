@@ -101,24 +101,24 @@ def extract_lineage(output_thunk: OutputThunk) -> LineageRecord:
             )
         elif _is_trackable_variable(value):
             # Input is a trackable variable (e.g., scidb BaseVariable)
-            vhash = getattr(value, "_vhash", None) or getattr(value, "vhash", None)
+            record_id = getattr(value, "_record_id", None) or getattr(value, "record_id", None)
             metadata = getattr(value, "_metadata", None) or getattr(
                 value, "metadata", None
             )
 
-            if vhash is not None:
+            if record_id is not None:
                 # Saved variable - can be dereferenced later
                 inputs.append(
                     {
                         "name": name,
                         "source_type": "variable",
                         "type": type(value).__name__,
-                        "vhash": vhash,
+                        "record_id": record_id,
                         "metadata": metadata,
                     }
                 )
             else:
-                # Unsaved variable - still an input, but no vhash to reference
+                # Unsaved variable - still an input, but no record_id to reference
                 inner_data = getattr(value, "data", None)
                 if isinstance(inner_data, OutputThunk):
                     # Unsaved variable wrapping an OutputThunk - can trace lineage
@@ -221,7 +221,7 @@ def _is_trackable_variable(obj: Any) -> bool:
     """Check if obj is a trackable variable with lineage support."""
     return (
         hasattr(obj, "data")
-        and hasattr(obj, "_vhash")
+        and hasattr(obj, "_record_id")
         and hasattr(obj, "to_db")
         and hasattr(obj, "from_db")
     )
@@ -235,7 +235,7 @@ def find_unsaved_variables(
     Find all unsaved BaseVariables in the upstream chain of an OutputThunk.
 
     Traverses the in-memory lineage chain to find any BaseVariable that
-    hasn't been saved (has no vhash). This is used by strict lineage mode
+    hasn't been saved (has no record_id). This is used by strict lineage mode
     to validate that all intermediates are saved.
 
     Args:
@@ -269,8 +269,8 @@ def find_unsaved_variables(
                 traverse(value, input_path, depth - 1)
 
         elif _is_trackable_variable(thunk_or_var):
-            vhash = getattr(thunk_or_var, "_vhash", None) or getattr(thunk_or_var, "vhash", None)
-            if vhash is None:
+            record_id = getattr(thunk_or_var, "_record_id", None) or getattr(thunk_or_var, "record_id", None)
+            if record_id is None:
                 # Found an unsaved variable
                 unsaved.append((thunk_or_var, path))
 

@@ -220,8 +220,8 @@ raw_data = (
 )
 
 # Save raw signal
-raw_vhash = RawSignal.save(raw_data, subject=1, session="morning", channel="EMG")
-print(f"\nSaved raw signal: {raw_vhash[:12]}...")
+raw_record_id = RawSignal.save(raw_data, subject=1, session="morning", channel="EMG")
+print(f"\nSaved raw signal: {raw_record_id[:12]}...")
 
 
 # -----------------------------------------------------------------------------
@@ -266,22 +266,22 @@ print(f"Envelope shape: {envelope.data.shape}")
 # -----------------------------------------------------------------------------
 
 # Save the filtered signal
-filtered_vhash = FilteredSignal.save(filtered,
+filtered_record_id = FilteredSignal.save(filtered,
     subject=1,
     session="morning",
     channel="EMG",
     filter_type="bandpass_5_30Hz"
 )
-print(f"\nSaved filtered signal: {filtered_vhash[:12]}...")
+print(f"\nSaved filtered signal: {filtered_record_id[:12]}...")
 
 # Save the envelope
-envelope_vhash = EnvelopeSignal.save(envelope,
+envelope_record_id = EnvelopeSignal.save(envelope,
     subject=1,
     session="morning",
     channel="EMG",
     derived_from="bandpass_filtered"
 )
-print(f"Saved envelope: {envelope_vhash[:12]}...")
+print(f"Saved envelope: {envelope_record_id[:12]}...")
 
 # Check cache statistics
 # Set a breakpoint here to inspect cache state
@@ -436,7 +436,7 @@ derived = db.get_derived_from(RawSignal, subject=1, session="morning")
 
 print(f"Variables derived from raw signal:")
 for item in derived:
-    print(f"  - {item.get('type_name', 'Unknown')}: {item.get('vhash', 'N/A')[:12]}...")
+    print(f"  - {item.get('type_name', 'Unknown')}: {item.get('record_id', 'N/A')[:12]}...")
 
 
 # -----------------------------------------------------------------------------

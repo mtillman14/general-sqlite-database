@@ -115,7 +115,7 @@ class QueryInterface:
         sql: str,
         metadata_filter: dict | None = None,
         include_metadata: bool = False,
-        include_vhash: bool = False,
+        include_record_id: bool = False,
     ) -> pd.DataFrame:
         """
         Execute an analytical SQL query across variable data.
@@ -130,7 +130,7 @@ class QueryInterface:
             metadata_filter: Optional dict to filter which records are included.
                            Applied before query execution.
             include_metadata: If True, include _meta_* columns for each metadata key
-            include_vhash: If True, include _vhash column to identify source records
+            include_record_id: If True, include _record_id column to identify source records
 
         Returns:
             Query results as a pandas DataFrame
@@ -148,7 +148,7 @@ class QueryInterface:
             # Include source tracking
             df = qi.query(
                 "SELECT * FROM sensor_reading",
-                include_vhash=True,
+                include_record_id=True,
                 include_metadata=True
             )
         """
@@ -161,7 +161,7 @@ class QueryInterface:
                 table_name,
                 metadata_filter=metadata_filter,
                 include_metadata=include_metadata,
-                include_vhash=include_vhash,
+                include_record_id=include_record_id,
             )
 
         # Execute query
@@ -192,7 +192,7 @@ class QueryInterface:
         table_name: str,
         metadata_filter: dict | None = None,
         include_metadata: bool = False,
-        include_vhash: bool = False,
+        include_record_id: bool = False,
     ) -> None:
         """
         Register a variable type as a DuckDB table.
@@ -218,7 +218,7 @@ class QueryInterface:
 
         cursor = self.db.connection.execute(
             f"""
-            SELECT v.vhash, v.metadata, d.data
+            SELECT v.record_id, v.metadata, d.data
             FROM {table_name} v
             JOIN _data d ON v.content_hash = d.content_hash
             WHERE {where_clause}
@@ -237,8 +237,8 @@ class QueryInterface:
         for row in rows:
             df = pd.read_parquet(io.BytesIO(row["data"]))
 
-            if include_vhash:
-                df["_vhash"] = row["vhash"]
+            if include_record_id:
+                df["_record_id"] = row["record_id"]
 
             if include_metadata:
                 meta = json.loads(row["metadata"])
@@ -309,7 +309,7 @@ def query(
     sql: str,
     metadata_filter: dict | None = None,
     include_metadata: bool = False,
-    include_vhash: bool = False,
+    include_record_id: bool = False,
 ) -> pd.DataFrame:
     """
     Execute a one-off analytical query.
@@ -322,7 +322,7 @@ def query(
         sql: SQL query string
         metadata_filter: Optional metadata filter
         include_metadata: Include _meta_* columns
-        include_vhash: Include _vhash column
+        include_record_id: Include _record_id column
 
     Returns:
         Query results as DataFrame
@@ -338,5 +338,5 @@ def query(
             sql,
             metadata_filter=metadata_filter,
             include_metadata=include_metadata,
-            include_vhash=include_vhash,
+            include_record_id=include_record_id,
         )

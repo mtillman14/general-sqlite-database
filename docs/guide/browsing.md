@@ -24,7 +24,7 @@ Open your `.sqlite` file in SQLite Studio, DBeaver, or any SQLite viewer. Each v
 
 | Column | Description |
 |--------|-------------|
-| `vhash` | Unique content hash |
+| `record_id` | Unique content hash |
 | `metadata` | JSON with addressing keys |
 | `preview` | Human-readable summary |
 | `data` | Parquet BLOB (not viewable) |
@@ -48,12 +48,12 @@ print(var.get_preview())
 print(db.preview_data(TimeSeries, experiment="exp1"))
 # === TimeSeries (3 records) ===
 #
-# vhash: abc123def456...
+# record_id: abc123def456...
 #   metadata: subject=1, trial=1
 #   preview: [1000 rows x 2 cols] ...
 #   created: 2024-01-15 10:30:00
 #
-# vhash: def456ghi789...
+# record_id: def456ghi789...
 #   metadata: subject=1, trial=2
 #   preview: [1000 rows x 2 cols] ...
 #   created: 2024-01-15 10:31:00
@@ -82,13 +82,13 @@ print(f"Exported {count} records")
 
 The exported CSV includes:
 - All columns from `to_db()` output
-- `_vhash` column for traceability
+- `_record_id` column for traceability
 - `_meta_*` columns for each metadata key
 
 ### Example CSV Output
 
 ```csv
-index,value,_vhash,_meta_subject,_meta_trial
+index,value,_record_id,_meta_subject,_meta_trial
 0,0.123,abc123...,1,1
 1,0.456,abc123...,1,1
 2,0.789,abc123...,1,1

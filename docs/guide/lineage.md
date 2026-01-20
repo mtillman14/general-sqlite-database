@@ -92,14 +92,14 @@ lineage = db.get_full_lineage(FinalResult, subject=1)
 print(lineage)
 # {
 #     "type": "FinalResult",
-#     "vhash": "abc123...",
+#     "record_id": "abc123...",
 #     "function": "compute_stats",
 #     "function_hash": "...",
 #     "constants": [...],
 #     "inputs": [
 #         {
 #             "type": "NormalizedData",
-#             "vhash": "...",
+#             "record_id": "...",
 #             "function": "normalize",
 #             "inputs": [...]
 #         }
@@ -112,14 +112,14 @@ print(db.format_lineage(FinalResult, subject=1))
 
 Output of `format_lineage()`:
 ```
-└── FinalResult (vhash: abc123...)
+└── FinalResult (record_id: abc123...)
     ├── function: compute_stats [hash: def456...]
     ├── constants: threshold=0.5
     └── inputs:
-        └── NormalizedData (vhash: ghi789...)
+        └── NormalizedData (record_id: ghi789...)
             ├── function: normalize [hash: jkl012...]
             └── inputs:
-                └── RawData (vhash: mno345...)
+                └── RawData (record_id: mno345...)
                     └── [source: manual]
 ```
 
@@ -322,7 +322,7 @@ def analyze(data):
     # Receives the raw numpy array (loaded.data)
     return data.mean()
 
-# Pass the loaded variable - lineage links to loaded.vhash
+# Pass the loaded variable - lineage links to loaded.record_id
 result = analyze(loaded)
 FinalResult.save(result, db=db, subject=1, stage="analyzed")
 
@@ -339,7 +339,7 @@ By default, thunks unwrap `BaseVariable` and `OutputThunk` inputs to their raw d
 @thunk(n_outputs=1, unwrap=False)
 def debug_process(var):
     # var is the BaseVariable, not raw data
-    print(f"Input vhash: {var.vhash}")
+    print(f"Input record_id: {var.record_id}")
     print(f"Input metadata: {var.metadata}")
     print(f"Data shape: {var.data.shape}")
     return var.data * 2

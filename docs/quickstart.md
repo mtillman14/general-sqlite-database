@@ -46,12 +46,12 @@ db = configure_database("my_experiment.db")
 ```python
 # Save data with metadata
 signal = np.sin(np.linspace(0, 2*np.pi, 100))
-vhash = SignalData.save(signal,
+record_id = SignalData.save(signal,
     subject=1,
     trial=1,
     condition="control"
 )
-print(f"Saved with hash: {vhash[:16]}...")
+print(f"Saved with hash: {record_id[:16]}...")
 ```
 
 ## 4. Load Data by Metadata
@@ -60,7 +60,7 @@ print(f"Saved with hash: {vhash[:16]}...")
 # Load by metadata query
 loaded = SignalData.load(subject=1, trial=1)
 print(loaded.data)       # The numpy array
-print(loaded.vhash)      # Version hash
+print(loaded.record_id)      # Version hash
 print(loaded.metadata)   # {"subject": 1, "trial": 1, "condition": "control"}
 ```
 

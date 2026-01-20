@@ -149,13 +149,13 @@ Each subclass:
 After `save()` or `load()`:
 
 ```python
-# Save returns the vhash
-vhash = MyVariable.save(data, subject=1)
+# Save returns the record_id
+record_id = MyVariable.save(data, subject=1)
 
 # Load returns a variable instance with populated properties
 var = MyVariable.load(subject=1)
 var.data      # The native data
-var.vhash     # Content hash (set after load)
+var.record_id     # Content hash (set after load)
 var.metadata  # Metadata dict (set after load)
 ```
 
@@ -182,7 +182,7 @@ class ScalarResult(BaseVariable):
         return df["value"].iloc[0]
 
 # Save each row as a separate record
-vhashes = ScalarResult.save_from_dataframe(
+record_ides = ScalarResult.save_from_dataframe(
     df=results_df,
     data_column="Value",
     metadata_columns=["Subject", "Trial"],
@@ -202,9 +202,9 @@ df = ScalarResult.load_to_dataframe(experiment="exp1")
 #   2        1      0.48
 #   2        2      0.55
 
-# Include vhash for traceability
-df = ScalarResult.load_to_dataframe(experiment="exp1", include_vhash=True)
-#   Subject  Trial  data   vhash
+# Include record_id for traceability
+df = ScalarResult.load_to_dataframe(experiment="exp1", include_record_id=True)
+#   Subject  Trial  data   record_id
 #   1        1      0.52   abc123...
 #   ...
 ```
@@ -274,7 +274,7 @@ The key insight: your metadata structure should make it easy to query the data t
 
 These keys cannot be used in metadata:
 
-- `vhash` - Reserved for version hash
+- `record_id` - Reserved for version hash
 - `id` - Reserved for database ID
 - `created_at` - Reserved for timestamp
 - `schema_version` - Reserved for schema version

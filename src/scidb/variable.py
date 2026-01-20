@@ -40,7 +40,7 @@ class BaseVariable(ABC):
 
     # Reserved metadata keys that users cannot use
     _reserved_keys = frozenset(
-        {"vhash", "id", "created_at", "schema_version"}
+        {"record_id", "id", "created_at", "schema_version"}
     )
 
     # Global registry of all subclasses (for auto-registration with database)
@@ -64,15 +64,15 @@ class BaseVariable(ABC):
             data: The native Python object (numpy array, etc.)
         """
         self.data = data
-        self._vhash: str | None = None
+        self._record_id: str | None = None
         self._metadata: dict | None = None
         self._content_hash: str | None = None
         self._lineage_hash: str | None = None
 
     @property
-    def vhash(self) -> str | None:
-        """The version hash, set after save() or load()."""
-        return self._vhash
+    def record_id(self) -> str | None:
+        """The unique record ID, set after save() or load()."""
+        return self._record_id
 
     @property
     def metadata(self) -> dict | None:
@@ -165,7 +165,7 @@ class BaseVariable(ABC):
             **metadata: Addressing metadata (e.g., subject=1, trial=1)
 
         Returns:
-            str: The vhash of the saved data
+            str: The record_id of the saved data
 
         Raises:
             ReservedMetadataKeyError: If metadata contains reserved keys
@@ -176,14 +176,14 @@ class BaseVariable(ABC):
         Example:
             # Save from a thunk computation
             result = process(input_data)
-            vhash = CleanData.save(result, subject=1, trial=1)
+            record_id = CleanData.save(result, subject=1, trial=1)
 
             # Save raw data
-            vhash = CleanData.save(np.array([1, 2, 3]), subject=1, trial=1)
+            record_id = CleanData.save(np.array([1, 2, 3]), subject=1, trial=1)
 
             # Re-save an existing variable with new metadata
             var = CleanData.load(subject=1, trial=1)
-            vhash = CleanData.save(var, subject=1, trial=2)
+            record_id = CleanData.save(var, subject=1, trial=2)
         """
         from .database import get_database, get_user_id
         from .exceptions import ReservedMetadataKeyError, UnsavedIntermediateError
@@ -265,8 +265,8 @@ class BaseVariable(ABC):
         instance = cls(raw_data)
 
         # Save to database
-        vhash = db.save(instance, metadata, lineage=lineage, lineage_hash=lineage_hash)
-        instance._vhash = vhash
+        record_id = db.save(instance, metadata, lineage=lineage, lineage_hash=lineage_hash)
+        instance._record_id = record_id
         instance._metadata = metadata
 
         # Populate computation cache if this came from a thunk
@@ -277,11 +277,11 @@ class BaseVariable(ABC):
                 function_name=output_thunk.pipeline_thunk.thunk.fcn.__name__,
                 function_hash=output_thunk.pipeline_thunk.thunk.hash,
                 output_type=cls.__name__,
-                output_vhash=vhash,
+                output_record_id=record_id,
                 output_num=output_thunk.output_num,
             )
 
-        return vhash
+        return record_id
 
     @classmethod
     def load(
@@ -295,7 +295,7 @@ class BaseVariable(ABC):
 
         Args:
             db: Optional explicit database. If None, uses global database.
-            version: "latest" for most recent, or specific vhash
+            version: "latest" for most recent, or specific record_id
             **metadata: Addressing metadata to match
 
         Returns:
@@ -335,7 +335,7 @@ class BaseVariable(ABC):
             **common_metadata: Additional metadata applied to all rows
 
         Returns:
-            List of vhashes for each saved record
+            List of record_ides for each saved record
 
         Example:
             # DataFrame with 10 rows (2 subjects x 5 trials)
@@ -344,7 +344,7 @@ class BaseVariable(ABC):
             #   1        2      0.6
             #   ...
 
-            vhashes = ScalarValue.save_from_dataframe(
+            record_ides = ScalarValue.save_from_dataframe(
                 df=results_df,
                 data_column="MyVar",
                 metadata_columns=["Subject", "Trial"],
@@ -354,7 +354,7 @@ class BaseVariable(ABC):
         from .database import get_database
 
         db = db or get_database()
-        vhashes = []
+        record_ides = []
 
         for _, row in df.iterrows():
             # Extract row-specific metadata from columns
@@ -372,16 +372,16 @@ class BaseVariable(ABC):
 
             # Extract data and save
             data = row[data_column]
-            vhash = cls.save(data, db=db, **full_metadata)
-            vhashes.append(vhash)
+            record_id = cls.save(data, db=db, **full_metadata)
+            record_ides.append(record_id)
 
-        return vhashes
+        return record_ides
 
     @classmethod
     def load_to_dataframe(
         cls,
         db: "DatabaseManager | None" = None,
-        include_vhash: bool = False,
+        include_record_id: bool = False,
         **metadata,
     ) -> pd.DataFrame:
         """
@@ -392,7 +392,7 @@ class BaseVariable(ABC):
 
         Args:
             db: Optional explicit database. If None, uses global database.
-            include_vhash: If True, include vhash as a column
+            include_record_id: If True, include record_id as a column
             **metadata: Metadata filter (loads all matching records)
 
         Returns:
@@ -402,7 +402,7 @@ class BaseVariable(ABC):
             # Load all records for experiment
             df = ScalarValue.load_to_dataframe(experiment="exp1")
             # Returns:
-            #   Subject  Trial  data   (vhash)
+            #   Subject  Trial  data   (record_id)
             #   1        1      0.5    abc123...
             #   1        2      0.6    def456...
             #   ...
@@ -427,8 +427,8 @@ class BaseVariable(ABC):
         for var in results:
             row = dict(var.metadata) if var.metadata else {}
             row["data"] = var.data
-            if include_vhash:
-                row["vhash"] = var.vhash
+            if include_record_id:
+                row["record_id"] = var.record_id
             rows.append(row)
 
         return pd.DataFrame(rows)

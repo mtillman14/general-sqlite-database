@@ -217,19 +217,19 @@ def main():
         print(f"Loaded DataFrame with shape: {raw_df.shape}")
         print(f"Columns: {list(raw_df.columns)}")
 
-        raw_vhash = RawData.save(raw_df,
+        raw_record_id = RawData.save(raw_df,
             db=db,
             source="sensor_data.csv",
             experiment="demo",
             subject=1,
         )
-        print(f"Saved RawData with vhash: {raw_vhash[:16]}...")
+        print(f"Saved RawData with record_id: {raw_record_id[:16]}...")
 
         # Demonstrate load
         print("\n[5] Loading RawData back from database...")
         loaded_raw = RawData.load(db=db, source="sensor_data.csv")
         print(f"Loaded DataFrame matches original: {loaded_raw.data.equals(raw_df)}")
-        print(f"Loaded vhash: {loaded_raw.vhash[:16]}...")
+        print(f"Loaded record_id: {loaded_raw.record_id[:16]}...")
         print(f"Loaded metadata: {loaded_raw.metadata}")
 
         # ---------------------------------------------------------------------
@@ -256,14 +256,14 @@ def main():
         # Save the results - lineage is automatically captured!
         print("\n[7] Saving results (lineage captured automatically)...")
 
-        ts_vhash = TimeSeries.save(temp_series, db=db, column="temperature", stage="raw", subject=1)
-        print(f"    Saved TimeSeries (raw): {ts_vhash[:16]}...")
+        ts_record_id = TimeSeries.save(temp_series, db=db, column="temperature", stage="raw", subject=1)
+        print(f"    Saved TimeSeries (raw): {ts_record_id[:16]}...")
 
-        norm_vhash = NormalizedSeries.save(temp_normalized, db=db, column="temperature", stage="normalized", subject=1)
-        print(f"    Saved NormalizedSeries: {norm_vhash[:16]}...")
+        norm_record_id = NormalizedSeries.save(temp_normalized, db=db, column="temperature", stage="normalized", subject=1)
+        print(f"    Saved NormalizedSeries: {norm_record_id[:16]}...")
 
-        stats_vhash = Statistics.save(temp_stats, db=db, column="temperature", stage="stats", subject=1)
-        print(f"    Saved Statistics: {stats_vhash[:16]}...")
+        stats_record_id = Statistics.save(temp_stats, db=db, column="temperature", stage="stats", subject=1)
+        print(f"    Saved Statistics: {stats_record_id[:16]}...")
 
         # Query provenance
         print("\n[8] Querying provenance (what produced each variable?)...")
@@ -376,12 +376,12 @@ def main():
         )
         print(f"    Found {len(versions)} versions:")
         for v in versions:
-            print(f"      - vhash: {v['vhash'][:16]}... window={v['metadata'].get('window')}")
+            print(f"      - record_id: {v['record_id'][:16]}... window={v['metadata'].get('window')}")
 
         # Load specific version
         print("\n[16] Loading specific version (window=5)...")
         loaded = TimeSeries.load(db=db, column="temperature", stage="smoothed", window=5)
-        print(f"    Loaded vhash: {loaded.vhash[:16]}...")
+        print(f"    Loaded record_id: {loaded.record_id[:16]}...")
         print(f"    Data shape: {loaded.data.shape}")
 
         # ---------------------------------------------------------------------

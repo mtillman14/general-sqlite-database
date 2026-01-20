@@ -16,7 +16,7 @@ from .exceptions import (
     NotFoundError,
     NotRegisteredError,
 )
-from .hashing import generate_vhash, canonical_hash
+from .hashing import generate_record_id, canonical_hash
 from .parquet_storage import (
     compute_parquet_path,
     get_parquet_root,
@@ -106,7 +106,7 @@ class DatabaseManager:
         db = DatabaseManager("experiment.db")
         db.register(RotationMatrix)
 
-        vhash = RotationMatrix.save(np.eye(3), db=db, subject=1, trial=1)
+        record_id = RotationMatrix.save(np.eye(3), db=db, subject=1, trial=1)
 
         loaded = RotationMatrix.load(db=db, subject=1, trial=1)
     """
@@ -170,7 +170,7 @@ class DatabaseManager:
         self.connection.execute(
             """
             CREATE TABLE IF NOT EXISTS _version_log (
-                vhash TEXT PRIMARY KEY,
+                record_id TEXT PRIMARY KEY,
                 type_name TEXT NOT NULL,
                 table_name TEXT NOT NULL,
                 content_hash TEXT NOT NULL,
@@ -193,7 +193,7 @@ class DatabaseManager:
             """
             CREATE TABLE IF NOT EXISTS _lineage (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
-                output_vhash TEXT UNIQUE NOT NULL,
+                output_record_id TEXT UNIQUE NOT NULL,
                 output_type TEXT NOT NULL,
                 function_name TEXT NOT NULL,
                 function_hash TEXT NOT NULL,
@@ -217,11 +217,11 @@ class DatabaseManager:
         self.connection.execute(
             """
             CREATE INDEX IF NOT EXISTS idx_lineage_output
-            ON _lineage(output_vhash)
+            ON _lineage(output_record_id)
         """
         )
 
-        # Computation cache table - maps (function + inputs + output_num) -> output vhash
+        # Computation cache table - maps (function + inputs + output_num) -> output record_id
         self.connection.execute(
             """
             CREATE TABLE IF NOT EXISTS _computation_cache (
@@ -231,7 +231,7 @@ class DatabaseManager:
                 function_name TEXT NOT NULL,
                 function_hash TEXT NOT NULL,
                 output_type TEXT NOT NULL,
-                output_vhash TEXT NOT NULL,
+                output_record_id TEXT NOT NULL,
                 created_at TEXT DEFAULT CURRENT_TIMESTAMP,
                 UNIQUE(cache_key, output_num)
             )
@@ -267,7 +267,7 @@ class DatabaseManager:
             f"""
             CREATE TABLE IF NOT EXISTS {table_name} (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
-                vhash TEXT UNIQUE NOT NULL,
+                record_id TEXT UNIQUE NOT NULL,
                 content_hash TEXT NOT NULL,
                 lineage_hash TEXT,
                 schema_version INTEGER NOT NULL,
@@ -279,11 +279,11 @@ class DatabaseManager:
         """
         )
 
-        # Create index on vhash for fast lookups
+        # Create index on record_id for fast lookups
         self.connection.execute(
             f"""
-            CREATE INDEX IF NOT EXISTS idx_{table_name}_vhash
-            ON {table_name}(vhash)
+            CREATE INDEX IF NOT EXISTS idx_{table_name}_record_id
+            ON {table_name}(record_id)
         """
         )
 
@@ -375,8 +375,8 @@ class DatabaseManager:
         Data is stored as a Parquet file in the parquet_root directory.
         Metadata entries are stored in the variable-specific SQLite table.
 
-        If the exact same data+metadata already exists (same vhash),
-        this is a no-op and returns the existing vhash.
+        If the exact same data+metadata already exists (same record_id),
+        this is a no-op and returns the existing record_id.
 
         Args:
             variable: The variable instance to save
@@ -385,7 +385,7 @@ class DatabaseManager:
             lineage_hash: Optional pre-computed lineage hash for cache key computation
 
         Returns:
-            The vhash of the saved/existing data
+            The record_id of the saved/existing data
         """
         table_name = self._ensure_registered(type(variable))
         type_name = variable.__class__.__name__
@@ -395,8 +395,8 @@ class DatabaseManager:
         df = variable.to_db()
         content_hash = canonical_hash(variable.data)
 
-        # Generate vhash (using content_hash, not raw data)
-        vhash = generate_vhash(
+        # Generate record_id (using content_hash, not raw data)
+        record_id = generate_record_id(
             class_name=type_name,
             schema_version=variable.schema_version,
             content_hash=content_hash,
@@ -405,18 +405,18 @@ class DatabaseManager:
 
         # Check if metadata entry already exists (idempotent save)
         cursor = self.connection.execute(
-            f"SELECT vhash FROM {table_name} WHERE vhash = ?",
-            (vhash,),
+            f"SELECT record_id FROM {table_name} WHERE record_id = ?",
+            (record_id,),
         )
         if cursor.fetchone() is not None:
-            return vhash  # Already saved
+            return record_id  # Already saved
 
         now = datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")
 
         # Write data to Parquet file
         parquet_path = compute_parquet_path(
             table_name=table_name,
-            vhash=vhash,
+            record_id=record_id,
             metadata=metadata,
             parquet_root=self.parquet_root,
         )
@@ -429,32 +429,32 @@ class DatabaseManager:
         self.connection.execute(
             f"""
             INSERT INTO {table_name}
-            (vhash, content_hash, lineage_hash, schema_version, metadata, preview, user_id, created_at)
+            (record_id, content_hash, lineage_hash, schema_version, metadata, preview, user_id, created_at)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?)
         """,
-            (vhash, content_hash, lineage_hash, variable.schema_version, metadata_json, preview_str, user_id, now),
+            (record_id, content_hash, lineage_hash, variable.schema_version, metadata_json, preview_str, user_id, now),
         )
 
         # Log to version history (includes content_hash for finding identical content)
         self.connection.execute(
             """
             INSERT INTO _version_log
-            (vhash, type_name, table_name, content_hash, metadata, created_at)
+            (record_id, type_name, table_name, content_hash, metadata, created_at)
             VALUES (?, ?, ?, ?, ?, ?)
         """,
-            (vhash, type_name, table_name, content_hash, metadata_json, now),
+            (record_id, type_name, table_name, content_hash, metadata_json, now),
         )
 
         # Save lineage if provided
         if lineage is not None:
-            self._save_lineage(vhash, type_name, lineage, now, user_id)
+            self._save_lineage(record_id, type_name, lineage, now, user_id)
 
         self.connection.commit()
-        return vhash
+        return record_id
 
     def _save_lineage(
         self,
-        output_vhash: str,
+        output_record_id: str,
         output_type: str,
         lineage: "LineageRecord",
         timestamp: str,
@@ -464,12 +464,12 @@ class DatabaseManager:
         self.connection.execute(
             """
             INSERT OR REPLACE INTO _lineage
-            (output_vhash, output_type, function_name, function_hash,
+            (output_record_id, output_type, function_name, function_hash,
              inputs, constants, user_id, created_at)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?)
         """,
             (
-                output_vhash,
+                output_record_id,
                 output_type,
                 lineage.function_name,
                 lineage.function_hash,
@@ -492,7 +492,7 @@ class DatabaseManager:
 
         Ephemeral entries store the computation graph without storing actual data.
         They use synthetic IDs prefixed with "ephemeral:" to distinguish from
-        real vhashes.
+        real record_ides.
 
         Args:
             ephemeral_id: Synthetic ID for this ephemeral entry (e.g., "ephemeral:abc123")
@@ -504,7 +504,7 @@ class DatabaseManager:
 
         # Check if already exists (avoid duplicates)
         cursor = self.connection.execute(
-            "SELECT 1 FROM _lineage WHERE output_vhash = ?",
+            "SELECT 1 FROM _lineage WHERE output_record_id = ?",
             (ephemeral_id,),
         )
         if cursor.fetchone() is not None:
@@ -513,7 +513,7 @@ class DatabaseManager:
         self.connection.execute(
             """
             INSERT INTO _lineage
-            (output_vhash, output_type, function_name, function_hash,
+            (output_record_id, output_type, function_name, function_hash,
              inputs, constants, user_id, created_at)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?)
         """,
@@ -542,7 +542,7 @@ class DatabaseManager:
         Args:
             variable_class: The type to load
             metadata: Metadata to match (partial matching supported)
-            version: "latest" or specific vhash
+            version: "latest" or specific record_id
 
         Returns:
             Single instance if one match, list if multiple matches
@@ -554,16 +554,16 @@ class DatabaseManager:
         table_name = self._ensure_registered(variable_class, auto_register=False)
 
         if version != "latest" and version is not None:
-            # Load specific version by vhash
+            # Load specific version by record_id
             cursor = self.connection.execute(
-                f"""SELECT vhash, content_hash, lineage_hash, metadata
+                f"""SELECT record_id, content_hash, lineage_hash, metadata
                     FROM {table_name}
-                    WHERE vhash = ?""",
+                    WHERE record_id = ?""",
                 (version,),
             )
             row = cursor.fetchone()
             if row is None:
-                raise NotFoundError(f"No data found with vhash '{version}'")
+                raise NotFoundError(f"No data found with record_id '{version}'")
 
             return self._row_to_variable(variable_class, table_name, row)
 
@@ -581,7 +581,7 @@ class DatabaseManager:
         where_clause = " AND ".join(conditions) if conditions else "1=1"
 
         cursor = self.connection.execute(
-            f"""SELECT vhash, content_hash, lineage_hash, metadata
+            f"""SELECT record_id, content_hash, lineage_hash, metadata
                 FROM {table_name}
                 WHERE {where_clause}
                 ORDER BY created_at DESC""",
@@ -610,12 +610,12 @@ class DatabaseManager:
         """Convert a database row to a variable instance."""
         # Parse metadata to compute Parquet path
         metadata = json.loads(row["metadata"])
-        vhash = row["vhash"]
+        record_id = row["record_id"]
 
         # Compute path and read Parquet file
         parquet_path = compute_parquet_path(
             table_name=table_name,
-            vhash=vhash,
+            record_id=record_id,
             metadata=metadata,
             parquet_root=self.parquet_root,
         )
@@ -623,7 +623,7 @@ class DatabaseManager:
         data = variable_class.from_db(df)
 
         instance = variable_class(data)
-        instance._vhash = vhash
+        instance._record_id = record_id
         instance._metadata = metadata
         instance._content_hash = row["content_hash"]
         instance._lineage_hash = row["lineage_hash"]  # May be None for raw data
@@ -643,7 +643,7 @@ class DatabaseManager:
             **metadata: Metadata to match
 
         Returns:
-            List of dicts with vhash, metadata, created_at
+            List of dicts with record_id, metadata, created_at
 
         Raises:
             NotRegisteredError: If this type has never been saved
@@ -659,7 +659,7 @@ class DatabaseManager:
         where_clause = " AND ".join(conditions) if conditions else "1=1"
 
         cursor = self.connection.execute(
-            f"""SELECT vhash, metadata, created_at FROM {table_name}
+            f"""SELECT record_id, metadata, created_at FROM {table_name}
                 WHERE {where_clause}
                 ORDER BY created_at DESC""",
             params,
@@ -667,7 +667,7 @@ class DatabaseManager:
 
         return [
             {
-                "vhash": row["vhash"],
+                "record_id": row["record_id"],
                 "metadata": json.loads(row["metadata"]),
                 "created_at": row["created_at"],
             }
@@ -685,26 +685,26 @@ class DatabaseManager:
 
         Args:
             variable_class: The type to query
-            version: Specific vhash, or None to use metadata lookup
+            version: Specific record_id, or None to use metadata lookup
             **metadata: Metadata to match (if version not specified)
 
         Returns:
             Dict with function_name, function_hash, inputs, constants
             or None if no lineage recorded (data wasn't from a thunk)
         """
-        # First, find the vhash
+        # First, find the record_id
         if version:
-            vhash = version
+            record_id = version
         else:
             var = self.load(variable_class, metadata)
             if isinstance(var, list):
                 var = var[0]  # Latest
-            vhash = var.vhash
+            record_id = var.record_id
 
         cursor = self.connection.execute(
             """SELECT function_name, function_hash, inputs, constants
-               FROM _lineage WHERE output_vhash = ?""",
-            (vhash,),
+               FROM _lineage WHERE output_record_id = ?""",
+            (record_id,),
         )
         row = cursor.fetchone()
 
@@ -731,54 +731,54 @@ class DatabaseManager:
 
         Args:
             variable_class: The type to query
-            version: Specific vhash, or None to use metadata lookup
+            version: Specific record_id, or None to use metadata lookup
             **metadata: Metadata to match (if version not specified)
 
         Returns:
-            List of dicts with vhash, type, function for each derived variable
+            List of dicts with record_id, type, function for each derived variable
         """
-        # First, find the vhash
+        # First, find the record_id
         if version:
-            vhash = version
+            record_id = version
         else:
             var = self.load(variable_class, metadata)
             if isinstance(var, list):
                 var = var[0]
-            vhash = var.vhash
+            record_id = var.record_id
 
-        # Search for this vhash in any lineage inputs
+        # Search for this record_id in any lineage inputs
         cursor = self.connection.execute(
-            """SELECT output_vhash, output_type, function_name, inputs
+            """SELECT output_record_id, output_type, function_name, inputs
                FROM _lineage
                WHERE EXISTS (
                    SELECT 1 FROM json_each(inputs)
-                   WHERE json_extract(value, '$.vhash') = ?
+                   WHERE json_extract(value, '$.record_id') = ?
                )""",
-            (vhash,),
+            (record_id,),
         )
 
         return [
             {
-                "vhash": row["output_vhash"],
+                "record_id": row["output_record_id"],
                 "type": row["output_type"],
                 "function": row["function_name"],
             }
             for row in cursor.fetchall()
         ]
 
-    def has_lineage(self, vhash: str) -> bool:
+    def has_lineage(self, record_id: str) -> bool:
         """
         Check if a variable has lineage information.
 
         Args:
-            vhash: The version hash to check
+            record_id: The version hash to check
 
         Returns:
             True if lineage exists, False otherwise
         """
         cursor = self.connection.execute(
-            "SELECT 1 FROM _lineage WHERE output_vhash = ?",
-            (vhash,),
+            "SELECT 1 FROM _lineage WHERE output_record_id = ?",
+            (record_id,),
         )
         return cursor.fetchone() is not None
 
@@ -797,7 +797,7 @@ class DatabaseManager:
 
         Args:
             variable_class: The type to query
-            version: Specific vhash, or None to use metadata lookup
+            version: Specific record_id, or None to use metadata lookup
             max_depth: Maximum recursion depth to prevent infinite loops
             **metadata: Metadata to match (if version not specified)
 
@@ -805,56 +805,56 @@ class DatabaseManager:
             Nested dict representing the full computation graph:
             {
                 "type": "FinalResult",
-                "vhash": "abc123...",
+                "record_id": "abc123...",
                 "function": "compute_stats",
                 "function_hash": "def456...",
                 "constants": [{"name": "threshold", "value": 0.5}],
                 "inputs": [
                     {
                         "type": "FilteredData",
-                        "vhash": "...",
+                        "record_id": "...",
                         "function": "filter",
                         ...
                     }
                 ]
             }
         """
-        # Find the vhash
+        # Find the record_id
         if version:
-            vhash = version
+            record_id = version
             type_name = variable_class.__name__
         else:
             var = self.load(variable_class, metadata)
             if isinstance(var, list):
                 var = var[0]  # Latest
-            vhash = var.vhash
+            record_id = var.record_id
             type_name = variable_class.__name__
 
-        return self._build_lineage_tree(vhash, type_name, max_depth, set())
+        return self._build_lineage_tree(record_id, type_name, max_depth, set())
 
     def _build_lineage_tree(
         self,
-        vhash: str,
+        record_id: str,
         type_name: str,
         max_depth: int,
         visited: set,
     ) -> dict:
-        """Recursively build the lineage tree for a vhash."""
+        """Recursively build the lineage tree for a record_id."""
         # Prevent infinite loops
-        if max_depth <= 0 or vhash in visited:
+        if max_depth <= 0 or record_id in visited:
             return {
                 "type": type_name,
-                "vhash": vhash,
+                "record_id": record_id,
                 "truncated": True,
             }
 
-        visited = visited | {vhash}
+        visited = visited | {record_id}
 
-        # Get lineage for this vhash
+        # Get lineage for this record_id
         cursor = self.connection.execute(
             """SELECT function_name, function_hash, inputs, constants
-               FROM _lineage WHERE output_vhash = ?""",
-            (vhash,),
+               FROM _lineage WHERE output_record_id = ?""",
+            (record_id,),
         )
         row = cursor.fetchone()
 
@@ -862,7 +862,7 @@ class DatabaseManager:
             # No lineage - this is a source/leaf node
             return {
                 "type": type_name,
-                "vhash": vhash,
+                "record_id": record_id,
                 "function": None,
                 "source": "manual",
             }
@@ -873,10 +873,10 @@ class DatabaseManager:
         # Recursively process inputs
         processed_inputs = []
         for inp in inputs_json:
-            if inp.get("source_type") == "variable" and "vhash" in inp:
+            if inp.get("source_type") == "variable" and "record_id" in inp:
                 # Saved variable - recurse
                 child = self._build_lineage_tree(
-                    inp["vhash"],
+                    inp["record_id"],
                     inp.get("type", "Unknown"),
                     max_depth - 1,
                     visited,
@@ -908,7 +908,7 @@ class DatabaseManager:
                     })
             elif inp.get("source_type") == "thunk":
                 # Output from another thunk - try to find by hash
-                # This is trickier since we need to find the vhash
+                # This is trickier since we need to find the record_id
                 processed_inputs.append({
                     "type": "ThunkOutput",
                     "input_name": inp.get("name"),
@@ -927,7 +927,7 @@ class DatabaseManager:
 
         return {
             "type": type_name,
-            "vhash": vhash,
+            "record_id": record_id,
             "function": row["function_name"],
             "function_hash": row["function_hash"],
             "constants": constants_json,
@@ -945,22 +945,22 @@ class DatabaseManager:
 
         Args:
             variable_class: The type to query
-            version: Specific vhash, or None to use metadata lookup
+            version: Specific record_id, or None to use metadata lookup
             **metadata: Metadata to match (if version not specified)
 
         Returns:
             A formatted string showing the computation graph.
 
         Example output:
-            FinalResult (vhash: abc123...)
+            FinalResult (record_id: abc123...)
             └── compute_stats [hash: def456...]
                 ├── constants: threshold=0.5
                 └── inputs:
-                    └── FilteredData (vhash: ghi789...)
+                    └── FilteredData (record_id: ghi789...)
                         └── filter [hash: jkl012...]
                             ├── constants: cutoff=10
                             └── inputs:
-                                └── RawData (vhash: mno345...)
+                                └── RawData (record_id: mno345...)
                                     └── [source: manual]
         """
         lineage = self.get_full_lineage(variable_class, version, **metadata)
@@ -984,26 +984,26 @@ class DatabaseManager:
         is_ephemeral = node.get("ephemeral", False)
 
         if node.get("truncated"):
-            vhash_short = node.get("vhash", "???")[:12]
-            lines.append(f"{prefix}{connector}{type_name} (vhash: {vhash_short}...) [truncated]")
+            record_id_short = node.get("record_id", "???")[:12]
+            lines.append(f"{prefix}{connector}{type_name} (record_id: {record_id_short}...) [truncated]")
             return
 
-        # Handle ephemeral nodes without vhash (unsaved raw data)
+        # Handle ephemeral nodes without record_id (unsaved raw data)
         if is_ephemeral and node.get("source") == "unsaved_raw_data":
             content_hash = node.get("content_hash", "???")[:12]
             lines.append(f"{prefix}{connector}{type_name} [ephemeral, hash: {content_hash}...]")
             lines.append(f"{child_prefix}└── [source: unsaved raw data]")
             return
 
-        # Format vhash display
-        vhash = node.get("vhash", "???")
-        if vhash.startswith("ephemeral:"):
-            vhash_display = f"ephemeral:{vhash[10:22]}..."
+        # Format record_id display
+        record_id = node.get("record_id", "???")
+        if record_id.startswith("ephemeral:"):
+            record_id_display = f"ephemeral:{record_id[10:22]}..."
         else:
-            vhash_display = f"{vhash[:12]}..."
+            record_id_display = f"{record_id[:12]}..."
 
         ephemeral_marker = " [ephemeral]" if is_ephemeral else ""
-        lines.append(f"{prefix}{connector}{type_name} (vhash: {vhash_display}){ephemeral_marker}")
+        lines.append(f"{prefix}{connector}{type_name} (record_id: {record_id_display}){ephemeral_marker}")
 
         # Format function info
         function = node.get("function")
@@ -1068,7 +1068,7 @@ class DatabaseManager:
             The cached variable instance, or None if not cached
         """
         cursor = self.connection.execute(
-            """SELECT output_vhash, output_type FROM _computation_cache
+            """SELECT output_record_id, output_type FROM _computation_cache
                WHERE cache_key = ?""",
             (cache_key,),
         )
@@ -1083,7 +1083,7 @@ class DatabaseManager:
 
         # Load the cached result
         try:
-            return self.load(variable_class, {}, version=row["output_vhash"])
+            return self.load(variable_class, {}, version=row["output_record_id"])
         except Exception:
             # Cache entry exists but data is missing - stale cache
             return None
@@ -1094,7 +1094,7 @@ class DatabaseManager:
         function_name: str,
         function_hash: str,
         output_type: str,
-        output_vhash: str,
+        output_record_id: str,
         output_num: int = 0,
     ) -> None:
         """
@@ -1105,37 +1105,37 @@ class DatabaseManager:
             function_name: Name of the function
             function_hash: Hash of the function bytecode
             output_type: Name of the output variable class
-            output_vhash: Version hash of the saved output
+            output_record_id: Version hash of the saved output
             output_num: Output index for multi-output functions (default 0)
         """
         now = datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")
         self.connection.execute(
             """
             INSERT OR REPLACE INTO _computation_cache
-            (cache_key, output_num, function_name, function_hash, output_type, output_vhash, created_at)
+            (cache_key, output_num, function_name, function_hash, output_type, output_record_id, created_at)
             VALUES (?, ?, ?, ?, ?, ?, ?)
         """,
-            (cache_key, output_num, function_name, function_hash, output_type, output_vhash, now),
+            (cache_key, output_num, function_name, function_hash, output_type, output_record_id, now),
         )
         self.connection.commit()
 
-    def load_by_vhash(
+    def load_by_record_id(
         self,
         variable_class: Type[BaseVariable],
-        vhash: str,
+        record_id: str,
     ) -> BaseVariable | None:
         """
-        Load a variable by its exact vhash.
+        Load a variable by its exact record_id.
 
         Args:
             variable_class: The type to load
-            vhash: The version hash
+            record_id: The version hash
 
         Returns:
             The variable instance, or None if not found
         """
         try:
-            return self.load(variable_class, {}, version=vhash)
+            return self.load(variable_class, {}, version=record_id)
         except Exception:
             return None
 
@@ -1152,11 +1152,11 @@ class DatabaseManager:
             n_outputs: Number of outputs expected (default 1)
 
         Returns:
-            List of (data, vhash) tuples if ALL outputs found and loadable,
+            List of (data, record_id) tuples if ALL outputs found and loadable,
             None otherwise. For n_outputs=1, still returns a list with one tuple.
         """
         cursor = self.connection.execute(
-            """SELECT output_num, output_type, output_vhash FROM _computation_cache
+            """SELECT output_num, output_type, output_record_id FROM _computation_cache
                WHERE cache_key = ?
                ORDER BY output_num""",
             (cache_key,),
@@ -1175,7 +1175,7 @@ class DatabaseManager:
         results = []
         for row in rows:
             output_type = row["output_type"]
-            output_vhash = row["output_vhash"]
+            output_record_id = row["output_record_id"]
 
             # Look up class from database registry first
             var_class = self._registered_types.get(output_type)
@@ -1186,12 +1186,12 @@ class DatabaseManager:
                     return None  # Class not found anywhere
                 self.register(var_class)
 
-            # Load the variable by vhash
-            var = self.load_by_vhash(var_class, output_vhash)
+            # Load the variable by record_id
+            var = self.load_by_record_id(var_class, output_record_id)
             if var is None:
                 return None  # Data was deleted or corrupted
 
-            results.append((var.data, output_vhash))
+            results.append((var.data, output_record_id))
 
         return results
 
@@ -1284,7 +1284,7 @@ class DatabaseManager:
 
         Exports the underlying DataFrame representation (from to_db()) for
         each matching variable. If multiple variables match, they are
-        concatenated with a 'vhash' column to distinguish them.
+        concatenated with a 'record_id' column to distinguish them.
 
         Args:
             variable_class: The type to export
@@ -1309,7 +1309,7 @@ class DatabaseManager:
         all_dfs = []
         for var in results:
             df = variable_class(var.data).to_db()
-            df["_vhash"] = var.vhash
+            df["_record_id"] = var.record_id
             # Add metadata columns
             if var.metadata:
                 for key, value in var.metadata.items():
@@ -1358,7 +1358,7 @@ class DatabaseManager:
         where_clause = " AND ".join(conditions) if conditions else "1=1"
 
         cursor = self.connection.execute(
-            f"""SELECT vhash, metadata, preview, created_at FROM {table_name}
+            f"""SELECT record_id, metadata, preview, created_at FROM {table_name}
                 WHERE {where_clause}
                 ORDER BY created_at DESC""",
             params,
@@ -1373,12 +1373,12 @@ class DatabaseManager:
         # Format output
         lines = [f"=== {variable_class.__name__} ({len(rows)} records) ===\n"]
         for row in rows:
-            vhash_short = row["vhash"][:12]
+            record_id_short = row["record_id"][:12]
             meta = json.loads(row["metadata"])
             meta_str = ", ".join(f"{k}={v}" for k, v in meta.items())
             preview = row["preview"] or "(no preview)"
 
-            lines.append(f"vhash: {vhash_short}...")
+            lines.append(f"record_id: {record_id_short}...")
             if meta_str:
                 lines.append(f"  metadata: {meta_str}")
             lines.append(f"  preview: {preview}")

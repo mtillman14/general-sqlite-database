@@ -220,8 +220,8 @@ class TestStrictMode:
         result = process(raw)
 
         # Should not raise - all intermediates saved
-        vhash = ProcessedData.save(result, subject=1, stage="processed")
-        assert vhash is not None
+        record_id = ProcessedData.save(result, subject=1, stage="processed")
+        assert record_id is not None
 
     def test_strict_mode_raises_for_unsaved_intermediate(self, strict_db):
         """Strict mode should raise error for unsaved intermediate."""
@@ -259,8 +259,8 @@ class TestStrictMode:
     def test_strict_mode_allows_raw_data_without_thunk(self, strict_db):
         """Strict mode should allow saving raw data (not from thunk)."""
         # Should not raise - no thunk involved
-        vhash = RawData.save(np.array([1, 2, 3]), subject=1)
-        assert vhash is not None
+        record_id = RawData.save(np.array([1, 2, 3]), subject=1)
+        assert record_id is not None
 
     def test_strict_mode_with_nested_pipeline(self, strict_db):
         """Strict mode with multi-step pipeline where all are saved."""
@@ -282,8 +282,8 @@ class TestStrictMode:
         result2 = step2(processed)
 
         # Should work - all intermediates saved
-        vhash = FinalResult.save(result2, subject=1, stage="final")
-        assert vhash is not None
+        record_id = FinalResult.save(result2, subject=1, stage="final")
+        assert record_id is not None
 
     def test_strict_mode_fails_with_unsaved_in_middle(self, strict_db):
         """Strict mode fails when intermediate in chain is unsaved."""
@@ -325,8 +325,8 @@ class TestEphemeralMode:
         result = process(raw)
 
         # Should not raise in ephemeral mode
-        vhash = ProcessedData.save(result, subject=1)
-        assert vhash is not None
+        record_id = ProcessedData.save(result, subject=1)
+        assert record_id is not None
 
     def test_ephemeral_mode_stores_lineage_for_unsaved(self, ephemeral_db):
         """Ephemeral mode should store lineage record for unsaved intermediate."""
@@ -370,7 +370,7 @@ class TestEphemeralMode:
 
         # Query the lineage table directly for ephemeral entries
         cursor = ephemeral_db.connection.execute(
-            "SELECT output_vhash, output_type FROM _lineage WHERE output_vhash LIKE 'ephemeral:%'"
+            "SELECT output_record_id, output_type FROM _lineage WHERE output_record_id LIKE 'ephemeral:%'"
         )
         ephemeral_entries = cursor.fetchall()
 
@@ -405,8 +405,8 @@ class TestEphemeralMode:
         r3 = step3(p2)
 
         # Should work in ephemeral mode
-        vhash = FinalResult.save(r3, subject=1)
-        assert vhash is not None
+        record_id = FinalResult.save(r3, subject=1)
+        assert record_id is not None
 
     def test_ephemeral_lineage_query_works(self, ephemeral_db):
         """Should be able to query full lineage including ephemeral nodes."""
@@ -562,7 +562,7 @@ class TestEdgeCases:
 
         # Count ephemeral entries
         cursor = ephemeral_db.connection.execute(
-            "SELECT COUNT(*) FROM _lineage WHERE output_vhash LIKE 'ephemeral:%'"
+            "SELECT COUNT(*) FROM _lineage WHERE output_record_id LIKE 'ephemeral:%'"
         )
         count = cursor.fetchone()[0]
 
@@ -591,8 +591,8 @@ class TestEdgeCases:
         final_result = increment(current)
 
         # Should work in ephemeral mode
-        vhash = FinalResult.save(final_result, subject=1)
-        assert vhash is not None
+        record_id = FinalResult.save(final_result, subject=1)
+        assert record_id is not None
 
 
 # --- Provenance Query Tests ---
@@ -645,10 +645,10 @@ class TestProvenanceQueries:
         RawData.save(np.array([1, 2, 3]), subject=1)
         raw = RawData.load(subject=1)
         result = process(raw)
-        vhash = ProcessedData.save(result, subject=1)
+        record_id = ProcessedData.save(result, subject=1)
 
-        assert strict_db.has_lineage(vhash)
+        assert strict_db.has_lineage(record_id)
 
         # Raw data without thunk has no lineage
-        vhash2 = RawData.save(np.array([4, 5, 6]), subject=2)
-        assert not strict_db.has_lineage(vhash2)
+        record_id2 = RawData.save(np.array([4, 5, 6]), subject=2)
+        assert not strict_db.has_lineage(record_id2)

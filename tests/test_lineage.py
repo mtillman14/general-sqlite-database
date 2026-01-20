@@ -15,7 +15,7 @@ class TestLineageRecord:
         record = LineageRecord(
             function_name="process",
             function_hash="abc123",
-            inputs=[{"name": "arg_0", "type": "Array", "vhash": "def456"}],
+            inputs=[{"name": "arg_0", "type": "Array", "record_id": "def456"}],
             constants=[{"name": "factor", "value_hash": "ghi789", "value_repr": "2"}],
         )
 
@@ -28,21 +28,21 @@ class TestLineageRecord:
         record = LineageRecord(
             function_name="process",
             function_hash="abc123",
-            inputs=[{"name": "arg_0", "vhash": "def456"}],
+            inputs=[{"name": "arg_0", "record_id": "def456"}],
             constants=[],
         )
 
         d = record.to_dict()
         assert d["function_name"] == "process"
         assert d["function_hash"] == "abc123"
-        assert d["inputs"] == [{"name": "arg_0", "vhash": "def456"}]
+        assert d["inputs"] == [{"name": "arg_0", "record_id": "def456"}]
         assert d["constants"] == []
 
     def test_lineage_record_from_dict(self):
         d = {
             "function_name": "process",
             "function_hash": "abc123",
-            "inputs": [{"name": "arg_0", "vhash": "def456"}],
+            "inputs": [{"name": "arg_0", "record_id": "def456"}],
             "constants": [{"name": "factor", "value_repr": "2"}],
         }
 
@@ -182,11 +182,11 @@ class TestExtractLineageWithSavedVariables:
         result = process(var)
         lineage = extract_lineage(result)
 
-        # The input should be tracked as a variable with vhash
+        # The input should be tracked as a variable with record_id
         assert len(lineage.inputs) == 1
         assert lineage.inputs[0]["source_type"] == "variable"
         assert lineage.inputs[0]["type"] == "ScalarValue"
-        assert lineage.inputs[0]["vhash"] == var.vhash
+        assert lineage.inputs[0]["record_id"] == var.record_id
 
 
 class TestGetLineageChain:
@@ -255,10 +255,10 @@ class TestLineageIntegration:
             return x * 2
 
         result = double(21)
-        vhash = scalar_class.save(result, db=db, subject=1)
+        record_id = scalar_class.save(result, db=db, subject=1)
 
         # Check that lineage was stored
-        assert db.has_lineage(vhash)
+        assert db.has_lineage(record_id)
 
         provenance = db.get_provenance(scalar_class, subject=1)
         assert provenance is not None
@@ -268,10 +268,10 @@ class TestLineageIntegration:
         """Saving raw data should not have lineage."""
         db.register(scalar_class)
 
-        vhash = scalar_class.save(42, db=db, subject=1)
+        record_id = scalar_class.save(42, db=db, subject=1)
 
         # Should not have lineage
-        assert not db.has_lineage(vhash)
+        assert not db.has_lineage(record_id)
 
         provenance = db.get_provenance(scalar_class, subject=1)
         assert provenance is None
@@ -281,7 +281,7 @@ class TestLineageIntegration:
         db.register(scalar_class)
 
         # Save input variable
-        input_vhash = scalar_class.save(10, db=db, subject=1, role="input")
+        input_record_id = scalar_class.save(10, db=db, subject=1, role="input")
         input_var = scalar_class.load(db=db, subject=1, role="input")
 
         @thunk(n_outputs=1)
@@ -290,7 +290,7 @@ class TestLineageIntegration:
 
         # Process the input
         result = process(input_var)
-        output_vhash = scalar_class.save(result, db=db, subject=1, role="output")
+        output_record_id = scalar_class.save(result, db=db, subject=1, role="output")
 
         # Check provenance
         provenance = db.get_provenance(scalar_class, subject=1, role="output")
@@ -299,7 +299,7 @@ class TestLineageIntegration:
 
         # Input should reference the saved variable
         assert len(provenance["inputs"]) == 1
-        assert provenance["inputs"][0]["vhash"] == input_vhash
+        assert provenance["inputs"][0]["record_id"] == input_record_id
 
     def test_get_derived_from(self, db, scalar_class):
         """Test querying what was derived from a variable."""
@@ -509,7 +509,7 @@ class TestGetFullLineage:
         # Should contain key information
         assert "ScalarValue" in formatted
         assert "process" in formatted
-        assert "vhash:" in formatted
+        assert "record_id:" in formatted
 
     def test_format_lineage_shows_source(self, db, scalar_class):
         """Test format_lineage shows source for manual data."""
@@ -562,8 +562,8 @@ class TestGetFullLineage:
 
         assert "constants:" in formatted
 
-    def test_get_full_lineage_by_vhash(self, db, scalar_class):
-        """Test get_full_lineage with explicit vhash."""
+    def test_get_full_lineage_by_record_id(self, db, scalar_class):
+        """Test get_full_lineage with explicit record_id."""
         @thunk(n_outputs=1)
         def double(x):
             return x * 2
@@ -572,10 +572,10 @@ class TestGetFullLineage:
         input_var = scalar_class.load(db=db, subject=1, stage="raw")
 
         result = double(input_var)
-        vhash = scalar_class.save(result, db=db, subject=1, stage="processed")
+        record_id = scalar_class.save(result, db=db, subject=1, stage="processed")
 
-        # Query by vhash
-        lineage = db.get_full_lineage(scalar_class, version=vhash)
+        # Query by record_id
+        lineage = db.get_full_lineage(scalar_class, version=record_id)
 
-        assert lineage["vhash"] == vhash
+        assert lineage["record_id"] == record_id
         assert lineage["function"] == "double"

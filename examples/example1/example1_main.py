@@ -58,8 +58,8 @@ print(f"Database configured: {db_path}")
 #
 # Key concepts:
 # - Metadata keys (sensor, trial, condition) become queryable attributes
-# - The vhash is computed from: class name + schema + content + metadata
-# - Same data + metadata = same vhash (idempotent saves)
+# - The record_id is computed from: class name + schema + content + metadata
+# - Same data + metadata = same record_id (idempotent saves)
 # -----------------------------------------------------------------------------
 
 # Generate synthetic sensor data
@@ -81,9 +81,9 @@ print(f"Content hash: {reading.content_hash[:16]}...")
 # Save with metadata - this is how you address data in scidb
 # Metadata design is flexible: use keys that match your experimental design
 # Set a breakpoint on the save() call to step into the save process
-vhash = SensorReading.save(raw_data, sensor="accelerometer", trial=1, condition="baseline")
+record_id = SensorReading.save(raw_data, sensor="accelerometer", trial=1, condition="baseline")
 
-print(f"Saved with vhash: {vhash}")
+print(f"Saved with record_id: {record_id}")
 
 
 # -----------------------------------------------------------------------------
@@ -101,8 +101,8 @@ loaded_reading = SensorReading.load(sensor="accelerometer", trial=1)
 print(f"Loaded data shape: {loaded_reading.data.shape}")
 print(f"Data matches: {np.allclose(raw_data, loaded_reading.data)}")
 
-# The loaded variable has the same vhash as what we saved
-print(f"Loaded vhash: {loaded_reading.vhash}")
+# The loaded variable has the same record_id as what we saved
+print(f"Loaded record_id: {loaded_reading.record_id}")
 
 
 # -----------------------------------------------------------------------------
@@ -158,7 +158,7 @@ print(f"Statistics: {stats.data}")
 
 # Save the processed signal
 # Set a breakpoint here to step through save_with_lineage
-processed_vhash = ProcessedSignal.save(normalized.data,
+processed_record_id = ProcessedSignal.save(normalized.data,
     sensor="accelerometer",
     trial=1,
     condition="baseline",
@@ -167,24 +167,24 @@ processed_vhash = ProcessedSignal.save(normalized.data,
 
 # Save with lineage tracking (pass the OutputThunk)
 # This stores BOTH the data AND the computation that produced it
-processed_lineage_vhash = ProcessedSignal.save(normalized,
+processed_lineage_record_id = ProcessedSignal.save(normalized,
     sensor="accelerometer",
     trial=1,
     condition="baseline",
     processing="normalized_with_lineage"
 )
 
-print(f"\nSaved processed signal: {processed_lineage_vhash}")
+print(f"\nSaved processed signal: {processed_lineage_record_id}")
 
 # Save the statistics
-stats_vhash = SignalStatistics.save(stats,
+stats_record_id = SignalStatistics.save(stats,
     sensor="accelerometer",
     trial=1,
     condition="baseline",
     stat_type="summary"
 )
 
-print(f"Saved statistics: {stats_vhash}")
+print(f"Saved statistics: {stats_record_id}")
 
 
 # -----------------------------------------------------------------------------
@@ -246,12 +246,12 @@ print("\n--- Version History ---")
 versions = SensorReading.list_versions()
 print(f"SensorReading versions: {len(versions)}")
 for v in versions:
-    print(f"  {v['vhash'][:12]}... | {v.get('sensor')} | trial={v.get('trial')}")
+    print(f"  {v['record_id'][:12]}... | {v.get('sensor')} | trial={v.get('trial')}")
 
 versions = ProcessedSignal.list_versions()
 print(f"ProcessedSignal versions: {len(versions)}")
 for v in versions:
-    print(f"  {v['vhash'][:12]}... | processing={v.get('processing')}")
+    print(f"  {v['record_id'][:12]}... | processing={v.get('processing')}")
 
 
 # -----------------------------------------------------------------------------

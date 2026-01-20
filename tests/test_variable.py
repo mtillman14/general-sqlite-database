@@ -51,9 +51,9 @@ class TestBaseVariableInit:
         var = scalar_class(42)
         assert var.data == 42
 
-    def test_vhash_initially_none(self, scalar_class):
+    def test_record_id_initially_none(self, scalar_class):
         var = scalar_class(42)
-        assert var.vhash is None
+        assert var.record_id is None
 
     def test_metadata_initially_none(self, scalar_class):
         var = scalar_class(42)
@@ -137,7 +137,7 @@ class TestReservedKeys:
     """Test reserved metadata keys."""
 
     def test_reserved_keys_exist(self):
-        assert "vhash" in BaseVariable._reserved_keys
+        assert "record_id" in BaseVariable._reserved_keys
         assert "id" in BaseVariable._reserved_keys
         assert "created_at" in BaseVariable._reserved_keys
         assert "schema_version" in BaseVariable._reserved_keys
@@ -220,10 +220,10 @@ class TestSaveWithoutDatabase:
 class TestSaveReservedKeys:
     """Test that reserved metadata keys are rejected."""
 
-    def test_save_rejects_vhash(self, scalar_class, configured_db):
+    def test_save_rejects_record_id(self, scalar_class, configured_db):
         configured_db.register(scalar_class)
-        with pytest.raises(ReservedMetadataKeyError, match="vhash"):
-            scalar_class.save(42, vhash="fake_hash")
+        with pytest.raises(ReservedMetadataKeyError, match="record_id"):
+            scalar_class.save(42, record_id="fake_hash")
 
     def test_save_rejects_id(self, scalar_class, configured_db):
         configured_db.register(scalar_class)
@@ -243,7 +243,7 @@ class TestSaveReservedKeys:
     def test_save_rejects_multiple_reserved(self, scalar_class, configured_db):
         configured_db.register(scalar_class)
         with pytest.raises(ReservedMetadataKeyError):
-            scalar_class.save(42, vhash="fake", id=123)
+            scalar_class.save(42, record_id="fake", id=123)
 
 
 class TestLoadWithoutDatabase:
@@ -264,15 +264,15 @@ class TestSaveFromDataFrame:
             "result": [10.0, 20.0, 30.0],
         })
 
-        vhashes = scalar_class.save_from_dataframe(
+        record_ides = scalar_class.save_from_dataframe(
             df=df,
             data_column="result",
             metadata_columns=["subject"],
             db=db,
         )
 
-        assert len(vhashes) == 3
-        assert all(isinstance(h, str) for h in vhashes)
+        assert len(record_ides) == 3
+        assert all(isinstance(h, str) for h in record_ides)
 
         # Verify each row was saved correctly
         loaded1 = scalar_class.load(db=db, subject=1)
@@ -291,14 +291,14 @@ class TestSaveFromDataFrame:
             "value": [0.1, 0.2, 0.3, 0.4],
         })
 
-        vhashes = scalar_class.save_from_dataframe(
+        record_ides = scalar_class.save_from_dataframe(
             df=df,
             data_column="value",
             metadata_columns=["subject", "trial"],
             db=db,
         )
 
-        assert len(vhashes) == 4
+        assert len(record_ides) == 4
 
         # Load specific combinations
         loaded = scalar_class.load(db=db, subject=1, trial=2)
@@ -314,7 +314,7 @@ class TestSaveFromDataFrame:
             "score": [100, 200],
         })
 
-        vhashes = scalar_class.save_from_dataframe(
+        record_ides = scalar_class.save_from_dataframe(
             df=df,
             data_column="score",
             metadata_columns=["subject"],
@@ -323,7 +323,7 @@ class TestSaveFromDataFrame:
             session="baseline",
         )
 
-        assert len(vhashes) == 2
+        assert len(record_ides) == 2
 
         # Verify common metadata is applied
         loaded = scalar_class.load(db=db, subject=1, experiment="exp1", session="baseline")
@@ -331,14 +331,14 @@ class TestSaveFromDataFrame:
         assert loaded.metadata["experiment"] == "exp1"
         assert loaded.metadata["session"] == "baseline"
 
-    def test_save_from_dataframe_returns_unique_vhashes(self, db, scalar_class):
-        """Each row should get a unique vhash."""
+    def test_save_from_dataframe_returns_unique_record_ides(self, db, scalar_class):
+        """Each row should get a unique record_id."""
         df = pd.DataFrame({
             "item_id": [1, 2, 3],
             "value": [5.0, 5.0, 5.0],  # Same values
         })
 
-        vhashes = scalar_class.save_from_dataframe(
+        record_ides = scalar_class.save_from_dataframe(
             df=df,
             data_column="value",
             metadata_columns=["item_id"],
@@ -346,7 +346,7 @@ class TestSaveFromDataFrame:
         )
 
         # Different metadata means different records
-        assert len(set(vhashes)) == 3
+        assert len(set(record_ides)) == 3
 
     def test_save_from_dataframe_empty_dataframe(self, db, scalar_class):
         """Empty DataFrame should return empty list."""
@@ -355,14 +355,14 @@ class TestSaveFromDataFrame:
             "value": [],
         })
 
-        vhashes = scalar_class.save_from_dataframe(
+        record_ides = scalar_class.save_from_dataframe(
             df=df,
             data_column="value",
             metadata_columns=["subject"],
             db=db,
         )
 
-        assert vhashes == []
+        assert record_ides == []
 
 
 class TestLoadToDataFrame:
@@ -399,23 +399,23 @@ class TestLoadToDataFrame:
         assert df.loc[1, "data"] == 200
         assert df.loc[1, "key"] == "b"
 
-    def test_load_to_dataframe_include_vhash(self, db, scalar_class):
-        """load_to_dataframe with include_vhash=True."""
+    def test_load_to_dataframe_include_record_id(self, db, scalar_class):
+        """load_to_dataframe with include_record_id=True."""
         scalar_class.save(42, db=db, item=1, experiment="test")
 
-        df = scalar_class.load_to_dataframe(db=db, experiment="test", include_vhash=True)
+        df = scalar_class.load_to_dataframe(db=db, experiment="test", include_record_id=True)
 
-        assert "vhash" in df.columns
-        assert isinstance(df.loc[0, "vhash"], str)
-        assert len(df.loc[0, "vhash"]) > 0
+        assert "record_id" in df.columns
+        assert isinstance(df.loc[0, "record_id"], str)
+        assert len(df.loc[0, "record_id"]) > 0
 
-    def test_load_to_dataframe_exclude_vhash(self, db, scalar_class):
-        """load_to_dataframe with include_vhash=False (default)."""
+    def test_load_to_dataframe_exclude_record_id(self, db, scalar_class):
+        """load_to_dataframe with include_record_id=False (default)."""
         scalar_class.save(42, db=db, item=1, experiment="test")
 
         df = scalar_class.load_to_dataframe(db=db, experiment="test")
 
-        assert "vhash" not in df.columns
+        assert "record_id" not in df.columns
 
     def test_load_to_dataframe_single_record(self, db, scalar_class):
         """load_to_dataframe works with single matching record."""
@@ -475,14 +475,14 @@ class TestSaveLoadDataFrameRoundtrip:
             assert loaded_sorted.loc[i, "trial"] == original_sorted.loc[i, "trial"]
             assert loaded_sorted.loc[i, "data"] == original_sorted.loc[i, "measurement"]
 
-    def test_roundtrip_with_vhash(self, db, scalar_class):
-        """Roundtrip with vhash tracking."""
+    def test_roundtrip_with_record_id(self, db, scalar_class):
+        """Roundtrip with record_id tracking."""
         original_df = pd.DataFrame({
             "item_id": [1, 2],
             "value": [100, 200],
         })
 
-        vhashes = scalar_class.save_from_dataframe(
+        record_ides = scalar_class.save_from_dataframe(
             df=original_df,
             data_column="value",
             metadata_columns=["item_id"],
@@ -492,11 +492,11 @@ class TestSaveLoadDataFrameRoundtrip:
         loaded_df = scalar_class.load_to_dataframe(
             db=db,
             item_id=1,
-            include_vhash=True,
+            include_record_id=True,
         )
 
-        # vhash should match the one returned from save
-        assert loaded_df.loc[0, "vhash"] == vhashes[0]
+        # record_id should match the one returned from save
+        assert loaded_df.loc[0, "record_id"] == record_ides[0]
 
     def test_roundtrip_different_data_types(self, db):
         """Roundtrip works with different data types in data column."""
@@ -535,9 +535,9 @@ class TestAutoRegistration:
         """save() should auto-register the variable type."""
         # Don't call db.register() manually
         # Just save directly
-        vhash = scalar_class.save(42, db=db, key="test")
+        record_id = scalar_class.save(42, db=db, key="test")
 
-        assert vhash is not None
+        assert record_id is not None
 
         # Should be able to load it back
         loaded = scalar_class.load(db=db, key="test")
@@ -568,9 +568,9 @@ class TestAutoRegistration:
             pass
 
         # Save without manual registration
-        vhash = SpecialScalar.save(123, db=db, key="test")
+        record_id = SpecialScalar.save(123, db=db, key="test")
 
-        assert vhash is not None
+        assert record_id is not None
 
         loaded = SpecialScalar.load(db=db, key="test")
         assert loaded.data == 123

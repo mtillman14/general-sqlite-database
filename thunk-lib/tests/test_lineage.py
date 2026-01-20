@@ -162,7 +162,7 @@ class TestLineageRecord:
         original = LineageRecord(
             function_name="process",
             function_hash="abc123",
-            inputs=[{"name": "x", "source_type": "variable", "vhash": "v1"}],
+            inputs=[{"name": "x", "source_type": "variable", "record_id": "v1"}],
             constants=[{"name": "factor", "value_hash": "def456", "value_repr": "2"}],
         )
 

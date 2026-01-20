@@ -25,17 +25,17 @@ class MyVariable(BaseVariable):
 | Attribute | Type | Description |
 |-----------|------|-------------|
 | `data` | `Any` | The native data |
-| `vhash` | `str \| None` | Version hash (after save/load) |
+| `record_id` | `str \| None` | Version hash (after save/load) |
 | `metadata` | `dict \| None` | Metadata (after save/load) |
 
 **Class Methods:**
 
 | Method | Description |
 |--------|-------------|
-| `save(data, db=None, **metadata)` | Save data to database, returns vhash |
+| `save(data, db=None, **metadata)` | Save data to database, returns record_id |
 | `load(db=None, version="latest", **metadata)` | Load from database |
 | `save_from_dataframe(df, data_column, metadata_columns, db=None, **common_metadata)` | Save each row as separate record |
-| `load_to_dataframe(db=None, include_vhash=False, **metadata)` | Load matching records as DataFrame |
+| `load_to_dataframe(db=None, include_record_id=False, **metadata)` | Load matching records as DataFrame |
 | `table_name()` | Get SQLite table name |
 
 **Instance Methods:**
@@ -67,7 +67,7 @@ db = DatabaseManager("path/to/db.sqlite")
 | `get_full_lineage(variable_class, version=None, max_depth=100, **metadata)` | Get complete lineage chain |
 | `format_lineage(variable_class, version=None, **metadata)` | Get print-friendly lineage |
 | `get_derived_from(variable_class, version=None, **metadata)` | Find derived variables |
-| `has_lineage(vhash)` | Check if lineage exists |
+| `has_lineage(record_id)` | Check if lineage exists |
 | `export_to_csv(variable_class, path, **metadata)` | Export matching records to CSV |
 | `preview_data(variable_class, **metadata)` | Get formatted preview of records |
 | `get_cached_computation(cache_key, variable_class)` | Look up cached result by key and type |
@@ -176,7 +176,7 @@ result = analyze(loaded)  # Pass the variable, lineage is captured
 ```python
 @thunk(n_outputs=1, unwrap=False)
 def debug_process(var):
-    print(f"Input vhash: {var.vhash}")
+    print(f"Input record_id: {var.record_id}")
     print(f"Input metadata: {var.metadata}")
     return var.data * 2
 ```
@@ -308,7 +308,7 @@ Provenance data structure.
 
 Cannot be used in `save()` metadata:
 
-- `vhash`
+- `record_id`
 - `id`
 - `created_at`
 - `schema_version`

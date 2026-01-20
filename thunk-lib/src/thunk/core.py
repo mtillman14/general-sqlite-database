@@ -337,7 +337,7 @@ class PipelineThunk:
         """
         return (
             hasattr(obj, "data")
-            and hasattr(obj, "_vhash")
+            and hasattr(obj, "_record_id")
             and hasattr(obj, "to_db")
             and hasattr(obj, "from_db")
         )
@@ -493,7 +493,7 @@ class OutputThunk:
             is_complete: Whether the data has been computed
             data: The computed data (or None if not complete)
             was_cached: Whether this result was loaded from cache
-            cached_id: Identifier if loaded from cache (e.g., vhash)
+            cached_id: Identifier if loaded from cache (e.g., record_id)
         """
         self.pipeline_thunk = pipeline_thunk
         self.output_num = output_num
@@ -558,7 +558,7 @@ def thunk(n_outputs: int = 1, unwrap: bool = True) -> Callable[[Callable], Thunk
 
         @thunk(n_outputs=1, unwrap=False)
         def debug_process(var):
-            print(f"Input vhash: {var.vhash}")
+            print(f"Input record_id: {var.record_id}")
             print(f"Input metadata: {var.metadata}")
             return var.data * 2
 

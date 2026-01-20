@@ -445,7 +445,7 @@ class TestThunkUnwrap:
         @thunk(n_outputs=1)
         def process(x):
             # x should be the raw data (42), not the BaseVariable
-            assert not hasattr(x, 'vhash')
+            assert not hasattr(x, 'record_id')
             assert x == 42
             return x * 2
 
@@ -461,9 +461,9 @@ class TestThunkUnwrap:
         @thunk(n_outputs=1, unwrap=False)
         def debug_process(var):
             # var should be the BaseVariable itself
-            assert hasattr(var, 'vhash')
+            assert hasattr(var, 'record_id')
             assert hasattr(var, 'metadata')
-            assert var.vhash is not None
+            assert var.record_id is not None
             assert var.data == 42
             return var.data * 2
 
@@ -522,7 +522,7 @@ class TestThunkUnwrap:
         def combine(a, b, c):
             # a is OutputThunk, b is BaseVariable, c is plain int
             assert isinstance(a, OutputThunk)
-            assert hasattr(b, 'vhash')
+            assert hasattr(b, 'record_id')
             assert c == 3
             return a.data + b.data + c
 

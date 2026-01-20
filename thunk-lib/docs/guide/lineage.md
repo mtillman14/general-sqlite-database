@@ -112,7 +112,7 @@ Inputs from trackable variables (e.g., scidb):
     "name": "data",
     "source_type": "variable",
     "type": "MyDataClass",
-    "vhash": "def456...",
+    "record_id": "def456...",
     "metadata": {"subject": 1}
 }
 ```

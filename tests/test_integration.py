@@ -21,14 +21,14 @@ class TestEndToEndScalarWorkflow:
 
         # Save
         original_value = 42
-        vhash = scalar_class.save(original_value, db=db, subject=1, trial=1)
+        record_id = scalar_class.save(original_value, db=db, subject=1, trial=1)
 
         # Load
         loaded = scalar_class.load(db=db, subject=1, trial=1)
 
         # Verify
         assert loaded.data == original_value
-        assert loaded.vhash == vhash
+        assert loaded.record_id == record_id
         assert loaded.metadata == {"subject": 1, "trial": 1}
 
     def test_multiple_subjects_and_trials(self, db, scalar_class):
@@ -53,19 +53,19 @@ class TestEndToEndScalarWorkflow:
         db.register(scalar_class)
 
         # Save multiple versions with different data
-        vhash1 = scalar_class.save(100, db=db, subject=1, trial=1)
-        vhash2 = scalar_class.save(200, db=db, subject=1, trial=1)
-        vhash3 = scalar_class.save(300, db=db, subject=1, trial=1)
+        record_id1 = scalar_class.save(100, db=db, subject=1, trial=1)
+        record_id2 = scalar_class.save(200, db=db, subject=1, trial=1)
+        record_id3 = scalar_class.save(300, db=db, subject=1, trial=1)
 
-        # All vhashes should be different
-        assert len({vhash1, vhash2, vhash3}) == 3
+        # All record_ides should be different
+        assert len({record_id1, record_id2, record_id3}) == 3
 
         # List versions should show all three
         versions = db.list_versions(scalar_class, subject=1, trial=1)
         assert len(versions) == 3
 
         # Should be able to load specific version
-        loaded = scalar_class.load(db=db, version=vhash2)
+        loaded = scalar_class.load(db=db, version=record_id2)
         assert loaded.data == 200
 
 
@@ -150,31 +150,31 @@ class TestEndToEndDataFrameWorkflow:
 class TestIdempotentSaves:
     """Test that saves are idempotent."""
 
-    def test_same_data_same_metadata_same_vhash(self, db, scalar_class):
-        """Saving identical data+metadata should return same vhash."""
+    def test_same_data_same_metadata_same_record_id(self, db, scalar_class):
+        """Saving identical data+metadata should return same record_id."""
         db.register(scalar_class)
 
-        vhash1 = scalar_class.save(42, db=db, subject=1, trial=1)
-        vhash2 = scalar_class.save(42, db=db, subject=1, trial=1)
-        vhash3 = scalar_class.save(42, db=db, subject=1, trial=1)
+        record_id1 = scalar_class.save(42, db=db, subject=1, trial=1)
+        record_id2 = scalar_class.save(42, db=db, subject=1, trial=1)
+        record_id3 = scalar_class.save(42, db=db, subject=1, trial=1)
 
-        assert vhash1 == vhash2 == vhash3
+        assert record_id1 == record_id2 == record_id3
 
         # Should only have one row in database
         cursor = db.connection.execute("SELECT COUNT(*) FROM scalar_value")
         assert cursor.fetchone()[0] == 1
 
-    def test_same_array_data_same_vhash(self, db, array_class):
-        """Saving identical array data should return same vhash."""
+    def test_same_array_data_same_record_id(self, db, array_class):
+        """Saving identical array data should return same record_id."""
         db.register(array_class)
 
         arr1 = np.array([1.0, 2.0, 3.0])
         arr2 = np.array([1.0, 2.0, 3.0])
 
-        vhash1 = array_class.save(arr1, db=db, subject=1)
-        vhash2 = array_class.save(arr2, db=db, subject=1)
+        record_id1 = array_class.save(arr1, db=db, subject=1)
+        record_id2 = array_class.save(arr2, db=db, subject=1)
 
-        assert vhash1 == vhash2
+        assert record_id1 == record_id2
 
 
 class TestMultipleVariableTypes:
@@ -227,7 +227,7 @@ class TestDatabasePersistence:
         # First connection - save data
         db1 = DatabaseManager(temp_db_path)
         db1.register(scalar_class)
-        vhash = scalar_class.save(42, db=db1, subject=1, trial=1)
+        record_id = scalar_class.save(42, db=db1, subject=1, trial=1)
         db1.close()
 
         # Second connection - load data
@@ -237,7 +237,7 @@ class TestDatabasePersistence:
         db2.close()
 
         assert loaded.data == 42
-        assert loaded.vhash == vhash
+        assert loaded.record_id == record_id
 
     def test_multiple_types_persist(
         self, temp_db_path, scalar_class, array_class

@@ -135,7 +135,7 @@ class TestRegister:
     def test_register_creates_index(self, db, scalar_class):
         db.register(scalar_class)
         cursor = db.connection.execute(
-            "SELECT name FROM sqlite_master WHERE type='index' AND name='idx_scalar_value_vhash'"
+            "SELECT name FROM sqlite_master WHERE type='index' AND name='idx_scalar_value_record_id'"
         )
         assert cursor.fetchone() is not None
 
@@ -180,7 +180,7 @@ class TestRegister:
         cursor = db.connection.execute("PRAGMA table_info(scalar_value)")
         columns = {row[1] for row in cursor.fetchall()}
         assert "id" in columns
-        assert "vhash" in columns
+        assert "record_id" in columns
         assert "schema_version" in columns
         assert "metadata" in columns
         assert "content_hash" in columns  # Data is now in _data table, referenced by content_hash
@@ -192,28 +192,28 @@ class TestRegister:
 class TestSave:
     """Test saving variables."""
 
-    def test_save_returns_vhash(self, db, scalar_class):
+    def test_save_returns_record_id(self, db, scalar_class):
         db.register(scalar_class)
-        vhash = scalar_class.save(42, db=db, subject=1)
-        assert isinstance(vhash, str)
-        assert len(vhash) == 16
+        record_id = scalar_class.save(42, db=db, subject=1)
+        assert isinstance(record_id, str)
+        assert len(record_id) == 16
 
     def test_save_stores_data(self, db, scalar_class):
         db.register(scalar_class)
-        vhash = scalar_class.save(42, db=db, subject=1)
+        record_id = scalar_class.save(42, db=db, subject=1)
 
         cursor = db.connection.execute(
-            "SELECT * FROM scalar_value WHERE vhash = ?", (vhash,)
+            "SELECT * FROM scalar_value WHERE record_id = ?", (record_id,)
         )
         row = cursor.fetchone()
         assert row is not None
 
     def test_save_stores_metadata(self, db, scalar_class):
         db.register(scalar_class)
-        vhash = scalar_class.save(42, db=db, subject=1, trial=2, condition="test")
+        record_id = scalar_class.save(42, db=db, subject=1, trial=2, condition="test")
 
         cursor = db.connection.execute(
-            "SELECT metadata FROM scalar_value WHERE vhash = ?", (vhash,)
+            "SELECT metadata FROM scalar_value WHERE record_id = ?", (record_id,)
         )
         row = cursor.fetchone()
         metadata = json.loads(row[0])
@@ -223,80 +223,80 @@ class TestSave:
 
     def test_save_stores_schema_version(self, db, scalar_class):
         db.register(scalar_class)
-        vhash = scalar_class.save(42, db=db, subject=1)
+        record_id = scalar_class.save(42, db=db, subject=1)
 
         cursor = db.connection.execute(
-            "SELECT schema_version FROM scalar_value WHERE vhash = ?", (vhash,)
+            "SELECT schema_version FROM scalar_value WHERE record_id = ?", (record_id,)
         )
         row = cursor.fetchone()
         assert row[0] == 1
 
     def test_save_logs_to_version_log(self, db, scalar_class):
         db.register(scalar_class)
-        vhash = scalar_class.save(42, db=db, subject=1)
+        record_id = scalar_class.save(42, db=db, subject=1)
 
         cursor = db.connection.execute(
-            "SELECT type_name, table_name FROM _version_log WHERE vhash = ?",
-            (vhash,)
+            "SELECT type_name, table_name FROM _version_log WHERE record_id = ?",
+            (record_id,)
         )
         row = cursor.fetchone()
         assert row[0] == "ScalarValue"
         assert row[1] == "scalar_value"
 
     def test_save_idempotent(self, db, scalar_class):
-        """Saving same data+metadata twice returns same vhash."""
+        """Saving same data+metadata twice returns same record_id."""
         db.register(scalar_class)
 
-        vhash1 = scalar_class.save(42, db=db, subject=1)
-        vhash2 = scalar_class.save(42, db=db, subject=1)
+        record_id1 = scalar_class.save(42, db=db, subject=1)
+        record_id2 = scalar_class.save(42, db=db, subject=1)
 
-        assert vhash1 == vhash2
+        assert record_id1 == record_id2
 
         # Should only have one row
         cursor = db.connection.execute(
-            "SELECT COUNT(*) FROM scalar_value WHERE vhash = ?", (vhash1,)
+            "SELECT COUNT(*) FROM scalar_value WHERE record_id = ?", (record_id1,)
         )
         assert cursor.fetchone()[0] == 1
 
-    def test_save_different_data_different_vhash(self, db, scalar_class):
+    def test_save_different_data_different_record_id(self, db, scalar_class):
         db.register(scalar_class)
 
-        vhash1 = scalar_class.save(42, db=db, subject=1)
-        vhash2 = scalar_class.save(43, db=db, subject=1)
+        record_id1 = scalar_class.save(42, db=db, subject=1)
+        record_id2 = scalar_class.save(43, db=db, subject=1)
 
-        assert vhash1 != vhash2
+        assert record_id1 != record_id2
 
-    def test_save_different_metadata_different_vhash(self, db, scalar_class):
+    def test_save_different_metadata_different_record_id(self, db, scalar_class):
         db.register(scalar_class)
 
-        vhash1 = scalar_class.save(42, db=db, subject=1)
-        vhash2 = scalar_class.save(42, db=db, subject=2)
+        record_id1 = scalar_class.save(42, db=db, subject=1)
+        record_id2 = scalar_class.save(42, db=db, subject=2)
 
-        assert vhash1 != vhash2
+        assert record_id1 != record_id2
 
     def test_save_auto_registers(self, db, scalar_class):
         """Save should auto-register the variable type."""
         # Should not raise - auto-registers on save
-        vhash = scalar_class.save(42, db=db, subject=1)
-        assert isinstance(vhash, str)
+        record_id = scalar_class.save(42, db=db, subject=1)
+        assert isinstance(record_id, str)
 
     def test_save_array(self, db, array_class):
         db.register(array_class)
         arr = np.array([1.0, 2.0, 3.0])
-        vhash = array_class.save(arr, db=db, subject=1)
-        assert isinstance(vhash, str)
+        record_id = array_class.save(arr, db=db, subject=1)
+        assert isinstance(record_id, str)
 
     def test_save_matrix(self, db, matrix_class):
         db.register(matrix_class)
         mat = np.array([[1, 2], [3, 4]])
-        vhash = matrix_class.save(mat, db=db, subject=1)
-        assert isinstance(vhash, str)
+        record_id = matrix_class.save(mat, db=db, subject=1)
+        assert isinstance(record_id, str)
 
     def test_save_dataframe(self, db, dataframe_class):
         db.register(dataframe_class)
         df = pd.DataFrame({"a": [1, 2], "b": [3, 4]})
-        vhash = dataframe_class.save(df, db=db, subject=1)
-        assert isinstance(vhash, str)
+        record_id = dataframe_class.save(df, db=db, subject=1)
+        assert isinstance(record_id, str)
 
 
 class TestLoad:
@@ -316,12 +316,12 @@ class TestLoad:
         loaded = scalar_class.load(db=db, subject=1)
         assert isinstance(loaded, scalar_class)
 
-    def test_load_sets_vhash(self, db, scalar_class):
+    def test_load_sets_record_id(self, db, scalar_class):
         db.register(scalar_class)
-        original_vhash = scalar_class.save(42, db=db, subject=1)
+        original_record_id = scalar_class.save(42, db=db, subject=1)
 
         loaded = scalar_class.load(db=db, subject=1)
-        assert loaded.vhash == original_vhash
+        assert loaded.record_id == original_record_id
 
     def test_load_sets_metadata(self, db, scalar_class):
         db.register(scalar_class)
@@ -330,11 +330,11 @@ class TestLoad:
         loaded = scalar_class.load(db=db, subject=1, trial=2)
         assert loaded.metadata == {"subject": 1, "trial": 2}
 
-    def test_load_by_vhash(self, db, scalar_class):
+    def test_load_by_record_id(self, db, scalar_class):
         db.register(scalar_class)
-        vhash = scalar_class.save(42, db=db, subject=1)
+        record_id = scalar_class.save(42, db=db, subject=1)
 
-        loaded = scalar_class.load(db=db, version=vhash)
+        loaded = scalar_class.load(db=db, version=record_id)
         assert loaded.data == 42
 
     def test_load_not_found(self, db, scalar_class):
@@ -342,7 +342,7 @@ class TestLoad:
         with pytest.raises(NotFoundError):
             scalar_class.load(db=db, subject=999)
 
-    def test_load_not_found_vhash(self, db, scalar_class):
+    def test_load_not_found_record_id(self, db, scalar_class):
         db.register(scalar_class)
         with pytest.raises(NotFoundError):
             scalar_class.load(db=db, version="nonexistent")
@@ -414,7 +414,7 @@ class TestLoadLatestOrdering:
         db.register(scalar_class)
 
         # Save multiple versions with same metadata
-        # (different data, so different vhash)
+        # (different data, so different record_id)
         scalar_class.save(1, db=db, subject=1, trial=1)
         scalar_class.save(2, db=db, subject=1, trial=1)
         scalar_class.save(3, db=db, subject=1, trial=1)
@@ -437,13 +437,13 @@ class TestListVersions:
         versions = db.list_versions(scalar_class, subject=1)
         assert isinstance(versions, list)
 
-    def test_list_versions_contains_vhash(self, db, scalar_class):
+    def test_list_versions_contains_record_id(self, db, scalar_class):
         db.register(scalar_class)
-        vhash = scalar_class.save(42, db=db, subject=1)
+        record_id = scalar_class.save(42, db=db, subject=1)
 
         versions = db.list_versions(scalar_class, subject=1)
         assert len(versions) == 1
-        assert versions[0]["vhash"] == vhash
+        assert versions[0]["record_id"] == record_id
 
     def test_list_versions_contains_metadata(self, db, scalar_class):
         db.register(scalar_class)
@@ -502,8 +502,8 @@ class TestGlobalDatabaseIntegration:
 
     def test_save_with_global_db(self, configured_db, scalar_class):
         configured_db.register(scalar_class)
-        vhash = scalar_class.save(42, subject=1)  # No db= argument
-        assert isinstance(vhash, str)
+        record_id = scalar_class.save(42, subject=1)  # No db= argument
+        assert isinstance(record_id, str)
 
     def test_load_with_global_db(self, configured_db, scalar_class):
         configured_db.register(scalar_class)

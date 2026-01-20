@@ -28,7 +28,7 @@ Example:
     db.register(RotationMatrix)
 
     # Save
-    vhash = RotationMatrix.save(np.eye(3), subject=1, trial=1)
+    record_id = RotationMatrix.save(np.eye(3), subject=1, trial=1)
 
     # Load
     loaded = RotationMatrix.load(subject=1, trial=1)

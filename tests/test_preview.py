@@ -180,7 +180,7 @@ class TestExportToCsv:
             df = pd.read_csv(path)
             assert "value" in df.columns
             assert df["value"].iloc[0] == 42
-            assert "_vhash" in df.columns
+            assert "_record_id" in df.columns
             assert "_meta_key" in df.columns
             assert df["_meta_key"].iloc[0] == "test"
         finally:

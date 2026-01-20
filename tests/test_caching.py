@@ -34,7 +34,7 @@ class TestCacheTableCreation:
             "function_name",
             "function_hash",
             "output_type",
-            "output_vhash",
+            "output_record_id",
             "created_at",
         }
         assert columns == expected
@@ -89,7 +89,7 @@ class TestCacheKeyComputation:
         assert key1 != key2
 
     def test_cache_key_with_saved_variable(self, db, scalar_class):
-        """Cache key should use vhash for saved variables."""
+        """Cache key should use record_id for saved variables."""
         db.register(scalar_class)
 
         scalar_class.save(42, db=db, subject=1)
@@ -138,12 +138,12 @@ class TestCachePopulation:
             return x * 2
 
         result = double(21)
-        vhash = scalar_class.save(result, db=db, subject=1)
+        record_id = scalar_class.save(result, db=db, subject=1)
 
         # Check cache table has an entry
         cursor = db.connection.execute(
-            "SELECT * FROM _computation_cache WHERE output_vhash = ?",
-            (vhash,),
+            "SELECT * FROM _computation_cache WHERE output_record_id = ?",
+            (record_id,),
         )
         row = cursor.fetchone()
 
@@ -155,12 +155,12 @@ class TestCachePopulation:
         """Saving raw data should not populate cache."""
         db.register(scalar_class)
 
-        vhash = scalar_class.save(42, db=db, subject=1)
+        record_id = scalar_class.save(42, db=db, subject=1)
 
         # No cache entry should exist
         cursor = db.connection.execute(
-            "SELECT * FROM _computation_cache WHERE output_vhash = ?",
-            (vhash,),
+            "SELECT * FROM _computation_cache WHERE output_record_id = ?",
+            (record_id,),
         )
         assert cursor.fetchone() is None
 
@@ -198,7 +198,7 @@ class TestCacheLookup:
 
         # Save to populate cache
         result = process(10)
-        original_vhash = scalar_class.save(result, db=db, subject=1)
+        original_record_id = scalar_class.save(result, db=db, subject=1)
 
         # Compute cache key
         cache_key = result.pipeline_thunk.compute_cache_key()
@@ -208,7 +208,7 @@ class TestCacheLookup:
 
         assert cached is not None
         assert cached.data == 20
-        assert cached.vhash == original_vhash
+        assert cached.record_id == original_record_id
 
     def test_get_cached_computation_miss(self, db, scalar_class):
         """Should return None when not cached."""
@@ -283,12 +283,12 @@ class TestCheckCacheHelper:
             return x * 2
 
         result = process(10)
-        original_vhash = scalar_class.save(result, db=db, subject=1)
+        original_record_id = scalar_class.save(result, db=db, subject=1)
 
         result2 = process(10)
         cached = check_cache(result2.pipeline_thunk, scalar_class, db=db)
 
-        assert cached.cached_id == original_vhash
+        assert cached.cached_id == original_record_id
 
 
 class TestOutputThunkCacheProperties:
@@ -552,12 +552,12 @@ class TestAutomaticCacheChecking:
             return x * 3
 
         result1 = compute(7)
-        vhash = scalar_class.save(result1, db=configured_db, subject=1)
+        record_id = scalar_class.save(result1, db=configured_db, subject=1)
 
         result2 = compute(7)
         assert result2.data == 21
         assert result2.was_cached is True
-        assert result2.cached_id == vhash
+        assert result2.cached_id == record_id
         assert result2.is_complete is True
 
     def test_auto_cache_miss_executes_function(self, configured_db, scalar_class):
@@ -765,8 +765,8 @@ class TestGetCachedByKey:
         result = db.get_cached_by_key("nonexistent_key")
         assert result is None
 
-    def test_returns_list_with_data_and_vhash_when_cached(self, db, scalar_class):
-        """Should return list of (data, vhash) tuples when cached."""
+    def test_returns_list_with_data_and_record_id_when_cached(self, db, scalar_class):
+        """Should return list of (data, record_id) tuples when cached."""
         db.register(scalar_class)
 
         @thunk(n_outputs=1)
@@ -774,7 +774,7 @@ class TestGetCachedByKey:
             return x * 2
 
         result = compute(10)
-        vhash = scalar_class.save(result, db=db, subject=1)
+        record_id = scalar_class.save(result, db=db, subject=1)
 
         cache_key = result.pipeline_thunk.compute_cache_key()
         cached = db.get_cached_by_key(cache_key)
@@ -783,7 +783,7 @@ class TestGetCachedByKey:
         assert len(cached) == 1
         data, cached_id = cached[0]
         assert data == 20
-        assert cached_id == vhash
+        assert cached_id == record_id
 
     def test_returns_cached_via_auto_registration(self, db, scalar_class):
         """Should return cached results via auto-registration from global registry."""
@@ -794,7 +794,7 @@ class TestGetCachedByKey:
             return x * 2
 
         result = compute(10)
-        vhash = scalar_class.save(result, db=db, subject=1)
+        record_id = scalar_class.save(result, db=db, subject=1)
 
         # Clear db registry - but class is still in global registry via __init_subclass__
         db._registered_types.clear()
@@ -805,7 +805,7 @@ class TestGetCachedByKey:
         # Auto-registration via global registry should find the class and return cached result
         assert cached is not None
         assert len(cached) == 1
-        assert cached[0] == (20, vhash)
+        assert cached[0] == (20, record_id)
 
     def test_returns_none_when_data_deleted(self, db, scalar_class):
         """Should return None if underlying data was deleted."""
@@ -835,16 +835,16 @@ class TestGetCachedByKey:
             return x, x * 2
 
         a, b = compute(10)
-        vhash_a = scalar_class.save(a, db=db, subject=1, output="a")
-        vhash_b = scalar_class.save(b, db=db, subject=1, output="b")
+        record_id_a = scalar_class.save(a, db=db, subject=1, output="a")
+        record_id_b = scalar_class.save(b, db=db, subject=1, output="b")
 
         cache_key = a.pipeline_thunk.compute_cache_key()
         cached = db.get_cached_by_key(cache_key, n_outputs=2)
 
         assert cached is not None
         assert len(cached) == 2
-        assert cached[0] == (10, vhash_a)
-        assert cached[1] == (20, vhash_b)
+        assert cached[0] == (10, record_id_a)
+        assert cached[1] == (20, record_id_b)
 
     def test_multi_output_returns_none_when_partial(self, db, scalar_class):
         """Should return None if not all outputs are cached."""
@@ -948,7 +948,7 @@ class TestAutoRegistration:
 
         # Manually register to save (simulating a previous session)
         db.register(AutoRegVar)
-        vhash = AutoRegVar.save(42, db=db, test=1)
+        record_id = AutoRegVar.save(42, db=db, test=1)
 
         @thunk(n_outputs=1)
         def process(x):

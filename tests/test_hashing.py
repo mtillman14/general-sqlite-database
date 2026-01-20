@@ -4,7 +4,7 @@ import pytest
 import numpy as np
 import pandas as pd
 
-from scidb.hashing import canonical_hash, generate_vhash
+from scidb.hashing import canonical_hash, generate_record_id
 
 
 # Module-level class for pickle fallback test (pickle can't serialize local classes)
@@ -266,91 +266,91 @@ class TestCanonicalHashFallback:
 
 
 class TestGenerateVhash:
-    """Test generate_vhash function."""
+    """Test generate_record_id function."""
 
-    def test_basic_vhash(self):
-        # generate_vhash now takes content_hash (pre-computed) instead of data
+    def test_basic_record_id(self):
+        # generate_record_id now takes content_hash (pre-computed) instead of data
         content_hash = canonical_hash({"value": 42})
-        vhash = generate_vhash(
+        record_id = generate_record_id(
             class_name="TestClass",
             schema_version=1,
             content_hash=content_hash,
             metadata={"subject": 1},
         )
-        assert isinstance(vhash, str)
-        assert len(vhash) == 16
+        assert isinstance(record_id, str)
+        assert len(record_id) == 16
 
-    def test_vhash_deterministic(self):
+    def test_record_id_deterministic(self):
         content_hash = canonical_hash({"value": 42})
-        vhash1 = generate_vhash(
+        record_id1 = generate_record_id(
             class_name="TestClass",
             schema_version=1,
             content_hash=content_hash,
             metadata={"subject": 1},
         )
-        vhash2 = generate_vhash(
+        record_id2 = generate_record_id(
             class_name="TestClass",
             schema_version=1,
             content_hash=content_hash,
             metadata={"subject": 1},
         )
-        assert vhash1 == vhash2
+        assert record_id1 == record_id2
 
-    def test_vhash_different_class_name(self):
+    def test_record_id_different_class_name(self):
         content_hash = canonical_hash({"value": 42})
-        vhash1 = generate_vhash("ClassA", 1, content_hash, {"subject": 1})
-        vhash2 = generate_vhash("ClassB", 1, content_hash, {"subject": 1})
-        assert vhash1 != vhash2
+        record_id1 = generate_record_id("ClassA", 1, content_hash, {"subject": 1})
+        record_id2 = generate_record_id("ClassB", 1, content_hash, {"subject": 1})
+        assert record_id1 != record_id2
 
-    def test_vhash_different_schema_version(self):
+    def test_record_id_different_schema_version(self):
         content_hash = canonical_hash({"value": 42})
-        vhash1 = generate_vhash("TestClass", 1, content_hash, {"subject": 1})
-        vhash2 = generate_vhash("TestClass", 2, content_hash, {"subject": 1})
-        assert vhash1 != vhash2
+        record_id1 = generate_record_id("TestClass", 1, content_hash, {"subject": 1})
+        record_id2 = generate_record_id("TestClass", 2, content_hash, {"subject": 1})
+        assert record_id1 != record_id2
 
-    def test_vhash_different_data(self):
+    def test_record_id_different_data(self):
         content_hash1 = canonical_hash({"value": 42})
         content_hash2 = canonical_hash({"value": 43})
-        vhash1 = generate_vhash("TestClass", 1, content_hash1, {"subject": 1})
-        vhash2 = generate_vhash("TestClass", 1, content_hash2, {"subject": 1})
-        assert vhash1 != vhash2
+        record_id1 = generate_record_id("TestClass", 1, content_hash1, {"subject": 1})
+        record_id2 = generate_record_id("TestClass", 1, content_hash2, {"subject": 1})
+        assert record_id1 != record_id2
 
-    def test_vhash_different_metadata(self):
+    def test_record_id_different_metadata(self):
         content_hash = canonical_hash({"value": 42})
-        vhash1 = generate_vhash("TestClass", 1, content_hash, {"subject": 1})
-        vhash2 = generate_vhash("TestClass", 1, content_hash, {"subject": 2})
-        assert vhash1 != vhash2
+        record_id1 = generate_record_id("TestClass", 1, content_hash, {"subject": 1})
+        record_id2 = generate_record_id("TestClass", 1, content_hash, {"subject": 2})
+        assert record_id1 != record_id2
 
-    def test_vhash_with_numpy_data(self):
+    def test_record_id_with_numpy_data(self):
         arr = np.array([1.0, 2.0, 3.0])
         content_hash = canonical_hash(arr)
-        vhash = generate_vhash("ArrayClass", 1, content_hash, {"subject": 1})
-        assert isinstance(vhash, str)
-        assert len(vhash) == 16
+        record_id = generate_record_id("ArrayClass", 1, content_hash, {"subject": 1})
+        assert isinstance(record_id, str)
+        assert len(record_id) == 16
 
-    def test_vhash_with_numpy_deterministic(self):
+    def test_record_id_with_numpy_deterministic(self):
         arr1 = np.array([1.0, 2.0, 3.0])
         arr2 = np.array([1.0, 2.0, 3.0])
         content_hash1 = canonical_hash(arr1)
         content_hash2 = canonical_hash(arr2)
-        vhash1 = generate_vhash("ArrayClass", 1, content_hash1, {"subject": 1})
-        vhash2 = generate_vhash("ArrayClass", 1, content_hash2, {"subject": 1})
-        assert vhash1 == vhash2
+        record_id1 = generate_record_id("ArrayClass", 1, content_hash1, {"subject": 1})
+        record_id2 = generate_record_id("ArrayClass", 1, content_hash2, {"subject": 1})
+        assert record_id1 == record_id2
 
-    def test_vhash_metadata_order_independent(self):
-        """Metadata order should not affect vhash."""
+    def test_record_id_metadata_order_independent(self):
+        """Metadata order should not affect record_id."""
         content_hash = canonical_hash({"value": 42})
-        vhash1 = generate_vhash(
+        record_id1 = generate_record_id(
             "TestClass", 1, content_hash, {"subject": 1, "trial": 2}
         )
-        vhash2 = generate_vhash(
+        record_id2 = generate_record_id(
             "TestClass", 1, content_hash, {"trial": 2, "subject": 1}
         )
-        assert vhash1 == vhash2
+        assert record_id1 == record_id2
 
-    def test_vhash_complex_metadata(self):
+    def test_record_id_complex_metadata(self):
         content_hash = canonical_hash({"value": 42})
-        vhash = generate_vhash(
+        record_id = generate_record_id(
             "TestClass",
             1,
             content_hash,
@@ -361,5 +361,5 @@ class TestGenerateVhash:
                 "date": "2024-01-01",
             },
         )
-        assert isinstance(vhash, str)
-        assert len(vhash) == 16
+        assert isinstance(record_id, str)
+        assert len(record_id) == 16
