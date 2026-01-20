@@ -106,8 +106,8 @@ if __name__ == "__main__":
     max_emg_df = compute_max_emg(filtered_emg_df)
 
     # Save results with metadata (lineage is captured automatically)
-    RawEMGData(emg_df).save(db=db, subject=1, intervention="all")
-    FilteredEMGData(filtered_emg_df).save(db=db, subject=1, intervention="all")
-    MaxEMGData(max_emg_df).save(db=db, subject=1, intervention="all")
+    RawEMGData.save(emg_df, db=db, subject=1, intervention="all")
+    FilteredEMGData.save(filtered_emg_df, db=db, subject=1, intervention="all")
+    MaxEMGData.save(max_emg_df, db=db, subject=1, intervention="all")
 
     print("Pipeline complete. Data saved to database.")

@@ -102,7 +102,7 @@ class TestPreviewInDatabase:
 
     def test_preview_column_populated(self, db, scalar_class):
         """Preview column should be populated on save."""
-        scalar_class(42).save(db=db, key="test")
+        scalar_class.save(42, db=db, key="test")
 
         # Check directly in database
         cursor = db.connection.execute(
@@ -116,7 +116,7 @@ class TestPreviewInDatabase:
     def test_preview_column_for_array(self, db, array_class):
         """Preview shows stats for arrays."""
         data = np.array([1.0, 2.0, 3.0, 4.0, 5.0])
-        array_class(data).save(db=db, key="test")
+        array_class.save(data, db=db, key="test")
 
         cursor = db.connection.execute(
             f"SELECT preview FROM {array_class.table_name()} WHERE 1=1"
@@ -132,7 +132,7 @@ class TestPreviewDataMethod:
 
     def test_preview_data_single_record(self, db, scalar_class):
         """preview_data returns formatted string for single record."""
-        scalar_class(42).save(db=db, key="test", experiment="exp1")
+        scalar_class.save(42, db=db, key="test", experiment="exp1")
 
         preview = db.preview_data(scalar_class, experiment="exp1")
         assert "ScalarValue" in preview
@@ -142,9 +142,9 @@ class TestPreviewDataMethod:
 
     def test_preview_data_multiple_records(self, db, scalar_class):
         """preview_data shows all matching records."""
-        scalar_class(10).save(db=db, key="a", group="test")
-        scalar_class(20).save(db=db, key="b", group="test")
-        scalar_class(30).save(db=db, key="c", group="test")
+        scalar_class.save(10, db=db, key="a", group="test")
+        scalar_class.save(20, db=db, key="b", group="test")
+        scalar_class.save(30, db=db, key="c", group="test")
 
         preview = db.preview_data(scalar_class, group="test")
         assert "3 records" in preview
@@ -156,7 +156,7 @@ class TestPreviewDataMethod:
         """preview_data raises NotFoundError when no matches."""
         from scidb.exceptions import NotFoundError
 
-        scalar_class(42).save(db=db, existing="data")
+        scalar_class.save(42, db=db, existing="data")
 
         with pytest.raises(NotFoundError):
             db.preview_data(scalar_class, nonexistent="value")
@@ -167,7 +167,7 @@ class TestExportToCsv:
 
     def test_export_single_record(self, db, scalar_class):
         """Export single record to CSV."""
-        scalar_class(42).save(db=db, key="test")
+        scalar_class.save(42, db=db, key="test")
 
         with tempfile.NamedTemporaryFile(mode='w', suffix='.csv', delete=False) as f:
             path = f.name
@@ -188,9 +188,9 @@ class TestExportToCsv:
 
     def test_export_multiple_records(self, db, scalar_class):
         """Export multiple records to CSV."""
-        scalar_class(10).save(db=db, item=1, group="export_test")
-        scalar_class(20).save(db=db, item=2, group="export_test")
-        scalar_class(30).save(db=db, item=3, group="export_test")
+        scalar_class.save(10, db=db, item=1, group="export_test")
+        scalar_class.save(20, db=db, item=2, group="export_test")
+        scalar_class.save(30, db=db, item=3, group="export_test")
 
         with tempfile.NamedTemporaryFile(mode='w', suffix='.csv', delete=False) as f:
             path = f.name
@@ -208,7 +208,7 @@ class TestExportToCsv:
     def test_export_array_data(self, db, array_class):
         """Export array data (multiple rows per record)."""
         data = np.array([1.0, 2.0, 3.0])
-        array_class(data).save(db=db, key="array_test")
+        array_class.save(data, db=db, key="array_test")
 
         with tempfile.NamedTemporaryFile(mode='w', suffix='.csv', delete=False) as f:
             path = f.name
@@ -229,7 +229,7 @@ class TestVariableToCsv:
 
     def test_to_csv_scalar(self, db, scalar_class):
         """Export scalar variable to CSV."""
-        scalar_class(42).save(db=db, key="test")
+        scalar_class.save(42, db=db, key="test")
         var = scalar_class.load(db=db, key="test")
 
         with tempfile.NamedTemporaryFile(mode='w', suffix='.csv', delete=False) as f:
@@ -247,7 +247,7 @@ class TestVariableToCsv:
     def test_to_csv_array(self, db, array_class):
         """Export array variable to CSV."""
         data = np.array([1.0, 2.0, 3.0, 4.0, 5.0])
-        array_class(data).save(db=db, key="test")
+        array_class.save(data, db=db, key="test")
         var = array_class.load(db=db, key="test")
 
         with tempfile.NamedTemporaryFile(mode='w', suffix='.csv', delete=False) as f:

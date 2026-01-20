@@ -220,8 +220,7 @@ raw_data = (
 )
 
 # Save raw signal
-raw = RawSignal(raw_data)
-raw_vhash = raw.save(subject=1, session="morning", channel="EMG")
+raw_vhash = RawSignal.save(raw_data, subject=1, session="morning", channel="EMG")
 print(f"\nSaved raw signal: {raw_vhash[:12]}...")
 
 
@@ -267,8 +266,7 @@ print(f"Envelope shape: {envelope.data.shape}")
 # -----------------------------------------------------------------------------
 
 # Save the filtered signal
-filtered_var = FilteredSignal(filtered)
-filtered_vhash = filtered_var.save(
+filtered_vhash = FilteredSignal.save(filtered,
     subject=1,
     session="morning",
     channel="EMG",
@@ -277,8 +275,7 @@ filtered_vhash = filtered_var.save(
 print(f"\nSaved filtered signal: {filtered_vhash[:12]}...")
 
 # Save the envelope
-envelope_var = EnvelopeSignal(envelope)
-envelope_vhash = envelope_var.save(
+envelope_vhash = EnvelopeSignal.save(envelope,
     subject=1,
     session="morning",
     channel="EMG",
@@ -352,11 +349,9 @@ class SignalHalf(TimeSeries):
     """Half of a split signal"""
     pass
 
-left_var = SignalHalf(left)
-left_var.save(subject=1, session="morning", channel="EMG", half="left")
+SignalHalf.save(left, subject=1, session="morning", channel="EMG", half="left")
 
-right_var = SignalHalf(right)
-right_var.save(subject=1, session="morning", channel="EMG", half="right")
+SignalHalf.save(right, subject=1, session="morning", channel="EMG", half="right")
 
 print("Saved both halves - cache now populated")
 
@@ -387,7 +382,7 @@ def expensive_analysis(signal: np.ndarray) -> dict:
 
 # Run once to populate cache
 result1 = expensive_analysis(raw_loaded)
-AnalysisResult(result1).save(subject=1, session="morning", analysis="rms")
+AnalysisResult.save(result1, subject=1, session="morning", analysis="rms")
 
 # Manually check if cache would hit
 # Set a breakpoint here to inspect check_cache behavior
@@ -525,9 +520,9 @@ print(f"Middle segment: {middle_stats.data}")
 print(f"Late segment: {late_stats.data}")
 
 # Save all three
-AnalysisResult(early_stats).save(subject=1, session="morning", segment="early")
-AnalysisResult(middle_stats).save(subject=1, session="morning", segment="middle")
-AnalysisResult(late_stats).save(subject=1, session="morning", segment="late")
+AnalysisResult.save(early_stats, subject=1, session="morning", segment="early")
+AnalysisResult.save(middle_stats, subject=1, session="morning", segment="middle")
+AnalysisResult.save(late_stats, subject=1, session="morning", segment="late")
 
 # Re-run to verify caching
 early2, middle2, late2 = analyze_segments(raw_loaded)

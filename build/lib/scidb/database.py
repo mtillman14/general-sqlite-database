@@ -17,8 +17,14 @@ from .exceptions import (
     NotRegisteredError,
 )
 from .hashing import generate_vhash, canonical_hash
+from .parquet_storage import (
+    compute_parquet_path,
+    get_parquet_root,
+    read_parquet,
+    write_parquet,
+)
 from .preview import generate_preview
-from .storage import deserialize_dataframe, register_adapters, serialize_dataframe
+from .storage import register_adapters
 from .variable import BaseVariable
 
 
@@ -129,6 +135,9 @@ class DatabaseManager:
         self.lineage_mode = lineage_mode
         self._registered_types: dict[str, Type[BaseVariable]] = {}
 
+        # Set up Parquet file storage root
+        self.parquet_root = get_parquet_root(self.db_path)
+
         # Register custom adapters
         register_adapters()
 
@@ -171,12 +180,12 @@ class DatabaseManager:
         """
         )
 
-        # Content-addressed data storage (deduplicated)
+        # Content-addressed data tracking (for deduplication awareness)
+        # Actual data is stored in Parquet files under parquet_root/
         self.connection.execute(
             """
             CREATE TABLE IF NOT EXISTS _data (
                 content_hash TEXT PRIMARY KEY,
-                data BLOB NOT NULL,
                 created_at TEXT DEFAULT CURRENT_TIMESTAMP,
                 created_by TEXT
             )
@@ -368,8 +377,8 @@ class DatabaseManager:
         """
         Save a variable to the database.
 
-        Data is stored in the shared _data table (content-addressed, deduplicated).
-        Metadata entries are stored in the variable-specific table.
+        Data is stored as a Parquet file in the parquet_root directory.
+        Metadata entries are stored in the variable-specific SQLite table.
 
         If the exact same data+metadata already exists (same vhash),
         this is a no-op and returns the existing vhash.
@@ -387,9 +396,8 @@ class DatabaseManager:
         type_name = variable.__class__.__name__
         user_id = get_user_id()
 
-        # Serialize data and compute content hash
+        # Convert to DataFrame and compute content hash
         df = variable.to_db()
-        data_blob = serialize_dataframe(df)
         content_hash = canonical_hash(variable.data)
 
         # Generate vhash (using content_hash, not raw data)
@@ -410,7 +418,7 @@ class DatabaseManager:
 
         now = datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")
 
-        # Store data in _data table if not already there (deduplicated)
+        # Track content_hash in _data table (for deduplication awareness)
         cursor = self.connection.execute(
             "SELECT content_hash FROM _data WHERE content_hash = ?",
             (content_hash,),
@@ -418,11 +426,20 @@ class DatabaseManager:
         if cursor.fetchone() is None:
             self.connection.execute(
                 """
-                INSERT INTO _data (content_hash, data, created_at, created_by)
-                VALUES (?, ?, ?, ?)
+                INSERT INTO _data (content_hash, created_at, created_by)
+                VALUES (?, ?, ?)
             """,
-                (content_hash, data_blob, now, user_id),
+                (content_hash, now, user_id),
             )
+
+        # Write data to Parquet file
+        parquet_path = compute_parquet_path(
+            table_name=table_name,
+            vhash=vhash,
+            metadata=metadata,
+            parquet_root=self.parquet_root,
+        )
+        write_parquet(df, parquet_path)
 
         # Store metadata entry in variable table
         metadata_json = json.dumps(metadata, sort_keys=True)
@@ -558,24 +575,23 @@ class DatabaseManager:
         if version != "latest" and version is not None:
             # Load specific version by vhash
             cursor = self.connection.execute(
-                f"""SELECT v.vhash, v.content_hash, v.lineage_hash, v.metadata, d.data
-                    FROM {table_name} v
-                    JOIN _data d ON v.content_hash = d.content_hash
-                    WHERE v.vhash = ?""",
+                f"""SELECT vhash, content_hash, lineage_hash, metadata
+                    FROM {table_name}
+                    WHERE vhash = ?""",
                 (version,),
             )
             row = cursor.fetchone()
             if row is None:
                 raise NotFoundError(f"No data found with vhash '{version}'")
 
-            return self._row_to_variable(variable_class, row)
+            return self._row_to_variable(variable_class, table_name, row)
 
         # Build query for metadata matching
         # Match all provided metadata keys
         conditions = []
         params = []
         for key, value in metadata.items():
-            conditions.append(f"json_extract(v.metadata, '$.{key}') = ?")
+            conditions.append(f"json_extract(metadata, '$.{key}') = ?")
             if isinstance(value, (dict, list)):
                 params.append(json.dumps(value))
             else:
@@ -584,11 +600,10 @@ class DatabaseManager:
         where_clause = " AND ".join(conditions) if conditions else "1=1"
 
         cursor = self.connection.execute(
-            f"""SELECT v.vhash, v.content_hash, v.lineage_hash, v.metadata, d.data
-                FROM {table_name} v
-                JOIN _data d ON v.content_hash = d.content_hash
+            f"""SELECT vhash, content_hash, lineage_hash, metadata
+                FROM {table_name}
                 WHERE {where_clause}
-                ORDER BY v.created_at DESC""",
+                ORDER BY created_at DESC""",
             params,
         )
         rows = cursor.fetchall()
@@ -599,7 +614,7 @@ class DatabaseManager:
             )
 
         # Return single or list based on count
-        results = [self._row_to_variable(variable_class, row) for row in rows]
+        results = [self._row_to_variable(variable_class, table_name, row) for row in rows]
 
         if len(results) == 1:
             return results[0]
@@ -608,15 +623,27 @@ class DatabaseManager:
     def _row_to_variable(
         self,
         variable_class: Type[BaseVariable],
+        table_name: str,
         row: sqlite3.Row,
     ) -> BaseVariable:
         """Convert a database row to a variable instance."""
-        df = deserialize_dataframe(row["data"])
+        # Parse metadata to compute Parquet path
+        metadata = json.loads(row["metadata"])
+        vhash = row["vhash"]
+
+        # Compute path and read Parquet file
+        parquet_path = compute_parquet_path(
+            table_name=table_name,
+            vhash=vhash,
+            metadata=metadata,
+            parquet_root=self.parquet_root,
+        )
+        df = read_parquet(parquet_path)
         data = variable_class.from_db(df)
 
         instance = variable_class(data)
-        instance._vhash = row["vhash"]
-        instance._metadata = json.loads(row["metadata"])
+        instance._vhash = vhash
+        instance._metadata = metadata
         instance._content_hash = row["content_hash"]
         instance._lineage_hash = row["lineage_hash"]  # May be None for raw data
 

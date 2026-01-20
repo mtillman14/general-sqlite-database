@@ -150,8 +150,8 @@ class TestFindUnsavedVariables:
         def process(x):
             return x * 2
 
-        raw = RawData(np.array([1, 2, 3]))
-        raw.save(subject=1)
+        RawData.save(np.array([1, 2, 3]), subject=1)
+        raw = RawData.load(subject=1)
 
         result = process(raw)
 
@@ -188,8 +188,8 @@ class TestFindUnsavedVariables:
             return x ** 2
 
         # Create chain with unsaved intermediate
-        raw = RawData(np.array([1, 2, 3]))
-        raw.save(subject=1)  # Save the raw
+        RawData.save(np.array([1, 2, 3]), subject=1)  # Save the raw
+        raw = RawData.load(subject=1)
 
         result1 = step1(raw)
         intermediate = ProcessedData(result1)
@@ -214,14 +214,13 @@ class TestStrictMode:
         def process(x):
             return x * 2
 
-        raw = RawData(np.array([1, 2, 3]))
-        raw.save(subject=1)
+        RawData.save(np.array([1, 2, 3]), subject=1)
+        raw = RawData.load(subject=1)
 
         result = process(raw)
-        processed = ProcessedData(result)
 
         # Should not raise - all intermediates saved
-        vhash = processed.save(subject=1, stage="processed")
+        vhash = ProcessedData.save(result, subject=1, stage="processed")
         assert vhash is not None
 
     def test_strict_mode_raises_for_unsaved_intermediate(self, strict_db):
@@ -234,10 +233,9 @@ class TestStrictMode:
         # Don't save raw
 
         result = process(raw)
-        processed = ProcessedData(result)
 
         with pytest.raises(UnsavedIntermediateError) as exc_info:
-            processed.save(subject=1)
+            ProcessedData.save(result, subject=1)
 
         # Error message should be helpful
         assert "RawData" in str(exc_info.value)
@@ -252,19 +250,16 @@ class TestStrictMode:
         raw = RawData(np.array([1, 2, 3]))
 
         result = process(raw)
-        processed = ProcessedData(result)
 
         with pytest.raises(UnsavedIntermediateError) as exc_info:
-            processed.save(subject=1)
+            ProcessedData.save(result, subject=1)
 
         assert "process()" in str(exc_info.value)
 
     def test_strict_mode_allows_raw_data_without_thunk(self, strict_db):
         """Strict mode should allow saving raw data (not from thunk)."""
-        raw = RawData(np.array([1, 2, 3]))
-
         # Should not raise - no thunk involved
-        vhash = raw.save(subject=1)
+        vhash = RawData.save(np.array([1, 2, 3]), subject=1)
         assert vhash is not None
 
     def test_strict_mode_with_nested_pipeline(self, strict_db):
@@ -277,18 +272,17 @@ class TestStrictMode:
         def step2(x):
             return x + 1
 
-        raw = RawData(np.array([1, 2, 3]))
-        raw.save(subject=1, stage="raw")
+        RawData.save(np.array([1, 2, 3]), subject=1, stage="raw")
+        raw = RawData.load(subject=1, stage="raw")
 
         result1 = step1(raw)
-        processed = ProcessedData(result1)
-        processed.save(subject=1, stage="step1")
+        ProcessedData.save(result1, subject=1, stage="step1")
+        processed = ProcessedData.load(subject=1, stage="step1")
 
         result2 = step2(processed)
-        final = FinalResult(result2)
 
         # Should work - all intermediates saved
-        vhash = final.save(subject=1, stage="final")
+        vhash = FinalResult.save(result2, subject=1, stage="final")
         assert vhash is not None
 
     def test_strict_mode_fails_with_unsaved_in_middle(self, strict_db):
@@ -301,18 +295,17 @@ class TestStrictMode:
         def step2(x):
             return x + 1
 
-        raw = RawData(np.array([1, 2, 3]))
-        raw.save(subject=1, stage="raw")
+        RawData.save(np.array([1, 2, 3]), subject=1, stage="raw")
+        raw = RawData.load(subject=1, stage="raw")
 
         result1 = step1(raw)
         processed = ProcessedData(result1)
         # Don't save processed!
 
         result2 = step2(processed)
-        final = FinalResult(result2)
 
         with pytest.raises(UnsavedIntermediateError):
-            final.save(subject=1, stage="final")
+            FinalResult.save(result2, subject=1, stage="final")
 
 
 # --- Ephemeral Mode Tests ---
@@ -330,10 +323,9 @@ class TestEphemeralMode:
         # Don't save raw
 
         result = process(raw)
-        processed = ProcessedData(result)
 
         # Should not raise in ephemeral mode
-        vhash = processed.save(subject=1)
+        vhash = ProcessedData.save(result, subject=1)
         assert vhash is not None
 
     def test_ephemeral_mode_stores_lineage_for_unsaved(self, ephemeral_db):
@@ -346,8 +338,7 @@ class TestEphemeralMode:
         # Don't save raw
 
         result = process(raw)
-        processed = ProcessedData(result)
-        processed.save(subject=1)
+        ProcessedData.save(result, subject=1)
 
         # Check that provenance includes info about the unsaved variable
         provenance = ephemeral_db.get_provenance(ProcessedData, subject=1)
@@ -365,8 +356,8 @@ class TestEphemeralMode:
             return x + 1
 
         # Save raw data
-        raw = RawData(np.array([1, 2, 3]))
-        raw.save(subject=1, stage="raw")
+        RawData.save(np.array([1, 2, 3]), subject=1, stage="raw")
+        raw = RawData.load(subject=1, stage="raw")
 
         # Create intermediate from thunk but don't save
         result1 = step1(raw)
@@ -375,8 +366,7 @@ class TestEphemeralMode:
 
         # Process the unsaved intermediate
         result2 = step2(intermediate)
-        final = FinalResult(result2)
-        final.save(subject=1, stage="final")
+        FinalResult.save(result2, subject=1, stage="final")
 
         # Query the lineage table directly for ephemeral entries
         cursor = ephemeral_db.connection.execute(
@@ -402,8 +392,8 @@ class TestEphemeralMode:
             return x ** 2
 
         # Save raw data
-        raw = RawData(np.array([1, 2, 3]))
-        raw.save(subject=1, stage="raw")
+        RawData.save(np.array([1, 2, 3]), subject=1, stage="raw")
+        raw = RawData.load(subject=1, stage="raw")
 
         # Don't save any intermediates
         r1 = step1(raw)
@@ -413,10 +403,9 @@ class TestEphemeralMode:
         p2 = ProcessedData(r2)
 
         r3 = step3(p2)
-        final = FinalResult(r3)
 
         # Should work in ephemeral mode
-        vhash = final.save(subject=1)
+        vhash = FinalResult.save(r3, subject=1)
         assert vhash is not None
 
     def test_ephemeral_lineage_query_works(self, ephemeral_db):
@@ -428,8 +417,7 @@ class TestEphemeralMode:
         raw = RawData(np.array([1, 2, 3]))
 
         result = process(raw)
-        processed = ProcessedData(result)
-        processed.save(subject=1)
+        ProcessedData.save(result, subject=1)
 
         # Should be able to get full lineage
         lineage = ephemeral_db.get_full_lineage(ProcessedData, subject=1)
@@ -445,8 +433,7 @@ class TestEphemeralMode:
         raw = RawData(np.array([1, 2, 3]))
 
         result = process(raw)
-        processed = ProcessedData(result)
-        processed.save(subject=1)
+        ProcessedData.save(result, subject=1)
 
         formatted = ephemeral_db.format_lineage(ProcessedData, subject=1)
 
@@ -472,16 +459,15 @@ class TestMixedScenarios:
             return x + 1
 
         # Save raw but not intermediate
-        raw = RawData(np.array([1, 2, 3]))
-        raw.save(subject=1, stage="raw")
+        RawData.save(np.array([1, 2, 3]), subject=1, stage="raw")
+        raw = RawData.load(subject=1, stage="raw")
 
         r1 = step1(raw)
         p1 = ProcessedData(r1)
         # Don't save p1
 
         r2 = step2(p1)
-        final = FinalResult(r2)
-        final.save(subject=1, stage="final")
+        FinalResult.save(r2, subject=1, stage="final")
 
         # Query lineage
         lineage = ephemeral_db.get_full_lineage(FinalResult, subject=1, stage="final")
@@ -497,16 +483,15 @@ class TestMixedScenarios:
         def step2(x):
             return x + 1
 
-        raw = RawData(np.array([1, 2, 3]))
-        raw.save(subject=1, stage="raw")
+        RawData.save(np.array([1, 2, 3]), subject=1, stage="raw")
+        raw = RawData.load(subject=1, stage="raw")
 
         r1 = step1(raw)
-        p1 = ProcessedData(r1)
-        p1.save(subject=1, stage="step1")
+        ProcessedData.save(r1, subject=1, stage="step1")
+        p1 = ProcessedData.load(subject=1, stage="step1")
 
         r2 = step2(p1)
-        final = FinalResult(r2)
-        final.save(subject=1, stage="final")
+        FinalResult.save(r2, subject=1, stage="final")
 
         # Full lineage should be available
         lineage = strict_db.get_full_lineage(FinalResult, subject=1, stage="final")
@@ -530,10 +515,9 @@ class TestEdgeCases:
         # Don't save
 
         result = multiply(raw, 2)
-        processed = ProcessedData(result)
 
         with pytest.raises(UnsavedIntermediateError):
-            processed.save(subject=1)
+            ProcessedData.save(result, subject=1)
 
     def test_multiple_outputs_thunk_with_unsaved(self, strict_db):
         """Multi-output thunk with unsaved input."""
@@ -546,10 +530,9 @@ class TestEdgeCases:
         # Don't save
 
         left, right = split(raw)
-        left_var = ProcessedData(left)
 
         with pytest.raises(UnsavedIntermediateError):
-            left_var.save(subject=1, half="left")
+            ProcessedData.save(left, subject=1, half="left")
 
     def test_ephemeral_no_duplicate_entries(self, ephemeral_db):
         """Ephemeral mode should not create duplicate entries."""
@@ -562,8 +545,8 @@ class TestEdgeCases:
             return x + 1
 
         # Save raw data
-        raw = RawData(np.array([1, 2, 3]))
-        raw.save(subject=1)
+        RawData.save(np.array([1, 2, 3]), subject=1)
+        raw = RawData.load(subject=1)
 
         # Create unsaved intermediate from thunk
         result1 = step1(raw)
@@ -572,12 +555,10 @@ class TestEdgeCases:
 
         # Save two different final outputs from the same unsaved intermediate
         final1 = step2(intermediate)
-        f1 = FinalResult(final1)
-        f1.save(subject=1, version=1)
+        FinalResult.save(final1, subject=1, version=1)
 
         final2 = step2(intermediate)
-        f2 = FinalResult(final2)
-        f2.save(subject=1, version=2)
+        FinalResult.save(final2, subject=1, version=2)
 
         # Count ephemeral entries
         cursor = ephemeral_db.connection.execute(
@@ -596,8 +577,8 @@ class TestEdgeCases:
             return x + 1
 
         # Start with saved raw data
-        raw = RawData(np.array([0, 1, 2]))
-        raw.save(subject=1, stage="raw")
+        RawData.save(np.array([0, 1, 2]), subject=1, stage="raw")
+        raw = RawData.load(subject=1, stage="raw")
 
         # Build deep chain of unsaved intermediates
         current = raw
@@ -608,10 +589,9 @@ class TestEdgeCases:
 
         # Final step
         final_result = increment(current)
-        final = FinalResult(final_result)
 
         # Should work in ephemeral mode
-        vhash = final.save(subject=1)
+        vhash = FinalResult.save(final_result, subject=1)
         assert vhash is not None
 
 
@@ -626,12 +606,11 @@ class TestProvenanceQueries:
         def double(x):
             return x * 2
 
-        raw = RawData(np.array([1, 2, 3]))
-        raw.save(subject=1, stage="raw")
+        RawData.save(np.array([1, 2, 3]), subject=1, stage="raw")
+        raw = RawData.load(subject=1, stage="raw")
 
         result = double(raw)
-        processed = ProcessedData(result)
-        processed.save(subject=1, stage="processed")
+        ProcessedData.save(result, subject=1, stage="processed")
 
         provenance = strict_db.get_provenance(ProcessedData, subject=1, stage="processed")
         assert provenance["function_name"] == "double"
@@ -648,8 +627,7 @@ class TestProvenanceQueries:
         # Don't save raw
 
         result = double(raw)
-        processed = ProcessedData(result)
-        processed.save(subject=1)
+        ProcessedData.save(result, subject=1)
 
         provenance = ephemeral_db.get_provenance(ProcessedData, subject=1)
         assert provenance["function_name"] == "double"
@@ -664,15 +642,13 @@ class TestProvenanceQueries:
             return x * 2
 
         # Strict mode
-        raw = RawData(np.array([1, 2, 3]))
-        raw.save(subject=1)
+        RawData.save(np.array([1, 2, 3]), subject=1)
+        raw = RawData.load(subject=1)
         result = process(raw)
-        processed = ProcessedData(result)
-        vhash = processed.save(subject=1)
+        vhash = ProcessedData.save(result, subject=1)
 
         assert strict_db.has_lineage(vhash)
 
         # Raw data without thunk has no lineage
-        raw2 = RawData(np.array([4, 5, 6]))
-        vhash2 = raw2.save(subject=2)
+        vhash2 = RawData.save(np.array([4, 5, 6]), subject=2)
         assert not strict_db.has_lineage(vhash2)

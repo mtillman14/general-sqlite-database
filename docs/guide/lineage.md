@@ -66,7 +66,7 @@ raw = RawData.load(subject=1)
 normalized = normalize(raw.data)
 
 # Lineage captured on save
-NormalizedData(normalized).save(subject=1, stage="normalized")
+NormalizedData.save(normalized, subject=1, stage="normalized")
 ```
 
 ## Querying Provenance
@@ -154,7 +154,7 @@ def step3(data):
 result = step3(step2(step1(raw_data)))
 
 # Lineage captures full chain
-MyVar(result).save(subject=1, stage="final")
+MyVar.save(result, subject=1, stage="final")
 ```
 
 ## Manual Lineage Extraction
@@ -244,8 +244,8 @@ filtered = thunked_filtfilt(b.data, a.data, raw_signal.data)
 freqs, psd = thunked_welch(filtered, fs=1000)
 
 # Save with lineage
-SignalData(filtered).save(subject=1, session="filtered")
-PSDData((freqs, psd)).save(subject=1, session="psd")
+SignalData.save(filtered, subject=1, session="filtered")
+PSDData.save((freqs, psd), subject=1, session="psd")
 
 # View full lineage
 print(db.format_lineage(PSDData, subject=1, session="psd"))
@@ -269,7 +269,7 @@ thunked_pca_fit_transform = Thunk(pca.fit_transform, n_outputs=1)
 scaled = thunked_fit_transform(raw_features)
 reduced = thunked_pca_fit_transform(scaled)
 
-ReducedFeatures(reduced).save(subject=1, stage="pca")
+ReducedFeatures.save(reduced, subject=1, stage="pca")
 ```
 
 ### Creating a Thunk Library
@@ -310,7 +310,7 @@ def preprocess(data):
     return data * 2
 
 result = preprocess(raw_data)
-Intermediate(result).save(db=db, subject=1, stage="preprocessed")
+Intermediate.save(result, db=db, subject=1, stage="preprocessed")
 ```
 
 ```python
@@ -324,7 +324,7 @@ def analyze(data):
 
 # Pass the loaded variable - lineage links to loaded.vhash
 result = analyze(loaded)
-FinalResult(result).save(db=db, subject=1, stage="analyzed")
+FinalResult.save(result, db=db, subject=1, stage="analyzed")
 
 # Lineage correctly shows: FinalResult <- analyze <- Intermediate
 ```

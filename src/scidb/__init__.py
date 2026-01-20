@@ -28,8 +28,7 @@ Example:
     db.register(RotationMatrix)
 
     # Save
-    rot = RotationMatrix(np.eye(3))
-    vhash = rot.save(subject=1, trial=1)
+    vhash = RotationMatrix.save(np.eye(3), subject=1, trial=1)
 
     # Load
     loaded = RotationMatrix.load(subject=1, trial=1)
@@ -40,8 +39,7 @@ Example:
         return data * 2
 
     result = process(loaded)  # Returns OutputThunk with lineage
-    processed = RotationMatrix(result)
-    processed.save(subject=1, trial=1, stage="processed")
+    RotationMatrix.save(result, subject=1, trial=1, stage="processed")
 
     # Query provenance
     provenance = db.get_provenance(RotationMatrix, subject=1, trial=1, stage="processed")

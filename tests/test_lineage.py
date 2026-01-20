@@ -171,8 +171,8 @@ class TestExtractLineageWithSavedVariables:
         db.register(scalar_class)
 
         # Save a variable
-        var = scalar_class(42)
-        var.save(db=db, subject=1)
+        scalar_class.save(42, db=db, subject=1)
+        var = scalar_class.load(db=db, subject=1)
 
         @thunk(n_outputs=1)
         def process(x):
@@ -255,8 +255,7 @@ class TestLineageIntegration:
             return x * 2
 
         result = double(21)
-        var = scalar_class(result)
-        vhash = var.save(db=db, subject=1)
+        vhash = scalar_class.save(result, db=db, subject=1)
 
         # Check that lineage was stored
         assert db.has_lineage(vhash)
@@ -269,8 +268,7 @@ class TestLineageIntegration:
         """Saving raw data should not have lineage."""
         db.register(scalar_class)
 
-        var = scalar_class(42)
-        vhash = var.save(db=db, subject=1)
+        vhash = scalar_class.save(42, db=db, subject=1)
 
         # Should not have lineage
         assert not db.has_lineage(vhash)
@@ -283,8 +281,8 @@ class TestLineageIntegration:
         db.register(scalar_class)
 
         # Save input variable
-        input_var = scalar_class(10)
-        input_vhash = input_var.save(db=db, subject=1, role="input")
+        input_vhash = scalar_class.save(10, db=db, subject=1, role="input")
+        input_var = scalar_class.load(db=db, subject=1, role="input")
 
         @thunk(n_outputs=1)
         def process(x):
@@ -292,8 +290,7 @@ class TestLineageIntegration:
 
         # Process the input
         result = process(input_var)
-        output_var = scalar_class(result)
-        output_vhash = output_var.save(db=db, subject=1, role="output")
+        output_vhash = scalar_class.save(result, db=db, subject=1, role="output")
 
         # Check provenance
         provenance = db.get_provenance(scalar_class, subject=1, role="output")
@@ -309,8 +306,8 @@ class TestLineageIntegration:
         db.register(scalar_class)
 
         # Save input
-        input_var = scalar_class(10)
-        input_var.save(db=db, subject=1, role="input")
+        scalar_class.save(10, db=db, subject=1, role="input")
+        input_var = scalar_class.load(db=db, subject=1, role="input")
 
         @thunk(n_outputs=1)
         def double(x):
@@ -322,12 +319,10 @@ class TestLineageIntegration:
 
         # Create two outputs from the same input
         result1 = double(input_var)
-        output1 = scalar_class(result1)
-        output1.save(db=db, subject=1, role="doubled")
+        scalar_class.save(result1, db=db, subject=1, role="doubled")
 
         result2 = triple(input_var)
-        output2 = scalar_class(result2)
-        output2.save(db=db, subject=1, role="tripled")
+        scalar_class.save(result2, db=db, subject=1, role="tripled")
 
         # Query what was derived from the input
         derived = db.get_derived_from(scalar_class, subject=1, role="input")
@@ -359,8 +354,7 @@ class TestLineageIntegration:
         c = step3(b)
 
         # Save final result
-        var = scalar_class(c)
-        var.save(db=db, subject=1)
+        scalar_class.save(c, db=db, subject=1)
 
         # Check provenance shows step3
         provenance = db.get_provenance(scalar_class, subject=1)
@@ -381,13 +375,12 @@ class TestGetFullLineage:
             return x * 2
 
         # Save input
-        input_var = scalar_class(10)
-        input_var.save(db=db, subject=1, stage="raw")
+        scalar_class.save(10, db=db, subject=1, stage="raw")
+        input_var = scalar_class.load(db=db, subject=1, stage="raw")
 
         # Process and save
         result = double(input_var)
-        output_var = scalar_class(result)
-        output_var.save(db=db, subject=1, stage="processed")
+        scalar_class.save(result, db=db, subject=1, stage="processed")
 
         # Get full lineage
         lineage = db.get_full_lineage(scalar_class, subject=1, stage="processed")
@@ -411,18 +404,17 @@ class TestGetFullLineage:
             return x + 10
 
         # Save input
-        input_var = scalar_class(5)
-        input_var.save(db=db, subject=1, stage="raw")
+        scalar_class.save(5, db=db, subject=1, stage="raw")
+        input_var = scalar_class.load(db=db, subject=1, stage="raw")
 
         # Step 1
         result1 = step1(input_var)
-        var1 = scalar_class(result1)
-        var1.save(db=db, subject=1, stage="step1")
+        scalar_class.save(result1, db=db, subject=1, stage="step1")
+        var1 = scalar_class.load(db=db, subject=1, stage="step1")
 
         # Step 2
         result2 = step2(var1)
-        var2 = scalar_class(result2)
-        var2.save(db=db, subject=1, stage="step2")
+        scalar_class.save(result2, db=db, subject=1, stage="step2")
 
         # Get full lineage from final output
         lineage = db.get_full_lineage(scalar_class, subject=1, stage="step2")
@@ -445,12 +437,11 @@ class TestGetFullLineage:
         def multiply(x, factor):
             return x * factor
 
-        input_var = scalar_class(10)
-        input_var.save(db=db, subject=1, stage="raw")
+        scalar_class.save(10, db=db, subject=1, stage="raw")
+        input_var = scalar_class.load(db=db, subject=1, stage="raw")
 
         result = multiply(input_var, 5)
-        output_var = scalar_class(result)
-        output_var.save(db=db, subject=1, stage="scaled")
+        scalar_class.save(result, db=db, subject=1, stage="scaled")
 
         lineage = db.get_full_lineage(scalar_class, subject=1, stage="scaled")
 
@@ -460,8 +451,7 @@ class TestGetFullLineage:
 
     def test_get_full_lineage_no_lineage(self, db, scalar_class):
         """Test full lineage for data without lineage (manually saved)."""
-        var = scalar_class(42)
-        var.save(db=db, subject=1)
+        scalar_class.save(42, db=db, subject=1)
 
         lineage = db.get_full_lineage(scalar_class, subject=1)
 
@@ -476,13 +466,13 @@ class TestGetFullLineage:
             return x + 1
 
         # Build a chain of saves
-        var = scalar_class(0)
-        var.save(db=db, subject=1, step=0)
+        scalar_class.save(0, db=db, subject=1, step=0)
+        var = scalar_class.load(db=db, subject=1, step=0)
 
         for i in range(5):
             result = increment(var)
-            var = scalar_class(result)
-            var.save(db=db, subject=1, step=i + 1)
+            scalar_class.save(result, db=db, subject=1, step=i + 1)
+            var = scalar_class.load(db=db, subject=1, step=i + 1)
 
         # With max_depth=2, should truncate
         lineage = db.get_full_lineage(scalar_class, subject=1, step=5, max_depth=2)
@@ -504,12 +494,11 @@ class TestGetFullLineage:
         def process(x):
             return x * 2
 
-        input_var = scalar_class(10)
-        input_var.save(db=db, subject=1, stage="raw")
+        scalar_class.save(10, db=db, subject=1, stage="raw")
+        input_var = scalar_class.load(db=db, subject=1, stage="raw")
 
         result = process(input_var)
-        output_var = scalar_class(result)
-        output_var.save(db=db, subject=1, stage="processed")
+        scalar_class.save(result, db=db, subject=1, stage="processed")
 
         formatted = db.format_lineage(scalar_class, subject=1, stage="processed")
 
@@ -524,8 +513,7 @@ class TestGetFullLineage:
 
     def test_format_lineage_shows_source(self, db, scalar_class):
         """Test format_lineage shows source for manual data."""
-        var = scalar_class(42)
-        var.save(db=db, subject=1)
+        scalar_class.save(42, db=db, subject=1)
 
         formatted = db.format_lineage(scalar_class, subject=1)
 
@@ -541,16 +529,15 @@ class TestGetFullLineage:
         def step2(x):
             return x + 10
 
-        input_var = scalar_class(5)
-        input_var.save(db=db, subject=1, stage="raw")
+        scalar_class.save(5, db=db, subject=1, stage="raw")
+        input_var = scalar_class.load(db=db, subject=1, stage="raw")
 
         result1 = step1(input_var)
-        var1 = scalar_class(result1)
-        var1.save(db=db, subject=1, stage="step1")
+        scalar_class.save(result1, db=db, subject=1, stage="step1")
+        var1 = scalar_class.load(db=db, subject=1, stage="step1")
 
         result2 = step2(var1)
-        var2 = scalar_class(result2)
-        var2.save(db=db, subject=1, stage="step2")
+        scalar_class.save(result2, db=db, subject=1, stage="step2")
 
         formatted = db.format_lineage(scalar_class, subject=1, stage="step2")
 
@@ -565,12 +552,11 @@ class TestGetFullLineage:
         def scale(x, factor):
             return x * factor
 
-        input_var = scalar_class(10)
-        input_var.save(db=db, subject=1, stage="raw")
+        scalar_class.save(10, db=db, subject=1, stage="raw")
+        input_var = scalar_class.load(db=db, subject=1, stage="raw")
 
         result = scale(input_var, 3)
-        output_var = scalar_class(result)
-        output_var.save(db=db, subject=1, stage="scaled")
+        scalar_class.save(result, db=db, subject=1, stage="scaled")
 
         formatted = db.format_lineage(scalar_class, subject=1, stage="scaled")
 
@@ -582,12 +568,11 @@ class TestGetFullLineage:
         def double(x):
             return x * 2
 
-        input_var = scalar_class(10)
-        input_var.save(db=db, subject=1, stage="raw")
+        scalar_class.save(10, db=db, subject=1, stage="raw")
+        input_var = scalar_class.load(db=db, subject=1, stage="raw")
 
         result = double(input_var)
-        output_var = scalar_class(result)
-        vhash = output_var.save(db=db, subject=1, stage="processed")
+        vhash = scalar_class.save(result, db=db, subject=1, stage="processed")
 
         # Query by vhash
         lineage = db.get_full_lineage(scalar_class, version=vhash)

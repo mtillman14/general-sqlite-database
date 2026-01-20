@@ -149,12 +149,14 @@ Each subclass:
 After `save()` or `load()`:
 
 ```python
-var = MyVariable(data)
-vhash = var.save(subject=1)
+# Save returns the vhash
+vhash = MyVariable.save(data, subject=1)
 
+# Load returns a variable instance with populated properties
+var = MyVariable.load(subject=1)
 var.data      # The native data
-var.vhash     # Content hash (set after save/load)
-var.metadata  # Metadata dict (set after save/load)
+var.vhash     # Content hash (set after load)
+var.metadata  # Metadata dict (set after load)
 ```
 
 ## Batch Operations: DataFrames with Multiple Records
@@ -211,7 +213,7 @@ df = ScalarResult.load_to_dataframe(experiment="exp1", include_vhash=True)
 
 | Scenario | Method |
 |----------|--------|
-| DataFrame is ONE unit of data (e.g., time series) | `MyVar(df).save(...)` |
+| DataFrame is ONE unit of data (e.g., time series) | `MyVar.save(df, ...)` |
 | Each row is SEPARATE data (e.g., subject/trial results) | `MyVar.save_from_dataframe(df, ...)` |
 
 ## Metadata Reflects Dataset Structure
@@ -239,7 +241,7 @@ for subject in subjects:
         result = analyze_trial(subject, trial)
 
         # Metadata mirrors dataset structure
-        TrialResult(result).save(
+        TrialResult.save(result,
             subject=subject,
             trial=trial,
             experiment="exp_2024"
@@ -263,7 +265,7 @@ days = ["day1", "day2", "day3"]
 for day in days:
     for session in sessions:
         data = record_session(day, session)
-        Recording(data).save(day=day, session=session, device="sensor_A")
+        Recording.save(data, day=day, session=session, device="sensor_A")
 ```
 
 The key insight: your metadata structure should make it easy to query the data the way you'll need to access it later.
@@ -276,6 +278,5 @@ These keys cannot be used in metadata:
 - `id` - Reserved for database ID
 - `created_at` - Reserved for timestamp
 - `schema_version` - Reserved for schema version
-- `data` - Reserved for data storage
 
 Using these raises `ReservedMetadataKeyError`.

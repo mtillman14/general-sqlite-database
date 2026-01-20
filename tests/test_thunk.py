@@ -439,7 +439,7 @@ class TestThunkUnwrap:
     def test_unwrap_true_with_base_variable(self, db, scalar_class):
         """With unwrap=True, BaseVariable input is unwrapped to .data."""
         # Save a variable
-        scalar_class(42).save(db=db, key="test")
+        scalar_class.save(42, db=db, key="test")
         loaded = scalar_class.load(db=db, key="test")
 
         @thunk(n_outputs=1)
@@ -455,7 +455,7 @@ class TestThunkUnwrap:
     def test_unwrap_false_with_base_variable(self, db, scalar_class):
         """With unwrap=False, BaseVariable input is passed through."""
         # Save a variable
-        scalar_class(42).save(db=db, key="test")
+        scalar_class.save(42, db=db, key="test")
         loaded = scalar_class.load(db=db, key="test")
 
         @thunk(n_outputs=1, unwrap=False)
@@ -472,7 +472,7 @@ class TestThunkUnwrap:
 
     def test_unwrap_false_can_inspect_metadata(self, db, scalar_class):
         """With unwrap=False, can inspect metadata from input variable."""
-        scalar_class(100).save(db=db, subject=1, trial=2, experiment="test")
+        scalar_class.save(100, db=db, subject=1, trial=2, experiment="test")
         loaded = scalar_class.load(db=db, subject=1, trial=2)
 
         @thunk(n_outputs=1, unwrap=False)
@@ -487,7 +487,7 @@ class TestThunkUnwrap:
 
     def test_unwrap_with_mixed_inputs(self, db, scalar_class):
         """unwrap works with mixed input types."""
-        scalar_class(10).save(db=db, key="var1")
+        scalar_class.save(10, db=db, key="var1")
         loaded = scalar_class.load(db=db, key="var1")
 
         @thunk(n_outputs=1)
@@ -509,7 +509,7 @@ class TestThunkUnwrap:
 
     def test_unwrap_false_with_mixed_inputs(self, db, scalar_class):
         """unwrap=False preserves all wrapper types."""
-        scalar_class(10).save(db=db, key="var1")
+        scalar_class.save(10, db=db, key="var1")
         loaded = scalar_class.load(db=db, key="var1")
 
         @thunk(n_outputs=1)
@@ -540,7 +540,7 @@ class TestThunkUnwrap:
 
     def test_lineage_captured_regardless_of_unwrap(self, db, scalar_class):
         """Lineage should be captured whether unwrap is True or False."""
-        scalar_class(42).save(db=db, key="input_var")
+        scalar_class.save(42, db=db, key="input_var")
         loaded = scalar_class.load(db=db, key="input_var")
 
         @thunk(n_outputs=1)

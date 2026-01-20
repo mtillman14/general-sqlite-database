@@ -30,7 +30,9 @@ src/scidb/database.py
 src/scidb/exceptions.py
 src/scidb/hashing.py
 src/scidb/lineage.py
+src/scidb/parquet_storage.py
 src/scidb/preview.py
+src/scidb/query.py
 src/scidb/storage.py
 src/scidb/thunk.py
 src/scidb/variable.py
@@ -48,7 +50,9 @@ tests/test_init.py
 tests/test_integration.py
 tests/test_lineage.py
 tests/test_lineage_mode.py
+tests/test_parquet_storage.py
 tests/test_preview.py
+tests/test_query.py
 tests/test_storage.py
 tests/test_thunk.py
 tests/test_variable.py

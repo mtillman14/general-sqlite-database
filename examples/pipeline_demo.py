@@ -217,8 +217,7 @@ def main():
         print(f"Loaded DataFrame with shape: {raw_df.shape}")
         print(f"Columns: {list(raw_df.columns)}")
 
-        raw_var = RawData(raw_df)
-        raw_vhash = raw_var.save(
+        raw_vhash = RawData.save(raw_df,
             db=db,
             source="sensor_data.csv",
             experiment="demo",
@@ -257,16 +256,13 @@ def main():
         # Save the results - lineage is automatically captured!
         print("\n[7] Saving results (lineage captured automatically)...")
 
-        ts_var = TimeSeries(temp_series)
-        ts_vhash = ts_var.save(db=db, column="temperature", stage="raw", subject=1)
+        ts_vhash = TimeSeries.save(temp_series, db=db, column="temperature", stage="raw", subject=1)
         print(f"    Saved TimeSeries (raw): {ts_vhash[:16]}...")
 
-        norm_var = NormalizedSeries(temp_normalized)
-        norm_vhash = norm_var.save(db=db, column="temperature", stage="normalized", subject=1)
+        norm_vhash = NormalizedSeries.save(temp_normalized, db=db, column="temperature", stage="normalized", subject=1)
         print(f"    Saved NormalizedSeries: {norm_vhash[:16]}...")
 
-        stats_var = Statistics(temp_stats)
-        stats_vhash = stats_var.save(db=db, column="temperature", stage="stats", subject=1)
+        stats_vhash = Statistics.save(temp_stats, db=db, column="temperature", stage="stats", subject=1)
         print(f"    Saved Statistics: {stats_vhash[:16]}...")
 
         # Query provenance
@@ -334,7 +330,7 @@ def main():
         else:
             print("    CACHE MISS! This is a new computation.")
             print("    Saving to populate cache...")
-            NormalizedSeries(humid_normalized).save(
+            NormalizedSeries.save(humid_normalized,
                 db=db, column="humidity", stage="normalized", subject=1
             )
 
@@ -362,7 +358,7 @@ def main():
         # Smooth with different window sizes
         for window in [3, 5, 7]:
             smoothed = smooth(temp_series, window)
-            TimeSeries(smoothed).save(
+            TimeSeries.save(smoothed,
                 db=db,
                 column="temperature",
                 stage="smoothed",

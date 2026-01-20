@@ -44,9 +44,9 @@ db = configure_database("my_experiment.db")
 ## 3. Save Data with Metadata
 
 ```python
-# Create and save
+# Save data with metadata
 signal = np.sin(np.linspace(0, 2*np.pi, 100))
-vhash = SignalData(signal).save(
+vhash = SignalData.save(signal,
     subject=1,
     trial=1,
     condition="control"
@@ -94,7 +94,7 @@ class PowerValue(BaseVariable):
     def from_db(cls, df):
         return df["power"].iloc[0]
 
-PowerValue(power).save(subject=1, trial=1, stage="power")
+PowerValue.save(power, subject=1, trial=1, stage="power")
 
 # Query what produced this result
 provenance = db.get_provenance(PowerValue, subject=1, trial=1, stage="power")
@@ -117,7 +117,7 @@ thunked_filtfilt = Thunk(filtfilt, n_outputs=1)
 b, a = thunked_butter(N=4, Wn=0.1, btype='low')
 filtered = thunked_filtfilt(b.data, a.data, raw_data)
 
-SignalData(filtered).save(subject=1, stage="filtered")
+SignalData.save(filtered, subject=1, stage="filtered")
 ```
 
 ## 7. Specialized Types via Subclassing
@@ -133,8 +133,8 @@ class Humidity(SignalData):
     pass  # Table: humidity
 
 # Data stored in separate tables (auto-registered on first save)
-Temperature(temp_array).save(sensor=1, day="monday")
-Humidity(humid_array).save(sensor=1, day="monday")
+Temperature.save(temp_array, sensor=1, day="monday")
+Humidity.save(humid_array, sensor=1, day="monday")
 ```
 
 ## Next Steps

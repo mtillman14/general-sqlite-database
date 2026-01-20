@@ -35,7 +35,7 @@ def expensive_computation(data):
 
 # First run: executes and prints "Computing..."
 result = expensive_computation(raw_data)
-MyVar(result).save(subject=1, stage="computed")
+MyVar.save(result, subject=1, stage="computed")
 
 # Second run: cache hit, no execution!
 result2 = expensive_computation(raw_data)  # No print, returns cached
@@ -59,8 +59,8 @@ def split_data(data):
 
 # First run: executes
 left, right = split_data(raw_data)
-LeftHalf(left).save(subject=1)
-RightHalf(right).save(subject=1)
+LeftHalf.save(left, subject=1)
+RightHalf.save(right, subject=1)
 
 # Second run: cache hit for both outputs!
 left2, right2 = split_data(raw_data)  # No print
@@ -72,7 +72,7 @@ print(right2.was_cached)  # True
 
 ```python
 left, right = split_data(raw_data)
-LeftHalf(left).save(subject=1)  # Only save one output
+LeftHalf.save(left, subject=1)  # Only save one output
 # right is not saved
 
 # Next run: cache miss (partial save)
@@ -98,7 +98,7 @@ if cached:
     print(f"Cache hit! vhash: {cached.cached_id}")
 else:
     print("Cache miss, saving...")
-    OutputVar(result).save(db=db, subject=1)
+    OutputVar.save(result, db=db, subject=1)
 ```
 
 ## Cache Key Components
@@ -190,7 +190,7 @@ Cache misses happen when:
 
 ```python
 result = expensive_computation(data)
-MyVar(result).save(db=db, subject=1)  # Populates cache
+MyVar.save(result, db=db, subject=1)  # Populates cache
 ```
 
 ### 2. Check Cache Before Re-running

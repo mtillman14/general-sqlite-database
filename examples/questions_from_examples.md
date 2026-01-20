@@ -7,7 +7,7 @@
 4. debug_example2_advanced.py: Let's say I want to compare some value that I computed for subject=1 across different days, i.e. day=1 vs. day=2. Using this framework, how could I get a dict where the keys are the day values, and the values are the corresponding day's values? I think that's the format that would best lend itself to analysis to answer that question.
 5. hashing.py: generate_vash() what happens when the data being saved is ~5 GB large? For example a massive list or tuple, or a huge numpy array or pd.DataFrame. Will there be a huge slowdown due to serialization?
 6. preview.py: Remove the attempts to identify the "value" column. Columns are only really named "value" in example code.
-7. In debug_example2_advanced.py: On line 223, `raw.save()`, which calls BaseVariable.save(), why is `isinstance(self.data, OutputThunk)` `False`? Or really, why is the computation not cached?
+7. In debug_example2_advanced.py: On line 223, `RawSignal.save()`, which calls BaseVariable.save(), why is `isinstance(data, OutputThunk)` `False`? Or really, why is the computation not cached?
 8. In database.py DatabaseManager.load(): Is json_extract slow? e.g. `"json_extract(metadata, '$.subject') = ? AND json_extract(metadata, '$.session') = ? AND json_extract(metadata, '$.channel') = ?"`
 9. In debug_example2_advanced.py line 310 butter_filter(), I don't think I'm seeing the cache hit because the result of db.get_cached_by_key() on line 101 of thunk.py results in cached = None. Line 312 has the same problem, but lines 311 and 313 properly hit the cache.
 

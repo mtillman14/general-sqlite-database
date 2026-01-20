@@ -21,8 +21,7 @@ class TestEndToEndScalarWorkflow:
 
         # Save
         original_value = 42
-        var = scalar_class(original_value)
-        vhash = var.save(db=db, subject=1, trial=1)
+        vhash = scalar_class.save(original_value, db=db, subject=1, trial=1)
 
         # Load
         loaded = scalar_class.load(db=db, subject=1, trial=1)
@@ -41,7 +40,7 @@ class TestEndToEndScalarWorkflow:
         for subject in range(1, 4):
             for trial in range(1, 3):
                 value = subject * 10 + trial
-                scalar_class(value).save(db=db, subject=subject, trial=trial)
+                scalar_class.save(value, db=db, subject=subject, trial=trial)
                 expected_data[(subject, trial)] = value
 
         # Load and verify each
@@ -54,9 +53,9 @@ class TestEndToEndScalarWorkflow:
         db.register(scalar_class)
 
         # Save multiple versions with different data
-        vhash1 = scalar_class(100).save(db=db, subject=1, trial=1)
-        vhash2 = scalar_class(200).save(db=db, subject=1, trial=1)
-        vhash3 = scalar_class(300).save(db=db, subject=1, trial=1)
+        vhash1 = scalar_class.save(100, db=db, subject=1, trial=1)
+        vhash2 = scalar_class.save(200, db=db, subject=1, trial=1)
+        vhash3 = scalar_class.save(300, db=db, subject=1, trial=1)
 
         # All vhashes should be different
         assert len({vhash1, vhash2, vhash3}) == 3
@@ -78,7 +77,7 @@ class TestEndToEndArrayWorkflow:
         db.register(array_class)
 
         original = np.array([1.0, 2.0, 3.0, 4.0, 5.0])
-        array_class(original).save(db=db, subject=1, measurement="signal")
+        array_class.save(original, db=db, subject=1, measurement="signal")
 
         loaded = array_class.load(db=db, subject=1, measurement="signal")
         np.testing.assert_array_equal(loaded.data, original)
@@ -88,7 +87,7 @@ class TestEndToEndArrayWorkflow:
         db.register(matrix_class)
 
         original = np.array([[1, 2, 3], [4, 5, 6], [7, 8, 9]])
-        matrix_class(original).save(db=db, subject=1, type="rotation")
+        matrix_class.save(original, db=db, subject=1, type="rotation")
 
         loaded = matrix_class.load(db=db, subject=1, type="rotation")
         np.testing.assert_array_equal(loaded.data, original)
@@ -98,7 +97,7 @@ class TestEndToEndArrayWorkflow:
         db.register(array_class)
 
         original = np.random.rand(10000)
-        array_class(original).save(db=db, subject=1, type="timeseries")
+        array_class.save(original, db=db, subject=1, type="timeseries")
 
         loaded = array_class.load(db=db, subject=1, type="timeseries")
         np.testing.assert_array_almost_equal(loaded.data, original)
@@ -109,7 +108,7 @@ class TestEndToEndArrayWorkflow:
 
         for dtype in [np.int32, np.int64, np.float32, np.float64]:
             original = np.array([1, 2, 3], dtype=dtype)
-            array_class(original).save(db=db, subject=1, dtype=str(dtype))
+            array_class.save(original, db=db, subject=1, dtype=str(dtype))
 
             loaded = array_class.load(db=db, subject=1, dtype=str(dtype))
             assert loaded.data.dtype == dtype
@@ -127,7 +126,7 @@ class TestEndToEndDataFrameWorkflow:
             "x": [1.0, 2.0, 3.0, 4.0],
             "y": [5.0, 6.0, 7.0, 8.0],
         })
-        dataframe_class(original).save(db=db, subject=1, trial=1)
+        dataframe_class.save(original, db=db, subject=1, trial=1)
 
         loaded = dataframe_class.load(db=db, subject=1, trial=1)
         pd.testing.assert_frame_equal(loaded.data, original)
@@ -141,7 +140,7 @@ class TestEndToEndDataFrameWorkflow:
             "float_col": pd.array([1.1, 2.2, 3.3], dtype="float64"),
             "str_col": ["a", "b", "c"],
         })
-        dataframe_class(original).save(db=db, subject=1)
+        dataframe_class.save(original, db=db, subject=1)
 
         loaded = dataframe_class.load(db=db, subject=1)
         for col in original.columns:
@@ -155,9 +154,9 @@ class TestIdempotentSaves:
         """Saving identical data+metadata should return same vhash."""
         db.register(scalar_class)
 
-        vhash1 = scalar_class(42).save(db=db, subject=1, trial=1)
-        vhash2 = scalar_class(42).save(db=db, subject=1, trial=1)
-        vhash3 = scalar_class(42).save(db=db, subject=1, trial=1)
+        vhash1 = scalar_class.save(42, db=db, subject=1, trial=1)
+        vhash2 = scalar_class.save(42, db=db, subject=1, trial=1)
+        vhash3 = scalar_class.save(42, db=db, subject=1, trial=1)
 
         assert vhash1 == vhash2 == vhash3
 
@@ -172,8 +171,8 @@ class TestIdempotentSaves:
         arr1 = np.array([1.0, 2.0, 3.0])
         arr2 = np.array([1.0, 2.0, 3.0])
 
-        vhash1 = array_class(arr1).save(db=db, subject=1)
-        vhash2 = array_class(arr2).save(db=db, subject=1)
+        vhash1 = array_class.save(arr1, db=db, subject=1)
+        vhash2 = array_class.save(arr2, db=db, subject=1)
 
         assert vhash1 == vhash2
 
@@ -190,9 +189,9 @@ class TestMultipleVariableTypes:
         db.register(matrix_class)
 
         # Save different types
-        scalar_class(42).save(db=db, subject=1, type="scalar")
-        array_class(np.array([1, 2, 3])).save(db=db, subject=1, type="array")
-        matrix_class(np.eye(3)).save(db=db, subject=1, type="matrix")
+        scalar_class.save(42, db=db, subject=1, type="scalar")
+        array_class.save(np.array([1, 2, 3]), db=db, subject=1, type="array")
+        matrix_class.save(np.eye(3), db=db, subject=1, type="matrix")
 
         # Load each type
         scalar = scalar_class.load(db=db, subject=1, type="scalar")
@@ -209,8 +208,8 @@ class TestMultipleVariableTypes:
         db.register(array_class)
 
         # Save with same metadata but different types
-        scalar_class(42).save(db=db, subject=1, trial=1)
-        array_class(np.array([1, 2, 3])).save(db=db, subject=1, trial=1)
+        scalar_class.save(42, db=db, subject=1, trial=1)
+        array_class.save(np.array([1, 2, 3]), db=db, subject=1, trial=1)
 
         # Load each type specifically
         scalar = scalar_class.load(db=db, subject=1, trial=1)
@@ -228,7 +227,7 @@ class TestDatabasePersistence:
         # First connection - save data
         db1 = DatabaseManager(temp_db_path)
         db1.register(scalar_class)
-        vhash = scalar_class(42).save(db=db1, subject=1, trial=1)
+        vhash = scalar_class.save(42, db=db1, subject=1, trial=1)
         db1.close()
 
         # Second connection - load data
@@ -248,8 +247,8 @@ class TestDatabasePersistence:
         db1 = DatabaseManager(temp_db_path)
         db1.register(scalar_class)
         db1.register(array_class)
-        scalar_class(42).save(db=db1, subject=1)
-        array_class(np.array([1, 2, 3])).save(db=db1, subject=1)
+        scalar_class.save(42, db=db1, subject=1)
+        array_class.save(np.array([1, 2, 3]), db=db1, subject=1)
         db1.close()
 
         # Second connection
@@ -279,7 +278,7 @@ class TestErrorHandling:
         db.register(scalar_class)
         db.register(array_class)
 
-        scalar_class(42).save(db=db, subject=1, trial=1)
+        scalar_class.save(42, db=db, subject=1, trial=1)
 
         # Try to load as array - should not find it
         with pytest.raises(NotFoundError):
@@ -309,7 +308,7 @@ class TestCustomVariableType:
 
         # Save a point
         original = (1.0, 2.0, 3.0)
-        Point3D(original).save(db=db, name="origin")
+        Point3D.save(original, db=db, name="origin")
 
         # Load it back
         loaded = Point3D.load(db=db, name="origin")
@@ -339,7 +338,7 @@ class TestCustomVariableType:
             "activation": "relu",
             "nested": {"a": 1, "b": 2},
         }
-        Config(original).save(db=db, experiment="test")
+        Config.save(original, db=db, experiment="test")
 
         loaded = Config.load(db=db, experiment="test")
         assert loaded.data == original

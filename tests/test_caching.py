@@ -92,8 +92,8 @@ class TestCacheKeyComputation:
         """Cache key should use vhash for saved variables."""
         db.register(scalar_class)
 
-        var = scalar_class(42)
-        var.save(db=db, subject=1)
+        scalar_class.save(42, db=db, subject=1)
+        var = scalar_class.load(db=db, subject=1)
 
         @thunk(n_outputs=1)
         def process(x):
@@ -138,8 +138,7 @@ class TestCachePopulation:
             return x * 2
 
         result = double(21)
-        var = scalar_class(result)
-        vhash = var.save(db=db, subject=1)
+        vhash = scalar_class.save(result, db=db, subject=1)
 
         # Check cache table has an entry
         cursor = db.connection.execute(
@@ -156,8 +155,7 @@ class TestCachePopulation:
         """Saving raw data should not populate cache."""
         db.register(scalar_class)
 
-        var = scalar_class(42)
-        vhash = var.save(db=db, subject=1)
+        vhash = scalar_class.save(42, db=db, subject=1)
 
         # No cache entry should exist
         cursor = db.connection.execute(
@@ -177,8 +175,7 @@ class TestCachePopulation:
         result = triple(10)
         expected_key = result.pipeline_thunk.compute_cache_key()
 
-        var = scalar_class(result)
-        var.save(db=db, subject=1)
+        scalar_class.save(result, db=db, subject=1)
 
         cursor = db.connection.execute(
             "SELECT cache_key FROM _computation_cache WHERE function_name = 'triple'"
@@ -201,8 +198,7 @@ class TestCacheLookup:
 
         # Save to populate cache
         result = process(10)
-        var = scalar_class(result)
-        original_vhash = var.save(db=db, subject=1)
+        original_vhash = scalar_class.save(result, db=db, subject=1)
 
         # Compute cache key
         cache_key = result.pipeline_thunk.compute_cache_key()
@@ -232,8 +228,7 @@ class TestCacheLookup:
 
         # Save as scalar
         result = process(10)
-        var = scalar_class(result)
-        var.save(db=db, subject=1)
+        scalar_class.save(result, db=db, subject=1)
 
         cache_key = result.pipeline_thunk.compute_cache_key()
 
@@ -255,8 +250,7 @@ class TestCheckCacheHelper:
 
         # Save to populate cache
         result = process(10)
-        var = scalar_class(result)
-        var.save(db=db, subject=1)
+        scalar_class.save(result, db=db, subject=1)
 
         # Check cache with same inputs
         result2 = process(10)
@@ -289,8 +283,7 @@ class TestCheckCacheHelper:
             return x * 2
 
         result = process(10)
-        var = scalar_class(result)
-        original_vhash = var.save(db=db, subject=1)
+        original_vhash = scalar_class.save(result, db=db, subject=1)
 
         result2 = process(10)
         cached = check_cache(result2.pipeline_thunk, scalar_class, db=db)
@@ -326,7 +319,7 @@ class TestOutputThunkCacheProperties:
             return x * 2
 
         result = process(10)
-        scalar_class(result).save(db=db, subject=1)
+        scalar_class.save(result, db=db, subject=1)
 
         result2 = process(10)
         cached = check_cache(result2.pipeline_thunk, scalar_class, db=db)
@@ -346,8 +339,8 @@ class TestCacheInvalidation:
             return x * 2
 
         # Create multiple cache entries
-        scalar_class(process(10)).save(db=db, subject=1)
-        scalar_class(process(20)).save(db=db, subject=2)
+        scalar_class.save(process(10), db=db, subject=1)
+        scalar_class.save(process(20), db=db, subject=2)
 
         # Verify entries exist
         stats = db.get_cache_stats()
@@ -373,8 +366,8 @@ class TestCacheInvalidation:
         def process2(x):
             return x * 3
 
-        scalar_class(process1(10)).save(db=db, subject=1)
-        scalar_class(process2(10)).save(db=db, subject=2)
+        scalar_class.save(process1(10), db=db, subject=1)
+        scalar_class.save(process2(10), db=db, subject=2)
 
         # Invalidate only process1
         count = db.invalidate_cache(function_name="process1")
@@ -395,7 +388,7 @@ class TestCacheInvalidation:
 
         result = process(10)
         function_hash = result.pipeline_thunk.thunk.hash
-        scalar_class(result).save(db=db, subject=1)
+        scalar_class.save(result, db=db, subject=1)
 
         count = db.invalidate_cache(function_hash=function_hash)
         assert count == 1
@@ -426,9 +419,9 @@ class TestCacheStats:
         def process2(x):
             return x * 3
 
-        scalar_class(process1(10)).save(db=db, subject=1)
-        scalar_class(process1(20)).save(db=db, subject=2)
-        scalar_class(process2(10)).save(db=db, subject=3)
+        scalar_class.save(process1(10), db=db, subject=1)
+        scalar_class.save(process1(20), db=db, subject=2)
+        scalar_class.save(process2(10), db=db, subject=3)
 
         stats = db.get_cache_stats()
         assert stats["total_entries"] == 3
@@ -450,7 +443,7 @@ class TestCacheWithArrays:
 
         arr = np.array([1.0, 2.0, 4.0])
         result = normalize(arr)
-        array_class(result).save(db=db, subject=1)
+        array_class.save(result, db=db, subject=1)
 
         # Check cache
         result2 = normalize(arr)
@@ -478,7 +471,7 @@ class TestCacheWorkflow:
 
         # First run - compute and save
         result = expensive_compute(10)
-        scalar_class(result).save(db=db, subject=1)
+        scalar_class.save(result, db=db, subject=1)
         assert computation_count[0] == 1
 
         # Second run - check cache first
@@ -511,7 +504,7 @@ class TestCacheWorkflow:
         # Run pipeline and save final result
         intermediate = step1(5)
         final = step2(intermediate)
-        scalar_class(final).save(db=db, subject=1)
+        scalar_class.save(final, db=db, subject=1)
 
         # Check if final result is cached
         intermediate2 = step1(5)
@@ -542,7 +535,7 @@ class TestAutomaticCacheChecking:
         assert result1.was_cached is False
 
         # Save to populate cache
-        scalar_class(result1).save(db=configured_db, subject=1)
+        scalar_class.save(result1, db=configured_db, subject=1)
 
         # Second run - should use cache, not execute
         result2 = expensive_compute(10)
@@ -559,7 +552,7 @@ class TestAutomaticCacheChecking:
             return x * 3
 
         result1 = compute(7)
-        vhash = scalar_class(result1).save(db=configured_db, subject=1)
+        vhash = scalar_class.save(result1, db=configured_db, subject=1)
 
         result2 = compute(7)
         assert result2.data == 21
@@ -595,7 +588,7 @@ class TestAutomaticCacheChecking:
 
         # First run with x=10
         result1 = compute(10)
-        scalar_class(result1).save(db=configured_db, subject=1)
+        scalar_class.save(result1, db=configured_db, subject=1)
         assert execution_count[0] == 1
 
         # Second run with x=20 - different input, should execute
@@ -631,7 +624,7 @@ class TestAutomaticCacheChecking:
 
         # First run and save
         result1 = compute(10)
-        scalar_class(result1).save(db=configured_db, subject=1)
+        scalar_class.save(result1, db=configured_db, subject=1)
         assert execution_count[0] == 1
 
         # Clear the db's registered types to simulate new session
@@ -658,8 +651,8 @@ class TestAutomaticCacheChecking:
         assert execution_count[0] == 1
 
         # Save both outputs
-        scalar_class(a1).save(db=configured_db, subject=1, output="a")
-        scalar_class(b1).save(db=configured_db, subject=1, output="b")
+        scalar_class.save(a1, db=configured_db, subject=1, output="a")
+        scalar_class.save(b1, db=configured_db, subject=1, output="b")
 
         # Second run - both outputs cached, should NOT execute
         a2, b2 = split_compute(10)
@@ -684,7 +677,7 @@ class TestAutomaticCacheChecking:
         assert execution_count[0] == 1
 
         # Save only first output
-        scalar_class(a1).save(db=configured_db, subject=1, output="a")
+        scalar_class.save(a1, db=configured_db, subject=1, output="a")
         # Don't save b1
 
         # Second run - not all outputs cached, should execute
@@ -707,7 +700,7 @@ class TestAutomaticCacheChecking:
 
         # First run
         result1 = normalize(arr)
-        array_class(result1).save(db=configured_db, subject=1)
+        array_class.save(result1, db=configured_db, subject=1)
         assert execution_count[0] == 1
 
         # Second run with same array
@@ -735,7 +728,7 @@ class TestAutomaticCacheChecking:
         # First run of full pipeline
         intermediate = step1(5)
         final = step2(intermediate)
-        scalar_class(final).save(db=configured_db, subject=1)
+        scalar_class.save(final, db=configured_db, subject=1)
         assert step1_count[0] == 1
         assert step2_count[0] == 1
 
@@ -755,7 +748,7 @@ class TestAutomaticCacheChecking:
             return x * 2
 
         result1 = compute(10)
-        scalar_class(result1).save(db=configured_db, subject=1)
+        scalar_class.save(result1, db=configured_db, subject=1)
 
         result2 = compute(10)
         assert result2.was_cached is True
@@ -781,7 +774,7 @@ class TestGetCachedByKey:
             return x * 2
 
         result = compute(10)
-        vhash = scalar_class(result).save(db=db, subject=1)
+        vhash = scalar_class.save(result, db=db, subject=1)
 
         cache_key = result.pipeline_thunk.compute_cache_key()
         cached = db.get_cached_by_key(cache_key)
@@ -801,7 +794,7 @@ class TestGetCachedByKey:
             return x * 2
 
         result = compute(10)
-        vhash = scalar_class(result).save(db=db, subject=1)
+        vhash = scalar_class.save(result, db=db, subject=1)
 
         # Clear db registry - but class is still in global registry via __init_subclass__
         db._registered_types.clear()
@@ -823,7 +816,7 @@ class TestGetCachedByKey:
             return x * 2
 
         result = compute(10)
-        scalar_class(result).save(db=db, subject=1)
+        scalar_class.save(result, db=db, subject=1)
         cache_key = result.pipeline_thunk.compute_cache_key()
 
         # Delete the data from the variable table
@@ -842,8 +835,8 @@ class TestGetCachedByKey:
             return x, x * 2
 
         a, b = compute(10)
-        vhash_a = scalar_class(a).save(db=db, subject=1, output="a")
-        vhash_b = scalar_class(b).save(db=db, subject=1, output="b")
+        vhash_a = scalar_class.save(a, db=db, subject=1, output="a")
+        vhash_b = scalar_class.save(b, db=db, subject=1, output="b")
 
         cache_key = a.pipeline_thunk.compute_cache_key()
         cached = db.get_cached_by_key(cache_key, n_outputs=2)
@@ -862,7 +855,7 @@ class TestGetCachedByKey:
             return x, x * 2
 
         a, b = compute(10)
-        scalar_class(a).save(db=db, subject=1, output="a")
+        scalar_class.save(a, db=db, subject=1, output="a")
         # Don't save b
 
         cache_key = a.pipeline_thunk.compute_cache_key()
@@ -955,14 +948,14 @@ class TestAutoRegistration:
 
         # Manually register to save (simulating a previous session)
         db.register(AutoRegVar)
-        vhash = AutoRegVar(42).save(db=db, test=1)
+        vhash = AutoRegVar.save(42, db=db, test=1)
 
         @thunk(n_outputs=1)
         def process(x):
             return x * 2
 
         result = process(42)
-        AutoRegVar(result).save(db=db, test=2)
+        AutoRegVar.save(result, db=db, test=2)
         cache_key = result.pipeline_thunk.compute_cache_key()
 
         # Now simulate a fresh session: remove from db registry
@@ -1002,7 +995,7 @@ class TestAutoRegistration:
         # First run: executes (no cache yet)
         result1 = expensive_fn(5)
         assert execution_count == 1
-        PipelineVar(result1).save(db=configured_db, run=1)
+        PipelineVar.save(result1, db=configured_db, run=1)
 
         # Remove from db registry to simulate fresh session
         # Class is still in global registry via __init_subclass__

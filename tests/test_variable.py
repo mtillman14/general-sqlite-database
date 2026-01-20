@@ -141,7 +141,6 @@ class TestReservedKeys:
         assert "id" in BaseVariable._reserved_keys
         assert "created_at" in BaseVariable._reserved_keys
         assert "schema_version" in BaseVariable._reserved_keys
-        assert "data" in BaseVariable._reserved_keys
 
     def test_reserved_keys_is_frozenset(self):
         assert isinstance(BaseVariable._reserved_keys, frozenset)
@@ -214,9 +213,8 @@ class TestSaveWithoutDatabase:
     """Test save() behavior without configured database."""
 
     def test_save_raises_without_database(self, scalar_class, clear_global_db):
-        var = scalar_class(42)
         with pytest.raises(DatabaseNotConfiguredError):
-            var.save(subject=1)
+            scalar_class.save(42, subject=1)
 
 
 class TestSaveReservedKeys:
@@ -224,39 +222,28 @@ class TestSaveReservedKeys:
 
     def test_save_rejects_vhash(self, scalar_class, configured_db):
         configured_db.register(scalar_class)
-        var = scalar_class(42)
         with pytest.raises(ReservedMetadataKeyError, match="vhash"):
-            var.save(vhash="fake_hash")
+            scalar_class.save(42, vhash="fake_hash")
 
     def test_save_rejects_id(self, scalar_class, configured_db):
         configured_db.register(scalar_class)
-        var = scalar_class(42)
         with pytest.raises(ReservedMetadataKeyError, match="id"):
-            var.save(id=123)
+            scalar_class.save(42, id=123)
 
     def test_save_rejects_created_at(self, scalar_class, configured_db):
         configured_db.register(scalar_class)
-        var = scalar_class(42)
         with pytest.raises(ReservedMetadataKeyError, match="created_at"):
-            var.save(created_at="2024-01-01")
+            scalar_class.save(42, created_at="2024-01-01")
 
     def test_save_rejects_schema_version(self, scalar_class, configured_db):
         configured_db.register(scalar_class)
-        var = scalar_class(42)
         with pytest.raises(ReservedMetadataKeyError, match="schema_version"):
-            var.save(schema_version=1)
-
-    def test_save_rejects_data(self, scalar_class, configured_db):
-        configured_db.register(scalar_class)
-        var = scalar_class(42)
-        with pytest.raises(ReservedMetadataKeyError, match="data"):
-            var.save(data="something")
+            scalar_class.save(42, schema_version=1)
 
     def test_save_rejects_multiple_reserved(self, scalar_class, configured_db):
         configured_db.register(scalar_class)
-        var = scalar_class(42)
         with pytest.raises(ReservedMetadataKeyError):
-            var.save(vhash="fake", id=123)
+            scalar_class.save(42, vhash="fake", id=123)
 
 
 class TestLoadWithoutDatabase:
@@ -384,9 +371,9 @@ class TestLoadToDataFrame:
     def test_load_to_dataframe_basic(self, db, scalar_class):
         """Basic load_to_dataframe returns correct structure."""
         # Save some records
-        scalar_class(10.0).save(db=db, subject=1, experiment="test")
-        scalar_class(20.0).save(db=db, subject=2, experiment="test")
-        scalar_class(30.0).save(db=db, subject=3, experiment="test")
+        scalar_class.save(10.0, db=db, subject=1, experiment="test")
+        scalar_class.save(20.0, db=db, subject=2, experiment="test")
+        scalar_class.save(30.0, db=db, subject=3, experiment="test")
 
         # Load as DataFrame
         df = scalar_class.load_to_dataframe(db=db, experiment="test")
@@ -399,8 +386,8 @@ class TestLoadToDataFrame:
 
     def test_load_to_dataframe_data_values(self, db, scalar_class):
         """load_to_dataframe returns correct data values."""
-        scalar_class(100).save(db=db, key="a", group="test")
-        scalar_class(200).save(db=db, key="b", group="test")
+        scalar_class.save(100, db=db, key="a", group="test")
+        scalar_class.save(200, db=db, key="b", group="test")
 
         df = scalar_class.load_to_dataframe(db=db, group="test")
 
@@ -414,7 +401,7 @@ class TestLoadToDataFrame:
 
     def test_load_to_dataframe_include_vhash(self, db, scalar_class):
         """load_to_dataframe with include_vhash=True."""
-        scalar_class(42).save(db=db, item=1, experiment="test")
+        scalar_class.save(42, db=db, item=1, experiment="test")
 
         df = scalar_class.load_to_dataframe(db=db, experiment="test", include_vhash=True)
 
@@ -424,7 +411,7 @@ class TestLoadToDataFrame:
 
     def test_load_to_dataframe_exclude_vhash(self, db, scalar_class):
         """load_to_dataframe with include_vhash=False (default)."""
-        scalar_class(42).save(db=db, item=1, experiment="test")
+        scalar_class.save(42, db=db, item=1, experiment="test")
 
         df = scalar_class.load_to_dataframe(db=db, experiment="test")
 
@@ -432,7 +419,7 @@ class TestLoadToDataFrame:
 
     def test_load_to_dataframe_single_record(self, db, scalar_class):
         """load_to_dataframe works with single matching record."""
-        scalar_class(99).save(db=db, unique_key="only_one")
+        scalar_class.save(99, db=db, unique_key="only_one")
 
         df = scalar_class.load_to_dataframe(db=db, unique_key="only_one")
 
@@ -444,7 +431,7 @@ class TestLoadToDataFrame:
         from scidb.exceptions import NotFoundError
 
         # First save something to register the type
-        scalar_class(42).save(db=db, existing="data")
+        scalar_class.save(42, db=db, existing="data")
 
         # Now query for something that doesn't exist
         with pytest.raises(NotFoundError):
@@ -548,8 +535,7 @@ class TestAutoRegistration:
         """save() should auto-register the variable type."""
         # Don't call db.register() manually
         # Just save directly
-        var = scalar_class(42)
-        vhash = var.save(db=db, key="test")
+        vhash = scalar_class.save(42, db=db, key="test")
 
         assert vhash is not None
 
@@ -582,7 +568,7 @@ class TestAutoRegistration:
             pass
 
         # Save without manual registration
-        vhash = SpecialScalar(123).save(db=db, key="test")
+        vhash = SpecialScalar.save(123, db=db, key="test")
 
         assert vhash is not None
 

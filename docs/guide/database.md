@@ -22,7 +22,7 @@ Variable types are **auto-registered** on first save or load. Manual registratio
 
 ```python
 # Automatic (preferred) - registers on first save
-MyVariable(data).save(subject=1)
+MyVariable.save(data, subject=1)
 
 # Manual (optional) - register explicitly
 db.register(MyVariable)
@@ -35,8 +35,7 @@ Registration creates the table if it doesn't exist. Re-registering is safe (idem
 ### Basic Save
 
 ```python
-var = MyVariable(data)
-vhash = var.save(subject=1, trial=1, condition="A")
+vhash = MyVariable.save(data, subject=1, trial=1, condition="A")
 ```
 
 ### Idempotent Saves
@@ -44,8 +43,8 @@ vhash = var.save(subject=1, trial=1, condition="A")
 Saving identical data+metadata returns the existing vhash without duplicating:
 
 ```python
-vhash1 = MyVar(data).save(subject=1)
-vhash2 = MyVar(data).save(subject=1)  # Same data+metadata
+vhash1 = MyVar.save(data, subject=1)
+vhash2 = MyVar.save(data, subject=1)  # Same data+metadata
 assert vhash1 == vhash2  # No duplicate created
 ```
 

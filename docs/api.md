@@ -28,17 +28,22 @@ class MyVariable(BaseVariable):
 | `vhash` | `str \| None` | Version hash (after save/load) |
 | `metadata` | `dict \| None` | Metadata (after save/load) |
 
-**Methods:**
+**Class Methods:**
 
 | Method | Description |
 |--------|-------------|
-| `save(db=None, **metadata)` | Save to database, returns vhash |
+| `save(data, db=None, **metadata)` | Save data to database, returns vhash |
 | `load(db=None, version="latest", **metadata)` | Load from database |
 | `save_from_dataframe(df, data_column, metadata_columns, db=None, **common_metadata)` | Save each row as separate record |
 | `load_to_dataframe(db=None, include_vhash=False, **metadata)` | Load matching records as DataFrame |
+| `table_name()` | Get SQLite table name |
+
+**Instance Methods:**
+
+| Method | Description |
+|--------|-------------|
 | `to_csv(path)` | Export data to CSV file |
 | `get_preview()` | Get human-readable data summary |
-| `table_name()` | Get SQLite table name |
 
 ---
 
@@ -129,7 +134,7 @@ Results are cached automatically. Once saved, subsequent calls with the same inp
 
 ```python
 result = process(data)
-MyVar(result).save(...)  # Populates cache
+MyVar.save(result, ...)  # Populates cache
 
 result2 = process(data)  # Cache hit! No execution
 result2.was_cached       # True
@@ -143,8 +148,8 @@ def split(data):
     return data[:5], data[5:]
 
 left, right = split(data)
-LeftVar(left).save(...)   # Save all outputs
-RightVar(right).save(...)
+LeftVar.save(left, ...)   # Save all outputs
+RightVar.save(right, ...)
 
 left2, right2 = split(data)  # Cache hit for both!
 ```
@@ -154,7 +159,7 @@ left2, right2 = split(data)  # Cache hit for both!
 ```python
 # step1.py
 result = process(raw_data)
-Intermediate(result).save(db=db, subject=1)
+Intermediate.save(result, db=db, subject=1)
 
 # step2.py
 loaded = Intermediate.load(db=db, subject=1)
@@ -307,4 +312,3 @@ Cannot be used in `save()` metadata:
 - `id`
 - `created_at`
 - `schema_version`
-- `data`

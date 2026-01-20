@@ -40,7 +40,7 @@ class BaseVariable(ABC):
 
     # Reserved metadata keys that users cannot use
     _reserved_keys = frozenset(
-        {"vhash", "id", "created_at", "schema_version", "data"}
+        {"vhash", "id", "created_at", "schema_version"}
     )
 
     # Global registry of all subclasses (for auto-registration with database)
@@ -142,15 +142,25 @@ class BaseVariable(ABC):
         # Convert CamelCase to snake_case
         return re.sub(r"(?<!^)(?=[A-Z])", "_", cls.__name__).lower()
 
-    def save(self, db: "DatabaseManager | None" = None, **metadata) -> str:
+    @classmethod
+    def save(
+        cls,
+        data: Any,
+        db: "DatabaseManager | None" = None,
+        **metadata,
+    ) -> str:
         """
-        Save this variable to the database.
+        Save data to the database as this variable type.
 
-        If self.data is an OutputThunk (from a thunked computation),
-        lineage is automatically extracted and stored, and the computation
-        is cached for future reuse.
+        Accepts OutputThunk (from thunked computation), an existing BaseVariable
+        instance, or raw data. Lineage is automatically extracted and stored
+        when applicable, and computations are cached for future reuse.
 
         Args:
+            data: The data to save. Can be:
+                - OutputThunk: result from a @thunk decorated function
+                - BaseVariable: an existing variable instance
+                - Any other type: raw data (numpy array, etc.)
             db: Optional explicit database. If None, uses global database.
             **metadata: Addressing metadata (e.g., subject=1, trial=1)
 
@@ -162,6 +172,18 @@ class BaseVariable(ABC):
             NotRegisteredError: If this variable type is not registered
             DatabaseNotConfiguredError: If no database is available
             UnsavedIntermediateError: If strict mode and unsaved intermediates exist
+
+        Example:
+            # Save from a thunk computation
+            result = process(input_data)
+            vhash = CleanData.save(result, subject=1, trial=1)
+
+            # Save raw data
+            vhash = CleanData.save(np.array([1, 2, 3]), subject=1, trial=1)
+
+            # Re-save an existing variable with new metadata
+            var = CleanData.load(subject=1, trial=1)
+            vhash = CleanData.save(var, subject=1, trial=2)
         """
         from .database import get_database, get_user_id
         from .exceptions import ReservedMetadataKeyError, UnsavedIntermediateError
@@ -169,7 +191,7 @@ class BaseVariable(ABC):
         from .lineage import extract_lineage, find_unsaved_variables, get_raw_value
 
         # Validate metadata keys
-        reserved_used = set(metadata.keys()) & self._reserved_keys
+        reserved_used = set(metadata.keys()) & cls._reserved_keys
         if reserved_used:
             raise ReservedMetadataKeyError(
                 f"Cannot use reserved metadata keys: {reserved_used}"
@@ -177,12 +199,15 @@ class BaseVariable(ABC):
 
         db = db or get_database()
 
-        # Extract lineage and cache info if data came from a thunk
+        # Normalize input: extract raw data and lineage info based on input type
         lineage = None
         lineage_hash = None
         output_thunk = None
-        if isinstance(self.data, OutputThunk):
-            output_thunk = self.data
+        raw_data = None
+
+        if isinstance(data, OutputThunk):
+            # Data from a thunk computation
+            output_thunk = data
 
             # Check for unsaved intermediates based on lineage mode
             unsaved = find_unsaved_variables(output_thunk)
@@ -224,23 +249,34 @@ class BaseVariable(ABC):
                         )
 
             lineage = extract_lineage(output_thunk)
-            # Compute lineage_hash for cache key computation on reload
             lineage_hash = output_thunk.pipeline_thunk.compute_cache_key()
-            # Unwrap to get actual value for hashing and storage
-            self.data = get_raw_value(output_thunk)
+            raw_data = get_raw_value(output_thunk)
 
-        vhash = db.save(self, metadata, lineage=lineage, lineage_hash=lineage_hash)
-        self._vhash = vhash
-        self._metadata = metadata
+        elif isinstance(data, BaseVariable):
+            # Existing variable instance - extract its data and lineage
+            raw_data = data.data
+            lineage_hash = data._lineage_hash  # Preserve lineage if it had one
+
+        else:
+            # Raw data (numpy array, etc.)
+            raw_data = data
+
+        # Create instance with the raw data
+        instance = cls(raw_data)
+
+        # Save to database
+        vhash = db.save(instance, metadata, lineage=lineage, lineage_hash=lineage_hash)
+        instance._vhash = vhash
+        instance._metadata = metadata
 
         # Populate computation cache if this came from a thunk
         if output_thunk is not None:
-            cache_key = lineage_hash  # Already computed above
+            cache_key = lineage_hash
             db.cache_computation(
                 cache_key=cache_key,
                 function_name=output_thunk.pipeline_thunk.thunk.fcn.__name__,
                 function_hash=output_thunk.pipeline_thunk.thunk.hash,
-                output_type=self.__class__.__name__,
+                output_type=cls.__name__,
                 output_vhash=vhash,
                 output_num=output_thunk.output_num,
             )
@@ -336,8 +372,7 @@ class BaseVariable(ABC):
 
             # Extract data and save
             data = row[data_column]
-            instance = cls(data)
-            vhash = instance.save(db=db, **full_metadata)
+            vhash = cls.save(data, db=db, **full_metadata)
             vhashes.append(vhash)
 
         return vhashes
