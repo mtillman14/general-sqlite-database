@@ -106,8 +106,7 @@ class DatabaseManager:
         db = DatabaseManager("experiment.db")
         db.register(RotationMatrix)
 
-        var = RotationMatrix(np.eye(3))
-        vhash = var.save(db=db, subject=1, trial=1)
+        vhash = RotationMatrix.save(np.eye(3), db=db, subject=1, trial=1)
 
         loaded = RotationMatrix.load(db=db, subject=1, trial=1)
     """

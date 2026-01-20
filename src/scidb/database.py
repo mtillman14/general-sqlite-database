@@ -173,21 +173,18 @@ class DatabaseManager:
                 vhash TEXT PRIMARY KEY,
                 type_name TEXT NOT NULL,
                 table_name TEXT NOT NULL,
+                content_hash TEXT NOT NULL,
                 metadata JSON NOT NULL,
                 created_at TEXT DEFAULT CURRENT_TIMESTAMP
             )
         """
         )
 
-        # Content-addressed data tracking (for deduplication awareness)
-        # Actual data is stored in Parquet files under parquet_root/
+        # Index on content_hash for finding records with identical content
         self.connection.execute(
             """
-            CREATE TABLE IF NOT EXISTS _data (
-                content_hash TEXT PRIMARY KEY,
-                created_at TEXT DEFAULT CURRENT_TIMESTAMP,
-                created_by TEXT
-            )
+            CREATE INDEX IF NOT EXISTS idx_version_log_content_hash
+            ON _version_log(content_hash)
         """
         )
 
@@ -265,7 +262,7 @@ class DatabaseManager:
         table_name = variable_class.table_name()
         schema_version = variable_class.schema_version
 
-        # Create the metadata table (data is stored in _data table)
+        # Create the metadata table (data is stored in Parquet files)
         self.connection.execute(
             f"""
             CREATE TABLE IF NOT EXISTS {table_name} (
@@ -277,8 +274,7 @@ class DatabaseManager:
                 metadata JSON NOT NULL,
                 preview TEXT,
                 user_id TEXT,
-                created_at TEXT DEFAULT CURRENT_TIMESTAMP,
-                FOREIGN KEY (content_hash) REFERENCES _data(content_hash)
+                created_at TEXT DEFAULT CURRENT_TIMESTAMP
             )
         """
         )
@@ -417,20 +413,6 @@ class DatabaseManager:
 
         now = datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")
 
-        # Track content_hash in _data table (for deduplication awareness)
-        cursor = self.connection.execute(
-            "SELECT content_hash FROM _data WHERE content_hash = ?",
-            (content_hash,),
-        )
-        if cursor.fetchone() is None:
-            self.connection.execute(
-                """
-                INSERT INTO _data (content_hash, created_at, created_by)
-                VALUES (?, ?, ?)
-            """,
-                (content_hash, now, user_id),
-            )
-
         # Write data to Parquet file
         parquet_path = compute_parquet_path(
             table_name=table_name,
@@ -453,14 +435,14 @@ class DatabaseManager:
             (vhash, content_hash, lineage_hash, variable.schema_version, metadata_json, preview_str, user_id, now),
         )
 
-        # Log to version history
+        # Log to version history (includes content_hash for finding identical content)
         self.connection.execute(
             """
             INSERT INTO _version_log
-            (vhash, type_name, table_name, metadata, created_at)
-            VALUES (?, ?, ?, ?, ?)
+            (vhash, type_name, table_name, content_hash, metadata, created_at)
+            VALUES (?, ?, ?, ?, ?, ?)
         """,
-            (vhash, type_name, table_name, metadata_json, now),
+            (vhash, type_name, table_name, content_hash, metadata_json, now),
         )
 
         # Save lineage if provided

@@ -58,7 +58,7 @@ def check_cache(
             result = cached
         else:
             result = process(input_data)
-            MyVar(result).save(db=db, ...)
+            MyVar.save(result, db=db, ...)
 
     Args:
         pipeline_thunk: The PipelineThunk to check cache for
