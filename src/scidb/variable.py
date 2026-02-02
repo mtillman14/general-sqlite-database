@@ -40,7 +40,7 @@ class BaseVariable(ABC):
 
     # Reserved metadata keys that users cannot use
     _reserved_keys = frozenset(
-        {"record_id", "id", "created_at", "schema_version"}
+        {"record_id", "id", "created_at", "schema_version", "index", "loc", "iloc"}
     )
 
     # Global registry of all subclasses (for auto-registration with database)
@@ -147,6 +147,7 @@ class BaseVariable(ABC):
         cls,
         data: Any,
         db: "DatabaseManager | None" = None,
+        index: Any | None = None,
         **metadata,
     ) -> str:
         """
@@ -162,6 +163,9 @@ class BaseVariable(ABC):
                 - BaseVariable: an existing variable instance
                 - Any other type: raw data (numpy array, etc.)
             db: Optional explicit database. If None, uses global database.
+            index: Optional index for the DataFrame. Sets df.index after to_db()
+                is called. Useful for storing lists/arrays with semantic indexing.
+                Must match the length of the DataFrame rows.
             **metadata: Addressing metadata (e.g., subject=1, trial=1)
 
         Returns:
@@ -172,6 +176,7 @@ class BaseVariable(ABC):
             NotRegisteredError: If this variable type is not registered
             DatabaseNotConfiguredError: If no database is available
             UnsavedIntermediateError: If strict mode and unsaved intermediates exist
+            ValueError: If index length doesn't match DataFrame row count
 
         Example:
             # Save from a thunk computation
@@ -180,6 +185,9 @@ class BaseVariable(ABC):
 
             # Save raw data
             record_id = CleanData.save(np.array([1, 2, 3]), subject=1, trial=1)
+
+            # Save with index for later indexed access
+            record_id = StepLength.save(step_lengths, index=range(10), subject=1)
 
             # Re-save an existing variable with new metadata
             var = CleanData.load(subject=1, trial=1)
@@ -265,7 +273,7 @@ class BaseVariable(ABC):
         instance = cls(raw_data)
 
         # Save to database
-        record_id = db.save(instance, metadata, lineage=lineage, lineage_hash=lineage_hash)
+        record_id = db.save(instance, metadata, lineage=lineage, lineage_hash=lineage_hash, index=index)
         instance._record_id = record_id
         instance._metadata = metadata
 
@@ -288,6 +296,8 @@ class BaseVariable(ABC):
         cls,
         db: "DatabaseManager | None" = None,
         version: str = "latest",
+        loc: Any | None = None,
+        iloc: Any | None = None,
         **metadata,
     ) -> Self:
         """
@@ -302,6 +312,10 @@ class BaseVariable(ABC):
         Args:
             db: Optional explicit database. If None, uses global database.
             version: "latest" for most recent, or specific record_id
+            loc: Optional label-based index selection (like pandas df.loc[]).
+                Supports single values, lists, ranges, or slices.
+            iloc: Optional integer position-based index selection (like pandas df.iloc[]).
+                Supports single values, lists, ranges, or slices.
             **metadata: Addressing metadata to match
 
         Returns:
@@ -311,11 +325,28 @@ class BaseVariable(ABC):
             NotFoundError: If no matching data found
             NotRegisteredError: If this variable type is not registered
             DatabaseNotConfiguredError: If no database is available
+            ValueError: If both loc and iloc are provided
+
+        Example:
+            # Load full record
+            var = StepLength.load(subject=1, session="BL")
+
+            # Load single element by label
+            var = StepLength.load(subject=1, session="BL", loc=5)
+
+            # Load slice by position
+            var = StepLength.load(subject=1, session="BL", iloc=slice(0, 5))
+
+            # Load specific indices
+            var = StepLength.load(subject=1, session="BL", loc=[0, 2, 4])
         """
         from .database import get_database
 
+        if loc is not None and iloc is not None:
+            raise ValueError("Cannot specify both 'loc' and 'iloc'. Use one or the other.")
+
         db = db or get_database()
-        return db.load(cls, metadata, version=version)
+        return db.load(cls, metadata, version=version, loc=loc, iloc=iloc)
 
     @classmethod
     def load_all(

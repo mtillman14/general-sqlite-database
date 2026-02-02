@@ -425,6 +425,7 @@ class DatabaseManager:
         metadata: dict,
         lineage: "LineageRecord | None" = None,
         lineage_hash: str | None = None,
+        index: any = None,
     ) -> str:
         """
         Save a variable to the database.
@@ -440,9 +441,14 @@ class DatabaseManager:
             metadata: Addressing metadata (flat dict, will be split into schema/version)
             lineage: Optional lineage record if data came from a thunk
             lineage_hash: Optional pre-computed lineage hash for cache key computation
+            index: Optional index to set on the DataFrame after to_db() is called.
+                Must match the length of the DataFrame rows.
 
         Returns:
             The record_id of the saved/existing data
+
+        Raises:
+            ValueError: If index length doesn't match DataFrame row count
         """
         table_name = self._ensure_registered(type(variable))
         type_name = variable.__class__.__name__
@@ -453,6 +459,18 @@ class DatabaseManager:
 
         # Convert to DataFrame and compute content hash
         df = variable.to_db()
+
+        # Apply index if provided
+        if index is not None:
+            # Convert to list for length checking (handles range, etc.)
+            index_list = list(index) if not isinstance(index, list) else index
+            if len(index_list) != len(df):
+                raise ValueError(
+                    f"Index length ({len(index_list)}) does not match "
+                    f"DataFrame row count ({len(df)})"
+                )
+            df.index = index
+
         content_hash = canonical_hash(variable.data)
 
         # Generate record_id using the full nested metadata for uniqueness
@@ -595,6 +613,8 @@ class DatabaseManager:
         variable_class: Type[BaseVariable],
         metadata: dict,
         version: str = "latest",
+        loc: any = None,
+        iloc: any = None,
     ) -> BaseVariable:
         """
         Load a single variable matching the given metadata.
@@ -611,6 +631,10 @@ class DatabaseManager:
             variable_class: The type to load
             metadata: Flat metadata dict (will be split into schema/version internally)
             version: "latest" for most recent, or specific record_id
+            loc: Optional label-based index selection (like pandas df.loc[]).
+                Supports single values, lists, ranges, or slices.
+            iloc: Optional integer position-based index selection (like pandas df.iloc[]).
+                Supports single values, lists, ranges, or slices.
 
         Returns:
             The matching variable instance (latest if multiple versions exist)
@@ -633,7 +657,7 @@ class DatabaseManager:
             if row is None:
                 raise NotFoundError(f"No data found with record_id '{version}'")
 
-            return self._row_to_variable(variable_class, table_name, row)
+            return self._row_to_variable(variable_class, table_name, row, loc=loc, iloc=iloc)
 
         # Split incoming metadata into schema and version parts
         split = self._split_metadata(metadata)
@@ -677,13 +701,15 @@ class DatabaseManager:
                 f"No {variable_class.__name__} found matching metadata: {metadata}"
             )
 
-        return self._row_to_variable(variable_class, table_name, row)
+        return self._row_to_variable(variable_class, table_name, row, loc=loc, iloc=iloc)
 
     def _row_to_variable(
         self,
         variable_class: Type[BaseVariable],
         table_name: str,
         row: sqlite3.Row,
+        loc: any = None,
+        iloc: any = None,
     ) -> BaseVariable:
         """Convert a database row to a variable instance."""
         # Parse metadata (stored in nested format)
@@ -708,6 +734,19 @@ class DatabaseManager:
             parquet_root=self.parquet_root,
         )
         df = read_parquet(parquet_path)
+
+        # Apply index selection if provided
+        if loc is not None:
+            # Normalize scalar to list so from_db always receives a DataFrame
+            if not isinstance(loc, (list, range, slice)):
+                loc = [loc]
+            df = df.loc[loc]
+        elif iloc is not None:
+            # Normalize scalar to list so from_db always receives a DataFrame
+            if not isinstance(iloc, (list, range, slice)):
+                iloc = [iloc]
+            df = df.iloc[iloc]
+
         data = variable_class.from_db(df)
 
         instance = variable_class(data)

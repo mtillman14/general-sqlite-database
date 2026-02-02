@@ -61,6 +61,7 @@ from .lineage import (
     find_unsaved_variables,
     get_raw_value,
 )
+from .paths import PathGenerator
 from .thunk import OutputThunk, PipelineThunk, Thunk, thunk
 from .variable import BaseVariable
 
@@ -74,6 +75,8 @@ __all__ = [
     "configure_database",
     "get_database",
     "get_user_id",
+    # Path utilities
+    "PathGenerator",
     # Thunk system
     "thunk",
     "Thunk",
