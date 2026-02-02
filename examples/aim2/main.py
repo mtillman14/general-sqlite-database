@@ -6,14 +6,13 @@ preprocesses each walk to extract step-level measurements, and saves them
 to the database with full metadata for querying.
 """
 
-from typing import Any
 import tomllib
 
-import pandas as pd
-import numpy as np
+from scidb import PathGenerator, configure_database
+from vars import *
 
-from scidb import PathGenerator, BaseVariable, configure_database
-from thunk import thunk
+from lib.load_gaitrite import load_gaitrite_file
+from lib.preprocess_gaitrite import preprocess_walk, split_into_walks
 
 
 # Load config - tomllib requires binary mode
@@ -37,86 +36,9 @@ paths = PathGenerator("{subject}/{session}/{speed}.xlsx",
     speed=config["speeds"],
 )
 
-
-# =============================================================================
-# Variable Definitions
-# =============================================================================
-
-class ScalarList(BaseVariable):
-    """Base class for scalar measurements."""
-
-    schema_version = 1
-
-    def to_db(self) -> pd.DataFrame:
-        return pd.DataFrame({"value": [self.data]})
-
-    @classmethod
-    def from_db(cls, df: pd.DataFrame) -> Any:
-        return [v for v in df["value"]]
-
-
-class StepLength(ScalarList):
-    """Step length measurement in meters."""
-
-    pass
-
-
-class StepWidth(ScalarList):
-    """Step width measurement in meters."""
-
-    pass
-
-
-class Side(ScalarList):
-    """Left or right side"""
-
-    pass
-
-
 db.register(StepLength)
 db.register(StepWidth)
 db.register(Side)
-
-
-# =============================================================================
-# Loading & Preprocessing Functions
-# =============================================================================
-
-def load_gaitrite_file(path: str) -> pd.DataFrame:
-    """Load raw GaitRite .xlsx file."""
-    return pd.read_excel(path)
-
-
-def split_into_walks(raw_df: pd.DataFrame) -> list[pd.DataFrame]:
-    """
-    Split a raw GaitRite file into individual walks.
-
-    Each GaitRite file contains 3 walks. This function parses the file
-    structure to separate them.
-    """
-    # Placeholder - actual implementation would parse the file structure
-    walks = [raw_df.copy() for _ in range(3)]
-    return walks
-
-
-@thunk(n_outputs=3)
-def preprocess_walk(walk_df: pd.DataFrame) -> tuple[list, list, list]:
-    """
-    Preprocess a single GaitRite walk.
-
-    Returns:
-        step_lengths: List of step length values
-        step_widths: List of step width values
-        sides: List of "L" and "R" values
-    """
-    # Placeholder processing
-    n_steps = 10
-    step_lengths = np.random.rand(n_steps)
-    step_widths = np.random.rand(n_steps)
-    sides = ["L", "R"] * n_steps / 2
-
-    return step_lengths, step_widths, sides
-
 
 # =============================================================================
 # Main Pipeline
@@ -132,10 +54,10 @@ for filepath, metadata in paths:
         # Preprocess this walk (lineage tracked by @thunk)
         step_outputs = preprocess_walk(walk_df)
 
-        file_metadata["repetition"] = walk_number
+        metadata["repetition"] = walk_number
 
         n_steps = len(step_outputs[0])
         index=range(0, n_steps)
-        StepLength.save(step_outputs[0], **file_metadata, index=index)
-        StepWidth.save(step_outputs[1], **file_metadata, index=index)
-        Side.save(step_outputs[2], **file_metadata, index=index)
+        StepLength.save(step_outputs[0], **metadata, index=index)
+        StepWidth.save(step_outputs[1], **metadata, index=index)
+        Side.save(step_outputs[2], **metadata, index=index)
