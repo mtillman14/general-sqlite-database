@@ -54,6 +54,7 @@ from .exceptions import (
     SciDBError,
     UnsavedIntermediateError,
 )
+from .foreach import Fixed, for_each
 from .lineage import (
     LineageRecord,
     check_cache,
@@ -77,6 +78,9 @@ __all__ = [
     "get_user_id",
     # Path utilities
     "PathGenerator",
+    # Batch execution
+    "for_each",
+    "Fixed",
     # Thunk system
     "thunk",
     "Thunk",
