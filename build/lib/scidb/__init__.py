@@ -28,7 +28,7 @@ Example:
     db.register(RotationMatrix)
 
     # Save
-    vhash = RotationMatrix.save(np.eye(3), subject=1, trial=1)
+    record_id = RotationMatrix.save(np.eye(3), subject=1, trial=1)
 
     # Load
     loaded = RotationMatrix.load(subject=1, trial=1)
@@ -61,6 +61,7 @@ from .lineage import (
     find_unsaved_variables,
     get_raw_value,
 )
+from .paths import PathGenerator
 from .thunk import OutputThunk, PipelineThunk, Thunk, thunk
 from .variable import BaseVariable
 
@@ -74,6 +75,8 @@ __all__ = [
     "configure_database",
     "get_database",
     "get_user_id",
+    # Path utilities
+    "PathGenerator",
     # Thunk system
     "thunk",
     "Thunk",

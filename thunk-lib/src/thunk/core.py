@@ -13,7 +13,7 @@ Example:
     print(result.pipeline_thunk.inputs)  # Captured inputs for lineage
 """
 
-from functools import wraps
+from functools import update_wrapper
 from hashlib import sha256
 from typing import Any, Callable, Protocol, runtime_checkable
 
@@ -116,6 +116,9 @@ class Thunk:
         self.n_outputs = n_outputs
         self.unwrap = unwrap
         self.pipeline_thunks: tuple[PipelineThunk, ...] = ()
+
+        # Copy function metadata so IDEs show the wrapped function's docs
+        update_wrapper(self, fcn)
 
         # Hash function bytecode + constants for reproducibility
         # Include co_consts to distinguish functions with same structure but different literals
@@ -573,10 +576,6 @@ def thunk(n_outputs: int = 1, unwrap: bool = True) -> Callable[[Callable], Thunk
     """
 
     def decorator(fcn: Callable) -> Thunk:
-        t = Thunk(fcn, n_outputs, unwrap)
-        # Preserve function metadata
-        t.__doc__ = fcn.__doc__
-        t.__name__ = fcn.__name__  # type: ignore
-        return t
+        return Thunk(fcn, n_outputs, unwrap)
 
     return decorator

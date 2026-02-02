@@ -40,7 +40,7 @@ class BaseVariable(ABC):
 
     # Reserved metadata keys that users cannot use
     _reserved_keys = frozenset(
-        {"vhash", "id", "created_at", "schema_version"}
+        {"record_id", "id", "created_at", "schema_version", "index", "loc", "iloc"}
     )
 
     # Global registry of all subclasses (for auto-registration with database)
@@ -64,15 +64,15 @@ class BaseVariable(ABC):
             data: The native Python object (numpy array, etc.)
         """
         self.data = data
-        self._vhash: str | None = None
+        self._record_id: str | None = None
         self._metadata: dict | None = None
         self._content_hash: str | None = None
         self._lineage_hash: str | None = None
 
     @property
-    def vhash(self) -> str | None:
-        """The version hash, set after save() or load()."""
-        return self._vhash
+    def record_id(self) -> str | None:
+        """The unique record ID, set after save() or load()."""
+        return self._record_id
 
     @property
     def metadata(self) -> dict | None:
@@ -147,6 +147,7 @@ class BaseVariable(ABC):
         cls,
         data: Any,
         db: "DatabaseManager | None" = None,
+        index: Any | None = None,
         **metadata,
     ) -> str:
         """
@@ -162,28 +163,35 @@ class BaseVariable(ABC):
                 - BaseVariable: an existing variable instance
                 - Any other type: raw data (numpy array, etc.)
             db: Optional explicit database. If None, uses global database.
+            index: Optional index for the DataFrame. Sets df.index after to_db()
+                is called. Useful for storing lists/arrays with semantic indexing.
+                Must match the length of the DataFrame rows.
             **metadata: Addressing metadata (e.g., subject=1, trial=1)
 
         Returns:
-            str: The vhash of the saved data
+            str: The record_id of the saved data
 
         Raises:
             ReservedMetadataKeyError: If metadata contains reserved keys
             NotRegisteredError: If this variable type is not registered
             DatabaseNotConfiguredError: If no database is available
             UnsavedIntermediateError: If strict mode and unsaved intermediates exist
+            ValueError: If index length doesn't match DataFrame row count
 
         Example:
             # Save from a thunk computation
             result = process(input_data)
-            vhash = CleanData.save(result, subject=1, trial=1)
+            record_id = CleanData.save(result, subject=1, trial=1)
 
             # Save raw data
-            vhash = CleanData.save(np.array([1, 2, 3]), subject=1, trial=1)
+            record_id = CleanData.save(np.array([1, 2, 3]), subject=1, trial=1)
+
+            # Save with index for later indexed access
+            record_id = StepLength.save(step_lengths, index=range(10), subject=1)
 
             # Re-save an existing variable with new metadata
             var = CleanData.load(subject=1, trial=1)
-            vhash = CleanData.save(var, subject=1, trial=2)
+            record_id = CleanData.save(var, subject=1, trial=2)
         """
         from .database import get_database, get_user_id
         from .exceptions import ReservedMetadataKeyError, UnsavedIntermediateError
@@ -265,8 +273,8 @@ class BaseVariable(ABC):
         instance = cls(raw_data)
 
         # Save to database
-        vhash = db.save(instance, metadata, lineage=lineage, lineage_hash=lineage_hash)
-        instance._vhash = vhash
+        record_id = db.save(instance, metadata, lineage=lineage, lineage_hash=lineage_hash, index=index)
+        instance._record_id = record_id
         instance._metadata = metadata
 
         # Populate computation cache if this came from a thunk
@@ -277,40 +285,173 @@ class BaseVariable(ABC):
                 function_name=output_thunk.pipeline_thunk.thunk.fcn.__name__,
                 function_hash=output_thunk.pipeline_thunk.thunk.hash,
                 output_type=cls.__name__,
-                output_vhash=vhash,
+                output_record_id=record_id,
                 output_num=output_thunk.output_num,
             )
 
-        return vhash
+        return record_id
 
     @classmethod
     def load(
         cls,
         db: "DatabaseManager | None" = None,
         version: str = "latest",
+        loc: Any | None = None,
+        iloc: Any | None = None,
         **metadata,
-    ) -> Self | list[Self]:
+    ) -> Self:
         """
-        Load variable(s) from the database.
+        Load a single variable from the database.
+
+        Metadata keys are split into schema keys (dataset identity) and version
+        keys (computational identity) based on the configured schema_keys.
+
+        - If only schema keys are provided: returns the latest version at that location
+        - If version keys are also provided: returns the exact matching version
 
         Args:
             db: Optional explicit database. If None, uses global database.
-            version: "latest" for most recent, or specific vhash
+            version: "latest" for most recent, or specific record_id
+            loc: Optional label-based index selection (like pandas df.loc[]).
+                Supports single values, lists, ranges, or slices.
+            iloc: Optional integer position-based index selection (like pandas df.iloc[]).
+                Supports single values, lists, ranges, or slices.
             **metadata: Addressing metadata to match
 
         Returns:
-            If exactly one match: returns that instance
-            If multiple matches: returns list of instances
+            The matching variable instance (latest if multiple versions exist)
 
         Raises:
             NotFoundError: If no matching data found
             NotRegisteredError: If this variable type is not registered
             DatabaseNotConfiguredError: If no database is available
+            ValueError: If both loc and iloc are provided
+
+        Example:
+            # Load full record
+            var = StepLength.load(subject=1, session="BL")
+
+            # Load single element by label
+            var = StepLength.load(subject=1, session="BL", loc=5)
+
+            # Load slice by position
+            var = StepLength.load(subject=1, session="BL", iloc=slice(0, 5))
+
+            # Load specific indices
+            var = StepLength.load(subject=1, session="BL", loc=[0, 2, 4])
+        """
+        from .database import get_database
+
+        if loc is not None and iloc is not None:
+            raise ValueError("Cannot specify both 'loc' and 'iloc'. Use one or the other.")
+
+        db = db or get_database()
+        return db.load(cls, metadata, version=version, loc=loc, iloc=iloc)
+
+    @classmethod
+    def load_all(
+        cls,
+        db: "DatabaseManager | None" = None,
+        as_df: bool = False,
+        include_record_id: bool = False,
+        **metadata,
+    ):
+        """
+        Load all matching variables from the database.
+
+        By default returns a generator for memory-efficient iteration.
+        Use as_df=True to load all records into a pandas DataFrame.
+
+        Args:
+            db: Optional explicit database. If None, uses global database.
+            as_df: If True, return a DataFrame instead of a generator.
+                   The DataFrame has columns for each metadata key plus 'data'.
+            include_record_id: If True and as_df=True, include record_id column.
+            **metadata: Addressing metadata to match (partial matching supported)
+
+        Returns:
+            Generator of variable instances (default), or
+            pandas DataFrame if as_df=True
+
+        Raises:
+            NotRegisteredError: If this variable type is not registered
+            DatabaseNotConfiguredError: If no database is available
+            NotFoundError: If as_df=True and no matching data found
+
+        Example:
+            # Iterate over records (memory-efficient)
+            for signal in ProcessedSignal.load_all(subject=1):
+                print(signal.metadata, signal.data.shape)
+
+            # Load all as DataFrame for analysis
+            df = ProcessedSignal.load_all(subject=1, as_df=True)
+        """
+        import pandas as pd
+        from .database import get_database
+        from .exceptions import NotFoundError
+
+        db = db or get_database()
+
+        if not as_df:
+            # Return generator via helper to avoid making this function a generator
+            return cls._load_all_generator(db, metadata)
+        else:
+            # Collect into DataFrame
+            results = list(db.load_all(cls, metadata))
+
+            if not results:
+                raise NotFoundError(
+                    f"No {cls.__name__} found matching metadata: {metadata}"
+                )
+
+            rows = []
+            for var in results:
+                row = dict(var.metadata) if var.metadata else {}
+                row["data"] = var.data
+                if include_record_id:
+                    row["record_id"] = var.record_id
+                rows.append(row)
+
+            return pd.DataFrame(rows)
+
+    @classmethod
+    def _load_all_generator(cls, db: "DatabaseManager", metadata: dict):
+        """Helper generator for load_all() to avoid making load_all a generator."""
+        yield from db.load_all(cls, metadata)
+
+    @classmethod
+    def list_versions(
+        cls,
+        db: "DatabaseManager | None" = None,
+        **metadata,
+    ) -> list[dict]:
+        """
+        List all versions at a schema location.
+
+        Shows all saved versions (including those with empty version {})
+        at a given schema location. This is useful for seeing what
+        computational variants exist for a given dataset location.
+
+        Args:
+            db: Optional explicit database. If None, uses global database.
+            **metadata: Schema metadata to match
+
+        Returns:
+            List of dicts with record_id, schema, version, created_at
+
+        Raises:
+            NotRegisteredError: If this variable type is not registered
+            DatabaseNotConfiguredError: If no database is available
+
+        Example:
+            versions = ProcessedSignal.list_versions(subject=1, visit=2)
+            for v in versions:
+                print(f"record_id: {v['record_id']}, version: {v['version']}")
         """
         from .database import get_database
 
         db = db or get_database()
-        return db.load(cls, metadata, version=version)
+        return db.list_versions(cls, **metadata)
 
     @classmethod
     def save_from_dataframe(
@@ -335,7 +476,7 @@ class BaseVariable(ABC):
             **common_metadata: Additional metadata applied to all rows
 
         Returns:
-            List of vhashes for each saved record
+            List of record_ides for each saved record
 
         Example:
             # DataFrame with 10 rows (2 subjects x 5 trials)
@@ -344,7 +485,7 @@ class BaseVariable(ABC):
             #   1        2      0.6
             #   ...
 
-            vhashes = ScalarValue.save_from_dataframe(
+            record_ides = ScalarValue.save_from_dataframe(
                 df=results_df,
                 data_column="MyVar",
                 metadata_columns=["Subject", "Trial"],
@@ -354,7 +495,7 @@ class BaseVariable(ABC):
         from .database import get_database
 
         db = db or get_database()
-        vhashes = []
+        record_ides = []
 
         for _, row in df.iterrows():
             # Extract row-specific metadata from columns
@@ -372,66 +513,10 @@ class BaseVariable(ABC):
 
             # Extract data and save
             data = row[data_column]
-            vhash = cls.save(data, db=db, **full_metadata)
-            vhashes.append(vhash)
+            record_id = cls.save(data, db=db, **full_metadata)
+            record_ides.append(record_id)
 
-        return vhashes
-
-    @classmethod
-    def load_to_dataframe(
-        cls,
-        db: "DatabaseManager | None" = None,
-        include_vhash: bool = False,
-        **metadata,
-    ) -> pd.DataFrame:
-        """
-        Load matching records and reconstruct a DataFrame.
-
-        This is the inverse of save_from_dataframe(). Loads all matching
-        records and returns them as a DataFrame with metadata as columns.
-
-        Args:
-            db: Optional explicit database. If None, uses global database.
-            include_vhash: If True, include vhash as a column
-            **metadata: Metadata filter (loads all matching records)
-
-        Returns:
-            DataFrame with columns for each metadata key plus 'data' column
-
-        Example:
-            # Load all records for experiment
-            df = ScalarValue.load_to_dataframe(experiment="exp1")
-            # Returns:
-            #   Subject  Trial  data   (vhash)
-            #   1        1      0.5    abc123...
-            #   1        2      0.6    def456...
-            #   ...
-
-        Raises:
-            NotFoundError: If no matching data found
-            NotRegisteredError: If this variable type is not registered
-        """
-        from .database import get_database
-
-        db = db or get_database()
-
-        # Load all matching records
-        results = db.load(cls, metadata, version="latest")
-
-        # Ensure it's a list
-        if not isinstance(results, list):
-            results = [results]
-
-        # Build DataFrame rows
-        rows = []
-        for var in results:
-            row = dict(var.metadata) if var.metadata else {}
-            row["data"] = var.data
-            if include_vhash:
-                row["vhash"] = var.vhash
-            rows.append(row)
-
-        return pd.DataFrame(rows)
+        return record_ides
 
     def to_csv(self, path: str) -> None:
         """

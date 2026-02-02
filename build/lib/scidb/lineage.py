@@ -12,7 +12,7 @@ Example:
     # Extract lineage for storage
     lineage = extract_lineage(result)
     print(lineage.function_name)  # 'process_signal'
-    print(lineage.inputs)  # [{'name': 'arg_0', 'type': 'RawSignal', 'vhash': '...'}]
+    print(lineage.inputs)  # [{'name': 'arg_0', 'type': 'RawSignal', 'record_id': '...'}]
 
     # Get the raw value for storage
     raw_value = get_raw_value(result)  # The actual numpy array, DataFrame, etc.
@@ -88,7 +88,7 @@ def check_cache(
         is_complete=True,
         data=cached_var.data,
         was_cached=True,
-        cached_id=cached_var.vhash,
+        cached_id=cached_var.record_id,
     )
 
 

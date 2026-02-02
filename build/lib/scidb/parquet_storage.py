@@ -76,7 +76,7 @@ def compute_folder_path(
 
 def compute_parquet_path(
     table_name: str,
-    vhash: str,
+    record_id: str,
     metadata: dict,
     parquet_root: Path,
     metadata_order: list[str] | None = None,
@@ -84,11 +84,11 @@ def compute_parquet_path(
     """
     Compute the full path for a Parquet file.
 
-    Structure: parquet_root / table_name / metadata_hierarchy / vhash.parquet
+    Structure: parquet_root / table_name / metadata_hierarchy / record_id.parquet
 
     Args:
         table_name: The variable type's table name (e.g., "sensor_reading")
-        vhash: The version hash of the variable
+        record_id: The version hash of the variable
         metadata: Dict of metadata key-value pairs
         parquet_root: Root folder for Parquet files
         metadata_order: Optional list of keys specifying folder order
@@ -106,7 +106,7 @@ def compute_parquet_path(
         PosixPath('/data/parquet/sensor_reading/subject/1/visit/2/abc123def456.parquet')
     """
     folder_path = compute_folder_path(metadata, metadata_order)
-    filename = f"{vhash}.parquet"
+    filename = f"{record_id}.parquet"
     return parquet_root / table_name / folder_path / filename
 
 
@@ -299,7 +299,7 @@ def extract_metadata_from_path(
     """
     Extract metadata key-value pairs from a Parquet file path.
 
-    Path structure: parquet_root / table_name / key / value / ... / vhash.parquet
+    Path structure: parquet_root / table_name / key / value / ... / record_id.parquet
 
     Args:
         file_path: Path to the Parquet file
@@ -345,7 +345,7 @@ def extract_table_name_from_path(
     """
     Extract the table name from a Parquet file path.
 
-    Path structure: parquet_root / table_name / ... / vhash.parquet
+    Path structure: parquet_root / table_name / ... / record_id.parquet
 
     Args:
         file_path: Path to the Parquet file
@@ -373,20 +373,20 @@ def extract_table_name_from_path(
     return parts[0]
 
 
-def extract_vhash_from_filename(filename: str) -> str | None:
+def extract_record_id_from_filename(filename: str) -> str | None:
     """
-    Extract the vhash from a Parquet filename.
+    Extract the record_id from a Parquet filename.
 
-    Filename format: <vhash>.parquet
+    Filename format: <record_id>.parquet
 
     Args:
         filename: Filename like "abc123def456.parquet"
 
     Returns:
-        The vhash, or None if filename doesn't match expected format
+        The record_id, or None if filename doesn't match expected format
 
     Example:
-        >>> extract_vhash_from_filename("abc123def456.parquet")
+        >>> extract_record_id_from_filename("abc123def456.parquet")
         'abc123def456'
     """
     if not filename.endswith(".parquet"):
