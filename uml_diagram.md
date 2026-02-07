@@ -3,6 +3,7 @@
 ## Overview
 
 SciDB is a scientific data versioning framework with two main layers:
+
 - **Core Layer (scidb)**: Database management and variable persistence
 - **Thunk Layer**: Lazy evaluation and lineage tracking
 
@@ -50,11 +51,11 @@ classDiagram
     %% ===== THUNK LAYER =====
     class Thunk {
         +fcn: Callable
-        +n_outputs: int
+        +unpack_outputs: bool
         +unwrap: bool
         +hash: str
         +pipeline_thunks: tuple
-        +__call__(*args, **kwargs) OutputThunk
+        +__call__(*args, **kwargs) ThunkOutput
     }
 
     class PipelineThunk {
@@ -67,7 +68,7 @@ classDiagram
         +compute_cache_key() str
     }
 
-    class OutputThunk {
+    class ThunkOutput {
         +pipeline_thunk: PipelineThunk
         +output_num: int
         +is_complete: bool
@@ -88,7 +89,7 @@ classDiagram
 
     class CacheBackend {
         <<interface>>
-        +get_cached(cache_key, n_outputs) list
+        +get_cached(cache_key) list
     }
 
     %% ===== EXCEPTIONS =====
@@ -127,11 +128,11 @@ classDiagram
 
     %% Thunk system
     Thunk "1" *-- "*" PipelineThunk : creates
-    PipelineThunk "1" *-- "1..*" OutputThunk : produces
-    OutputThunk "*" --> "1" PipelineThunk : references
+    PipelineThunk "1" *-- "1..*" ThunkOutput : produces
+    ThunkOutput "*" --> "1" PipelineThunk : references
 
     %% Cross-layer
-    BaseVariable "1" o-- "0..1" OutputThunk : wraps
+    BaseVariable "1" o-- "0..1" ThunkOutput : wraps
     BaseVariable ..> LineageRecord : extracts
     BaseVariable ..> DatabaseManager : uses
 ```
@@ -155,7 +156,7 @@ classDiagram
 │  • ArrayValue               │     │                          │       │
 │  • MatrixValue              │     │                     produces     │
 │  • (custom types...)        │     │                          ▼       │
-└─────────────────────────────┘     │                    OutputThunk   │
+└─────────────────────────────┘     │                    ThunkOutput   │
               │                     └─────────────────────────────────┘
               │ wraps                            │
               ◄──────────────────────────────────┘
@@ -179,10 +180,11 @@ classDiagram
 ## Key Data Flows
 
 ### 1. Save Operation
+
 ```
 BaseVariable.save()
     │
-    ├─► If data is OutputThunk: extract LineageRecord
+    ├─► If data is ThunkOutput: extract LineageRecord
     │
     ├─► to_db() → DataFrame
     │
@@ -198,6 +200,7 @@ BaseVariable.save()
 ```
 
 ### 2. Lineage Tracking Flow
+
 ```
 @thunk
 def process(data):          ─────► Thunk (wraps function)
@@ -208,7 +211,7 @@ process(my_var)             ─────► PipelineThunk (captures inputs)
                                         │
                                         │ execute
                                         ▼
-result = ...                ─────► OutputThunk (lazy result + lineage)
+result = ...                ─────► ThunkOutput (lazy result + lineage)
                                         │
                                         │ wrap
                                         ▼
@@ -223,14 +226,14 @@ MyVariable(data=result)     ─────► BaseVariable with lineage
 
 ## Relationship Legend
 
-| Symbol | Meaning |
-|--------|---------|
-| `<\|--` | Inheritance |
-| `*--` | Composition (lifecycle owned) |
-| `o--` | Aggregation (shared lifecycle) |
-| `-->` | Association |
-| `..>` | Dependency |
-| `..\|>` | Implements interface |
+| Symbol  | Meaning                        |
+| ------- | ------------------------------ |
+| `<\|--` | Inheritance                    |
+| `*--`   | Composition (lifecycle owned)  |
+| `o--`   | Aggregation (shared lifecycle) |
+| `-->`   | Association                    |
+| `..>`   | Dependency                     |
+| `..\|>` | Implements interface           |
 
 ---
 

@@ -46,7 +46,7 @@ def check_cache(
     This allows skipping execution when a result already exists.
 
     Example:
-        @thunk(n_outputs=1)
+        @thunk
         def process(data):
             return data * 2
 

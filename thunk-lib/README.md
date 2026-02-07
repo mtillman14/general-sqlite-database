@@ -33,7 +33,7 @@ pip install thunk[all]       # all optional dependencies
 ```python
 from thunk import thunk
 
-@thunk(n_outputs=1)
+@thunk
 def process(data, factor):
     return data * factor
 
@@ -51,7 +51,7 @@ print(result.pipeline_thunk.thunk.fcn.__name__)  # 'process'
 ### Multi-Output Functions
 
 ```python
-@thunk(n_outputs=2)
+@thunk(unwrap_outputs=True)
 def split_data(data):
     mid = len(data) // 2
     return data[:mid], data[mid:]
@@ -64,12 +64,12 @@ print(second.data)  # [3, 4]
 ### Chaining Computations
 
 ```python
-@thunk(n_outputs=1)
+@thunk
 def normalize(data):
     max_val = max(data)
     return [x / max_val for x in data]
 
-@thunk(n_outputs=1)
+@thunk
 def scale(data, factor):
     return [x * factor for x in data]
 
@@ -87,11 +87,11 @@ print(scaled.data)  # [25.0, 50.0, 75.0, 100.0]
 ```python
 from thunk import extract_lineage, get_lineage_chain
 
-@thunk(n_outputs=1)
+@thunk
 def step1(x):
     return x + 1
 
-@thunk(n_outputs=1)
+@thunk
 def step2(x):
     return x * 2
 
@@ -117,7 +117,7 @@ class MyCache:
     def __init__(self):
         self.store = {}
 
-    def get_cached(self, cache_key: str, n_outputs: int):
+    def get_cached(self, cache_key: str):
         """Return list of (data, id) tuples or None."""
         if cache_key in self.store:
             return self.store[cache_key]
@@ -134,11 +134,11 @@ configure_cache(cache)
 
 ## API Reference
 
-### `@thunk(n_outputs=1, unwrap=True)`
+### `@thunk(unpack_outputs=False, unwrap=True)`
 
 Decorator to convert a function into a Thunk.
 
-- `n_outputs`: Number of return values (default: 1)
+- `unpack_outputs`: Whether to unpack a tuple into its constituent elements (default: False)
 - `unwrap`: If True, automatically unwrap `ThunkOutput` inputs to their raw data
 
 ### `ThunkOutput`
@@ -190,7 +190,7 @@ db = configure_database("experiment.db")
 class MyData(BaseVariable):
     # ... implementation
 
-@thunk(n_outputs=1)
+@thunk
 def process(data):
     return data * 2
 

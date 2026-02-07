@@ -76,12 +76,12 @@ Use `@thunk` to automatically track what processing produced each result:
 ```python
 from scidb import thunk
 
-@thunk(n_outputs=1)
+@thunk
 def bandpass_filter(signal: np.ndarray, low: float, high: float) -> np.ndarray:
     # Your filtering logic here
     return filtered_signal
 
-@thunk(n_outputs=1)
+@thunk
 def compute_power(signal: np.ndarray) -> float:
     return np.mean(signal ** 2)
 
@@ -115,8 +115,8 @@ from scidb import Thunk
 from scipy.signal import butter, filtfilt
 
 # Wrap external functions
-thunked_butter = Thunk(butter, n_outputs=2)
-thunked_filtfilt = Thunk(filtfilt, n_outputs=1)
+thunked_butter = Thunk(butter)
+thunked_filtfilt = Thunk(filtfilt)
 
 # Use with full lineage tracking
 b, a = thunked_butter(N=4, Wn=0.1, btype='low')

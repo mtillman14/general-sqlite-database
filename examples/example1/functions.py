@@ -5,14 +5,12 @@
 # - Capture the function's bytecode hash (for versioning)
 # - Track inputs when called (for lineage)
 # - Return an ThunkOutput that carries lineage information
-#
-# The n_outputs parameter tells thunk how many values the function returns.
 
 import numpy as np
 
 from thunk import thunk
 
-@thunk(n_outputs=1)
+@thunk
 def apply_moving_average(signal: np.ndarray, window_size: int) -> np.ndarray:
     """
     Apply a simple moving average filter.
@@ -28,7 +26,7 @@ def apply_moving_average(signal: np.ndarray, window_size: int) -> np.ndarray:
     return np.convolve(signal, kernel, mode='same')
 
 
-@thunk(n_outputs=1)
+@thunk
 def normalize_signal(signal: np.ndarray) -> np.ndarray:
     """
     Normalize signal to [0, 1] range.
@@ -41,7 +39,7 @@ def normalize_signal(signal: np.ndarray) -> np.ndarray:
     return (signal - min_val) / (max_val - min_val)
 
 
-@thunk(n_outputs=1)
+@thunk
 def compute_statistics(signal: np.ndarray) -> dict:
     """
     Compute summary statistics for a signal.

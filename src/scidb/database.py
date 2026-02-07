@@ -76,11 +76,7 @@ def configure_database(
     Raises:
         ValueError: If lineage_mode is not "strict" or "ephemeral"
     """
-    from thunk import configure_cache
-
     _local.database = DatabaseManager(db_path, schema_keys=schema_keys, lineage_mode=lineage_mode)
-    # Register as cache backend for thunk library
-    configure_cache(_local.database)
     return _local.database
 
 
@@ -698,15 +694,13 @@ class DatabaseManager:
     # Computation Cache Methods
     # -------------------------------------------------------------------------
 
-    def get_cached_by_key(
-        self, cache_key: str, n_outputs: int = 1
-    ) -> list[tuple] | None:
+    def get_cached_by_key(self, cache_key: str) -> list[tuple] | None:
         """
         Look up cached result by cache key.
 
         Returns:
-            List of (data, record_id) tuples if ALL outputs found,
-            None otherwise.
+            List of (data, record_id) tuples ordered by output_num,
+            or None if not found.
         """
         rows = self._duck._fetchall(
             """SELECT output_num, output_type, output_record_id FROM _computation_cache
@@ -715,11 +709,12 @@ class DatabaseManager:
             [cache_key],
         )
 
-        if len(rows) != n_outputs:
+        if not rows:
             return None
 
-        output_nums = {row[0] for row in rows}
-        expected_nums = set(range(n_outputs))
+        # Verify output_nums are contiguous starting from 0
+        output_nums = [row[0] for row in rows]
+        expected_nums = list(range(len(rows)))
         if output_nums != expected_nums:
             return None
 
@@ -742,12 +737,6 @@ class DatabaseManager:
                 return None
 
         return results
-
-    def get_cached(
-        self, cache_key: str, n_outputs: int = 1
-    ) -> list[tuple] | None:
-        """Look up cached results (implements thunk.CacheBackend protocol)."""
-        return self.get_cached_by_key(cache_key, n_outputs)
 
     def cache_computation(
         self,

@@ -15,7 +15,7 @@ class TestExtractLineage:
     """Test extract_lineage function."""
 
     def test_basic_lineage(self):
-        @thunk(n_outputs=1)
+        @thunk
         def process(x):
             return x * 2
 
@@ -27,7 +27,7 @@ class TestExtractLineage:
         assert len(lineage.function_hash) == 64  # SHA-256
 
     def test_constant_inputs_captured(self):
-        @thunk(n_outputs=1)
+        @thunk
         def process(x, factor):
             return x * factor
 
@@ -41,11 +41,11 @@ class TestExtractLineage:
         assert "arg_1" in names
 
     def test_thunk_inputs_captured(self):
-        @thunk(n_outputs=1)
+        @thunk
         def step1(x):
             return x + 1
 
-        @thunk(n_outputs=1)
+        @thunk
         def step2(x):
             return x * 2
 
@@ -62,7 +62,7 @@ class TestGetLineageChain:
     """Test get_lineage_chain function."""
 
     def test_single_step(self):
-        @thunk(n_outputs=1)
+        @thunk
         def process(x):
             return x * 2
 
@@ -73,15 +73,15 @@ class TestGetLineageChain:
         assert chain[0].function_name == "process"
 
     def test_multi_step_chain(self):
-        @thunk(n_outputs=1)
+        @thunk
         def step1(x):
             return x + 1
 
-        @thunk(n_outputs=1)
+        @thunk
         def step2(x):
             return x * 2
 
-        @thunk(n_outputs=1)
+        @thunk
         def step3(x):
             return x - 1
 
@@ -93,7 +93,7 @@ class TestGetLineageChain:
         assert names == ["step3", "step2", "step1"]
 
     def test_max_depth_limit(self):
-        @thunk(n_outputs=1)
+        @thunk
         def step(x):
             return x + 1
 
@@ -111,7 +111,7 @@ class TestGetRawValue:
     """Test get_raw_value function."""
 
     def test_unwraps_thunk_output(self):
-        @thunk(n_outputs=1)
+        @thunk
         def process(x):
             return x * 2
 

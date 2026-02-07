@@ -130,7 +130,7 @@ class TestFindUnsavedVariables:
 
     def test_find_unsaved_variable_in_chain(self, strict_db):
         """Should find unsaved BaseVariable in computation chain."""
-        @thunk(n_outputs=1)
+        @thunk
         def process(x):
             return x * 2
 
@@ -147,7 +147,7 @@ class TestFindUnsavedVariables:
 
     def test_no_unsaved_when_all_saved(self, strict_db):
         """Should return empty list when all variables are saved."""
-        @thunk(n_outputs=1)
+        @thunk
         def process(x):
             return x * 2
 
@@ -161,7 +161,7 @@ class TestFindUnsavedVariables:
 
     def test_find_multiple_unsaved_variables(self, strict_db):
         """Should find all unsaved variables in chain."""
-        @thunk(n_outputs=1)
+        @thunk
         def combine(a, b):
             return a + b
 
@@ -176,15 +176,15 @@ class TestFindUnsavedVariables:
 
     def test_find_unsaved_in_nested_chain(self, strict_db):
         """Should find unsaved variable deep in nested chain."""
-        @thunk(n_outputs=1)
+        @thunk
         def step1(x):
             return x * 2
 
-        @thunk(n_outputs=1)
+        @thunk
         def step2(x):
             return x + 1
 
-        @thunk(n_outputs=1)
+        @thunk
         def step3(x):
             return x ** 2
 
@@ -211,7 +211,7 @@ class TestStrictMode:
 
     def test_strict_mode_allows_saved_intermediates(self, strict_db):
         """Strict mode should allow saving when all intermediates are saved."""
-        @thunk(n_outputs=1)
+        @thunk
         def process(x):
             return x * 2
 
@@ -226,7 +226,7 @@ class TestStrictMode:
 
     def test_strict_mode_raises_for_unsaved_intermediate(self, strict_db):
         """Strict mode should raise error for unsaved intermediate."""
-        @thunk(n_outputs=1)
+        @thunk
         def process(x):
             return x * 2
 
@@ -244,7 +244,7 @@ class TestStrictMode:
 
     def test_strict_mode_error_message_shows_path(self, strict_db):
         """Error message should show the path to unsaved variable."""
-        @thunk(n_outputs=1)
+        @thunk
         def process(x):
             return x * 2
 
@@ -265,11 +265,11 @@ class TestStrictMode:
 
     def test_strict_mode_with_nested_pipeline(self, strict_db):
         """Strict mode with multi-step pipeline where all are saved."""
-        @thunk(n_outputs=1)
+        @thunk
         def step1(x):
             return x * 2
 
-        @thunk(n_outputs=1)
+        @thunk
         def step2(x):
             return x + 1
 
@@ -288,11 +288,11 @@ class TestStrictMode:
 
     def test_strict_mode_fails_with_unsaved_in_middle(self, strict_db):
         """Strict mode fails when intermediate in chain is unsaved."""
-        @thunk(n_outputs=1)
+        @thunk
         def step1(x):
             return x * 2
 
-        @thunk(n_outputs=1)
+        @thunk
         def step2(x):
             return x + 1
 
@@ -316,7 +316,7 @@ class TestEphemeralMode:
 
     def test_ephemeral_mode_allows_unsaved_intermediates(self, ephemeral_db):
         """Ephemeral mode should allow saving with unsaved intermediates."""
-        @thunk(n_outputs=1)
+        @thunk
         def process(x):
             return x * 2
 
@@ -331,7 +331,7 @@ class TestEphemeralMode:
 
     def test_ephemeral_mode_stores_lineage_for_unsaved(self, ephemeral_db):
         """Ephemeral mode should store lineage record for unsaved intermediate."""
-        @thunk(n_outputs=1)
+        @thunk
         def process(x):
             return x * 2
 
@@ -348,11 +348,11 @@ class TestEphemeralMode:
 
     def test_ephemeral_mode_creates_ephemeral_lineage_entry(self, ephemeral_db):
         """Ephemeral mode should create ephemeral:* entries in lineage table."""
-        @thunk(n_outputs=1)
+        @thunk
         def step1(x):
             return x * 2
 
-        @thunk(n_outputs=1)
+        @thunk
         def step2(x):
             return x + 1
 
@@ -380,15 +380,15 @@ class TestEphemeralMode:
 
     def test_ephemeral_mode_with_multi_step_pipeline(self, ephemeral_db):
         """Ephemeral mode with multi-step pipeline, only raw saved."""
-        @thunk(n_outputs=1)
+        @thunk
         def step1(x):
             return x * 2
 
-        @thunk(n_outputs=1)
+        @thunk
         def step2(x):
             return x + 1
 
-        @thunk(n_outputs=1)
+        @thunk
         def step3(x):
             return x ** 2
 
@@ -411,7 +411,7 @@ class TestEphemeralMode:
 
     def test_ephemeral_lineage_query_works(self, ephemeral_db):
         """Should be able to query full lineage including ephemeral nodes."""
-        @thunk(n_outputs=1)
+        @thunk
         def process(x):
             return x * 2
 
@@ -427,7 +427,7 @@ class TestEphemeralMode:
 
     def test_ephemeral_format_lineage_shows_marker(self, ephemeral_db):
         """format_lineage should show [ephemeral] marker for unsaved nodes."""
-        @thunk(n_outputs=1)
+        @thunk
         def process(x):
             return x * 2
 
@@ -451,11 +451,11 @@ class TestMixedScenarios:
 
     def test_ephemeral_with_some_saved(self, ephemeral_db):
         """Ephemeral mode with mix of saved and unsaved."""
-        @thunk(n_outputs=1)
+        @thunk
         def step1(x):
             return x * 2
 
-        @thunk(n_outputs=1)
+        @thunk
         def step2(x):
             return x + 1
 
@@ -476,11 +476,11 @@ class TestMixedScenarios:
 
     def test_strict_mode_preserves_lineage_when_valid(self, strict_db):
         """Strict mode should still track full lineage when all saved."""
-        @thunk(n_outputs=1)
+        @thunk
         def step1(x):
             return x * 2
 
-        @thunk(n_outputs=1)
+        @thunk
         def step2(x):
             return x + 1
 
@@ -508,7 +508,7 @@ class TestEdgeCases:
 
     def test_unsaved_variable_with_constant_inputs(self, strict_db):
         """Unsaved variable used alongside constants."""
-        @thunk(n_outputs=1)
+        @thunk
         def multiply(x, factor):
             return x * factor
 
@@ -522,7 +522,7 @@ class TestEdgeCases:
 
     def test_multiple_outputs_thunk_with_unsaved(self, strict_db):
         """Multi-output thunk with unsaved input."""
-        @thunk(n_outputs=2)
+        @thunk(unwrap_outputs=True)
         def split(x):
             mid = len(x) // 2
             return x[:mid], x[mid:]
@@ -537,11 +537,11 @@ class TestEdgeCases:
 
     def test_ephemeral_no_duplicate_entries(self, ephemeral_db):
         """Ephemeral mode should not create duplicate entries."""
-        @thunk(n_outputs=1)
+        @thunk
         def step1(x):
             return x * 2
 
-        @thunk(n_outputs=1)
+        @thunk
         def step2(x):
             return x + 1
 
@@ -573,7 +573,7 @@ class TestEdgeCases:
 
     def test_deeply_nested_unsaved_chain(self, ephemeral_db):
         """Deep chain of unsaved intermediates in ephemeral mode."""
-        @thunk(n_outputs=1)
+        @thunk
         def increment(x):
             return x + 1
 
@@ -603,7 +603,7 @@ class TestProvenanceQueries:
 
     def test_get_provenance_strict_mode(self, strict_db):
         """get_provenance should work in strict mode."""
-        @thunk(n_outputs=1)
+        @thunk
         def double(x):
             return x * 2
 
@@ -620,7 +620,7 @@ class TestProvenanceQueries:
 
     def test_get_provenance_ephemeral_mode(self, ephemeral_db):
         """get_provenance should work in ephemeral mode."""
-        @thunk(n_outputs=1)
+        @thunk
         def double(x):
             return x * 2
 
@@ -638,7 +638,7 @@ class TestProvenanceQueries:
 
     def test_has_lineage_works_both_modes(self, strict_db, tmp_path):
         """has_lineage should work correctly in both modes."""
-        @thunk(n_outputs=1)
+        @thunk
         def process(x):
             return x * 2
 

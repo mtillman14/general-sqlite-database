@@ -1,84 +1,32 @@
-"""Core thunk system for lazy evaluation and lineage tracking.
+"""Core thunk system for lineage tracking.
 
 This module provides a Python adaptation of Haskell's thunk concept for building
 data processing pipelines with automatic provenance tracking.
 
 Example:
-    @thunk(n_outputs=1)
+    @thunk
     def process_signal(raw: np.ndarray, cal_factor: float) -> np.ndarray:
         return raw * cal_factor
 
     result = process_signal(raw_data, 2.5)  # Returns ThunkOutput
     print(result.data)  # The actual computed data
     print(result.pipeline_thunk.inputs)  # Captured inputs for lineage
+
+For multi-output functions:
+    @thunk(unpack_output=True)
+    def split(data):
+        return data[:len(data)//2], data[len(data)//2:]
+
+    first, second = split(data)  # Each is a separate ThunkOutput
 """
 
 from functools import wraps
 from hashlib import sha256
-from typing import Any, Callable, Protocol, runtime_checkable
+from typing import Any, Callable
 
 from .inputs import classify_inputs, is_trackable_variable
 
 STRING_REPR_DELIMITER = "-"
-
-
-# -----------------------------------------------------------------------------
-# Cache Backend Protocol
-# -----------------------------------------------------------------------------
-
-
-@runtime_checkable
-class CacheBackend(Protocol):
-    """Protocol for cache backends that can be plugged into the thunk system.
-
-    Implement this protocol to provide custom caching behavior.
-    """
-
-    def get_cached(
-        self, cache_key: str, n_outputs: int
-    ) -> list[tuple[Any, str]] | None:
-        """
-        Look up cached results by cache key.
-
-        Args:
-            cache_key: The cache key (hash of function + inputs)
-            n_outputs: Number of outputs expected
-
-        Returns:
-            List of (data, identifier) tuples if ALL outputs found,
-            None otherwise.
-        """
-        ...
-
-
-# Global cache backend (None means no caching)
-_cache_backend: CacheBackend | None = None
-
-
-def configure_cache(backend: CacheBackend | None) -> None:
-    """
-    Configure the global cache backend.
-
-    Args:
-        backend: A CacheBackend implementation, or None to disable caching.
-
-    Example:
-        from thunk import configure_cache
-
-        class MyCache:
-            def get_cached(self, cache_key, n_outputs):
-                # Custom cache lookup logic
-                return None
-
-        configure_cache(MyCache())
-    """
-    global _cache_backend
-    _cache_backend = backend
-
-
-def get_cache_backend() -> CacheBackend | None:
-    """Get the currently configured cache backend."""
-    return _cache_backend
 
 
 # -----------------------------------------------------------------------------
@@ -95,25 +43,27 @@ class Thunk:
 
     Attributes:
         fcn: The wrapped function
-        n_outputs: Number of outputs the function returns
+        unpack_output: Whether to unpack tuple returns into separate ThunkOutputs
         unwrap: Whether to unwrap special input types to raw data
-        hash: SHA-256 hash of function bytecode + n_outputs
+        hash: SHA-256 hash of function bytecode + unpack_output
         pipeline_thunks: All PipelineThunks created from this Thunk
     """
 
-    def __init__(self, fcn: Callable, n_outputs: int = 1, unwrap: bool = True):
+    def __init__(self, fcn: Callable, unpack_output: bool = False, unwrap: bool = True):
         """
-        Initialize a Thunk wrapper.
+        Initialize a Thunk wrapper of a function.
 
         Args:
             fcn: The function to wrap
-            n_outputs: Number of output values the function returns
+            unpack_output: If True, unpack tuple returns into separate ThunkOutputs.
+                          If False (default), the return value is wrapped as a single
+                          ThunkOutput (even if it's a tuple).
             unwrap: If True (default), unwrap ThunkOutput inputs to their raw
                    data before calling the function. If False, pass the wrapper
                    objects directly (useful for debugging/inspection).
         """
         self.fcn = fcn
-        self.n_outputs = n_outputs
+        self.unpack_output = unpack_output
         self.unwrap = unwrap
         self.pipeline_thunks: tuple[PipelineThunk, ...] = ()
 
@@ -124,11 +74,11 @@ class Thunk:
         combined_code = fcn_code + fcn_consts
         fcn_hash = sha256(combined_code).hexdigest()
 
-        string_repr = f"{fcn_hash}{STRING_REPR_DELIMITER}{n_outputs}"
+        string_repr = f"{fcn_hash}{STRING_REPR_DELIMITER}{unpack_output}"
         self.hash = sha256(string_repr.encode()).hexdigest()
 
     def __repr__(self) -> str:
-        return f"Thunk(fcn={self.fcn.__name__}, n_outputs={self.n_outputs}, unwrap={self.unwrap})"
+        return f"Thunk(fcn={self.fcn.__name__}, unpack_output={self.unpack_output}, unwrap={self.unwrap})"
 
     def __eq__(self, other: object) -> bool:
         if not isinstance(other, Thunk):
@@ -140,10 +90,7 @@ class Thunk:
 
     def __call__(self, *args, **kwargs) -> "ThunkOutput | tuple[ThunkOutput, ...]":
         """
-        Create a PipelineThunk and execute or defer.
-
-        Automatically checks the computation cache if configured. If all outputs
-        are cached, returns them without re-executing the function.
+        Create a PipelineThunk and execute.
 
         Returns:
             ThunkOutput or tuple of ThunkOutputs wrapping the result(s)
@@ -158,35 +105,6 @@ class Thunk:
         else:
             self.pipeline_thunks = (*self.pipeline_thunks, pipeline_thunk)
 
-        # Auto-cache check if backend configured
-        try:
-            backend = get_cache_backend()
-            if backend is not None:
-                cache_key = pipeline_thunk.compute_cache_key()
-                cached = backend.get_cached(cache_key, self.n_outputs)
-
-                if cached is not None:
-                    # Build ThunkOutputs from cached results
-                    outputs = tuple(
-                        ThunkOutput(
-                            pipeline_thunk=pipeline_thunk,
-                            output_num=i,
-                            is_complete=True,
-                            data=data,
-                            was_cached=True,
-                            cached_id=cached_id,
-                        )
-                        for i, (data, cached_id) in enumerate(cached)
-                    )
-                    pipeline_thunk.outputs = outputs
-
-                    if len(outputs) == 1:
-                        return outputs[0]
-                    return outputs
-        except Exception:
-            pass  # No cache or error, execute normally
-
-        # Run the thunked function if the result is not cached.
         return pipeline_thunk(*args, **kwargs)
 
 
@@ -231,7 +149,7 @@ class PipelineThunk:
     @property
     def hash(self) -> str:
         """Dynamic hash based on thunk + inputs (lineage-based, metadata-agnostic)."""
-        return self.compute_cache_key()
+        return self.compute_lineage_hash()
 
     def __hash__(self) -> int:
         return int(self.hash[:16], 16)
@@ -239,7 +157,7 @@ class PipelineThunk:
     def __repr__(self) -> str:
         return (
             f"PipelineThunk(fcn={self.thunk.fcn.__name__}, "
-            f"n_inputs={len(self.inputs)}, n_outputs={self.thunk.n_outputs})"
+            f"n_inputs={len(self.inputs)}, unpack_output={self.thunk.unpack_output})"
         )
 
     @property
@@ -257,8 +175,6 @@ class PipelineThunk:
         Returns:
             ThunkOutput or tuple of ThunkOutputs wrapping the result(s)
         """
-        result: tuple = tuple(None for _ in range(self.thunk.n_outputs))
-
         if self.is_complete:
             # Resolve arguments - unwrap if self.unwrap is True
             resolved_args = []
@@ -278,24 +194,30 @@ class PipelineThunk:
 
             result = self.thunk.fcn(*resolved_args, **resolved_kwargs)
 
-            # Normalize to tuple
-            if not isinstance(result, tuple):
-                result = (result,)
-
-            if len(result) != self.thunk.n_outputs:
-                raise ValueError(
-                    f"Function {self.thunk.fcn.__name__} returned {len(result)} outputs, "
-                    f"but {self.thunk.n_outputs} were expected."
+            # Handle output based on unpack_output setting
+            if self.thunk.unpack_output:
+                # Unpack tuple into separate ThunkOutputs
+                if not isinstance(result, tuple):
+                    raise ValueError(
+                        f"Function {self.thunk.fcn.__name__} has unpack_output=True "
+                        f"but did not return a tuple."
+                    )
+                outputs = tuple(
+                    ThunkOutput(self, i, True, val) for i, val in enumerate(result)
                 )
+            else:
+                # Wrap entire result as single ThunkOutput
+                outputs = (ThunkOutput(self, 0, True, result),)
+        else:
+            # Not complete - create placeholder output(s)
+            outputs = (ThunkOutput(self, 0, False, None),)
 
-        # Wrap outputs in ThunkOutputs
-        outputs = tuple(
-            ThunkOutput(self, i, self.is_complete, val) for i, val in enumerate(result)
-        )
         self.outputs = outputs
 
         if len(outputs) == 1:
             return outputs[0]
+        if self.thunk.unpack_output:
+            return *outputs
         return outputs
 
     def _deep_unwrap(self, value: Any) -> Any:
@@ -320,26 +242,23 @@ class PipelineThunk:
 
         return value
 
-    def compute_cache_key(self) -> str:
+    def compute_lineage_hash(self) -> str:
         """
-        Compute a cache key for this pipeline invocation.
+        Compute a hash representing this computation's lineage.
 
-        The cache key is based on LINEAGE (how values were computed), not metadata:
+        The hash is based on:
         - Function hash (bytecode + constants)
         - For ThunkOutput inputs: use lineage-based hash
         - For trackable variable inputs: use lineage_hash if computed, else content+type
         - For raw values: use content hash
 
-        This enables cross-user caching (different metadata, same computation)
-        while preventing false cache hits (same content, different computation).
-
         Returns:
-            SHA-256 hash suitable for cache lookup
+            SHA-256 hash encoding the computation lineage
         """
         classified = classify_inputs(self.inputs)
         input_tuples = [c.to_cache_tuple() for c in classified]
-        cache_input = f"{self.thunk.hash}{STRING_REPR_DELIMITER}{input_tuples}"
-        return sha256(cache_input.encode()).hexdigest()
+        hash_input = f"{self.thunk.hash}{STRING_REPR_DELIMITER}{input_tuples}"
+        return sha256(hash_input.encode()).hexdigest()
 
     def _matches(self, other: "PipelineThunk") -> bool:
         """Check if this is equivalent to another PipelineThunk."""
@@ -401,8 +320,6 @@ class ThunkOutput:
         is_complete: True if the data has been computed
         data: The actual computed data (None if not complete)
         hash: SHA-256 hash encoding the full lineage
-        was_cached: True if this result was loaded from cache
-        cached_id: Identifier of the cached result (if was_cached)
     """
 
     def __init__(
@@ -411,42 +328,26 @@ class ThunkOutput:
         output_num: int,
         is_complete: bool,
         data: Any,
-        was_cached: bool = False,
-        cached_id: str | None = None,
     ):
         """
-        Initialize an ThunkOutput.
+        Initialize a ThunkOutput.
 
         Args:
             pipeline_thunk: The PipelineThunk that produced this
             output_num: Index of this output
             is_complete: Whether the data has been computed
             data: The computed data (or None if not complete)
-            was_cached: Whether this result was loaded from cache
-            cached_id: Identifier if loaded from cache (e.g., record_id)
         """
         self.pipeline_thunk = pipeline_thunk
         self.output_num = output_num
         self.is_complete = is_complete
         self.data = data if is_complete else None
-        self._was_cached = was_cached
-        self._cached_id = cached_id
 
         string_repr = (
             f"{pipeline_thunk.hash}{STRING_REPR_DELIMITER}"
             f"output{STRING_REPR_DELIMITER}{output_num}"
         )
         self.hash = sha256(string_repr.encode()).hexdigest()
-
-    @property
-    def was_cached(self) -> bool:
-        """True if this result was loaded from the computation cache."""
-        return self._was_cached
-
-    @property
-    def cached_id(self) -> str | None:
-        """The identifier of the cached result, if loaded from cache."""
-        return self._cached_id
 
     def __repr__(self) -> str:
         fcn_name = self.pipeline_thunk.thunk.fcn.__name__
@@ -471,39 +372,60 @@ class ThunkOutput:
 # -----------------------------------------------------------------------------
 
 
-def thunk(n_outputs: int = 1, unwrap: bool = True) -> Callable[[Callable], Thunk]:
+def thunk(
+    func: Callable | None = None,
+    *,
+    unpack_output: bool = False,
+    unwrap: bool = True,
+) -> Callable[[Callable], Thunk] | Thunk:
     """
-    Decorator to convert a function into a Thunk.
+    Decorator to convert a function into a Thunk for lineage tracking.
 
-    Example:
-        @thunk(n_outputs=1)
+    Can be used with or without parentheses:
+
+        @thunk
         def process_signal(raw, calibration):
             return raw * calibration
 
-        result = process_signal(raw_data, cal_data)  # Returns ThunkOutput
-        print(result.data)  # The actual computed data
-        print(result.pipeline_thunk.inputs)  # Captured inputs
+        @thunk()
+        def another_function(x):
+            return x * 2
+
+    For multi-output functions, use unpack_output=True:
+
+        @thunk(unpack_output=True)
+        def split(data):
+            return data[:len(data)//2], data[len(data)//2:]
+
+        first_half, second_half = split(my_data)  # Each is a ThunkOutput
 
     For debugging/inspection, use unwrap=False to receive the full objects:
 
-        @thunk(n_outputs=1, unwrap=False)
+        @thunk(unwrap=False)
         def debug_process(var):
             print(f"Input record_id: {var.record_id}")
             print(f"Input metadata: {var.metadata}")
             return var.data * 2
 
     Args:
-        n_outputs: Number of outputs the function returns (default 1)
+        func: The function to wrap (when used without parentheses)
+        unpack_output: If True, unpack tuple returns into separate ThunkOutputs.
+                      If False (default), the return value is wrapped as a single
+                      ThunkOutput (even if it's a tuple).
         unwrap: If True (default), unwrap ThunkOutput and variable inputs
                to their raw data (.data). If False, pass the wrapper
                objects directly for inspection/debugging.
 
     Returns:
-        A decorator that converts functions to Thunks
+        A Thunk wrapping the function, or a decorator that creates one
     """
 
     def decorator(fcn: Callable) -> Thunk:
-        t = Thunk(fcn, n_outputs, unwrap)
+        t = Thunk(fcn, unpack_output, unwrap)
         return wraps(fcn)(t)
 
+    if func is not None:
+        # Called without parentheses: @thunk
+        return decorator(func)
+    # Called with parentheses: @thunk() or @thunk(unpack_output=True)
     return decorator

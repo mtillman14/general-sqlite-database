@@ -9,23 +9,23 @@ Import the `thunk` decorator and apply it to any function:
 ```python
 from thunk import thunk
 
-@thunk(n_outputs=1)
+@thunk
 def double(x):
     return x * 2
 
 result = double(5)
 ```
 
-Notice that `result` is not `10` - it's an `OutputThunk`:
+Notice that `result` is not `10` - it's an `ThunkOutput`:
 
 ```python
-print(type(result))  # <class 'thunk.core.OutputThunk'>
+print(type(result))  # <class 'thunk.core.ThunkOutput'>
 print(result.data)   # 10
 ```
 
 ## Accessing Lineage
 
-Every `OutputThunk` carries information about how it was computed:
+Every `ThunkOutput` carries information about how it was computed:
 
 ```python
 # The pipeline thunk captures the invocation
@@ -46,11 +46,11 @@ print(result.hash)  # SHA-256 based on function + inputs
 Thunks automatically track through chains of computations:
 
 ```python
-@thunk(n_outputs=1)
+@thunk
 def add_one(x):
     return x + 1
 
-@thunk(n_outputs=1)
+@thunk
 def multiply(x, y):
     return x * y
 
@@ -59,7 +59,7 @@ a = add_one(5)       # 6
 b = multiply(a, 3)   # 18
 
 # b knows it came from multiply, which took output from add_one
-print(b.pipeline_thunk.inputs['arg_0'])  # This is the OutputThunk from add_one
+print(b.pipeline_thunk.inputs['arg_0'])  # This is the ThunkOutput from add_one
 ```
 
 ## Multi-Output Functions
@@ -67,7 +67,7 @@ print(b.pipeline_thunk.inputs['arg_0'])  # This is the OutputThunk from add_one
 For functions returning multiple values:
 
 ```python
-@thunk(n_outputs=2)
+@thunk(unwrap_outputs=True)
 def split(data, pivot):
     return (
         [x for x in data if x < pivot],
@@ -90,7 +90,7 @@ For storage or analysis, extract structured lineage:
 ```python
 from thunk import extract_lineage
 
-@thunk(n_outputs=1)
+@thunk
 def process(data, factor=2):
     return [x * factor for x in data]
 

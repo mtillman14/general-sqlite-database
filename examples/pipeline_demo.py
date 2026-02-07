@@ -108,14 +108,14 @@ class NormalizedSeries(BaseVariable):
 # =============================================================================
 # The @thunk decorator enables automatic lineage tracking
 
-@thunk(n_outputs=1)
+@thunk()
 def extract_column(df: pd.DataFrame, column: str) -> np.ndarray:
     """Extract a single column from a DataFrame as a numpy array."""
     print(f"  [COMPUTING] Extracting column '{column}'...")
     return df[column].values
 
 
-@thunk(n_outputs=1)
+@thunk()
 def normalize(data: np.ndarray) -> np.ndarray:
     """Normalize data to [0, 1] range."""
     print(f"  [COMPUTING] Normalizing data (min={data.min():.2f}, max={data.max():.2f})...")
@@ -124,7 +124,7 @@ def normalize(data: np.ndarray) -> np.ndarray:
     return (data - min_val) / (max_val - min_val)
 
 
-@thunk(n_outputs=1)
+@thunk()
 def compute_stats(data: np.ndarray) -> dict:
     """Compute statistics on data."""
     print(f"  [COMPUTING] Computing statistics...")
@@ -137,7 +137,7 @@ def compute_stats(data: np.ndarray) -> dict:
     }
 
 
-@thunk(n_outputs=1)
+@thunk()
 def smooth(data: np.ndarray, window: int) -> np.ndarray:
     """Apply moving average smoothing."""
     print(f"  [COMPUTING] Smoothing with window={window}...")

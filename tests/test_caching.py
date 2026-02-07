@@ -52,7 +52,7 @@ class TestCacheKeyComputation:
     """Test PipelineThunk.compute_cache_key()."""
 
     def test_cache_key_is_string(self):
-        @thunk(n_outputs=1)
+        @thunk
         def process(x):
             return x * 2
 
@@ -63,7 +63,7 @@ class TestCacheKeyComputation:
         assert len(cache_key) == 64  # SHA-256
 
     def test_same_inputs_same_cache_key(self):
-        @thunk(n_outputs=1)
+        @thunk
         def process(x):
             return x * 2
 
@@ -76,7 +76,7 @@ class TestCacheKeyComputation:
         assert key1 == key2
 
     def test_different_inputs_different_cache_key(self):
-        @thunk(n_outputs=1)
+        @thunk
         def process(x):
             return x * 2
 
@@ -95,7 +95,7 @@ class TestCacheKeyComputation:
         scalar_class.save(42, db=db, subject=1)
         var = scalar_class.load(db=db, subject=1)
 
-        @thunk(n_outputs=1)
+        @thunk
         def process(x):
             return x * 2
 
@@ -109,11 +109,11 @@ class TestCacheKeyComputation:
         assert cache_key == cache_key2
 
     def test_different_functions_different_cache_key(self):
-        @thunk(n_outputs=1)
+        @thunk
         def process1(x):
             return x * 2
 
-        @thunk(n_outputs=1)
+        @thunk
         def process2(x):
             return x * 3
 
@@ -133,7 +133,7 @@ class TestCachePopulation:
         """Saving a thunk result should populate the cache."""
         db.register(scalar_class)
 
-        @thunk(n_outputs=1)
+        @thunk
         def double(x):
             return x * 2
 
@@ -168,7 +168,7 @@ class TestCachePopulation:
         """Verify the cache key matches what we compute."""
         db.register(scalar_class)
 
-        @thunk(n_outputs=1)
+        @thunk
         def triple(x):
             return x * 3
 
@@ -192,7 +192,7 @@ class TestCacheLookup:
         """Should return cached result when available."""
         db.register(scalar_class)
 
-        @thunk(n_outputs=1)
+        @thunk
         def process(x):
             return x * 2
 
@@ -222,7 +222,7 @@ class TestCacheLookup:
         db.register(scalar_class)
         db.register(array_class)
 
-        @thunk(n_outputs=1)
+        @thunk
         def process(x):
             return x * 2
 
@@ -244,7 +244,7 @@ class TestCheckCacheHelper:
         """check_cache should return ThunkOutput when cached."""
         db.register(scalar_class)
 
-        @thunk(n_outputs=1)
+        @thunk
         def process(x):
             return x * 2
 
@@ -265,7 +265,7 @@ class TestCheckCacheHelper:
         """check_cache should return None when not cached."""
         db.register(scalar_class)
 
-        @thunk(n_outputs=1)
+        @thunk
         def process(x):
             return x * 2
 
@@ -278,7 +278,7 @@ class TestCheckCacheHelper:
         """Cached ThunkOutput should have cached_id set."""
         db.register(scalar_class)
 
-        @thunk(n_outputs=1)
+        @thunk
         def process(x):
             return x * 2
 
@@ -295,7 +295,7 @@ class TestThunkOutputCacheProperties:
     """Test ThunkOutput cache-related properties."""
 
     def test_was_cached_false_by_default(self):
-        @thunk(n_outputs=1)
+        @thunk
         def process(x):
             return x * 2
 
@@ -303,7 +303,7 @@ class TestThunkOutputCacheProperties:
         assert result.was_cached is False
 
     def test_cached_id_none_by_default(self):
-        @thunk(n_outputs=1)
+        @thunk
         def process(x):
             return x * 2
 
@@ -314,7 +314,7 @@ class TestThunkOutputCacheProperties:
         """ThunkOutput from cache should have was_cached=True."""
         db.register(scalar_class)
 
-        @thunk(n_outputs=1)
+        @thunk
         def process(x):
             return x * 2
 
@@ -334,7 +334,7 @@ class TestCacheInvalidation:
         """invalidate_cache() should clear all cache entries."""
         db.register(scalar_class)
 
-        @thunk(n_outputs=1)
+        @thunk
         def process(x):
             return x * 2
 
@@ -358,11 +358,11 @@ class TestCacheInvalidation:
         """invalidate_cache(function_name=...) should only clear that function."""
         db.register(scalar_class)
 
-        @thunk(n_outputs=1)
+        @thunk
         def process1(x):
             return x * 2
 
-        @thunk(n_outputs=1)
+        @thunk
         def process2(x):
             return x * 3
 
@@ -382,7 +382,7 @@ class TestCacheInvalidation:
         """invalidate_cache(function_hash=...) should only clear that version."""
         db.register(scalar_class)
 
-        @thunk(n_outputs=1)
+        @thunk
         def process(x):
             return x * 2
 
@@ -411,11 +411,11 @@ class TestCacheStats:
         """Stats should reflect cache contents."""
         db.register(scalar_class)
 
-        @thunk(n_outputs=1)
+        @thunk
         def process1(x):
             return x * 2
 
-        @thunk(n_outputs=1)
+        @thunk
         def process2(x):
             return x * 3
 
@@ -437,7 +437,7 @@ class TestCacheWithArrays:
         """Numpy computations should be cacheable."""
         db.register(array_class)
 
-        @thunk(n_outputs=1)
+        @thunk
         def normalize(arr):
             return arr / arr.max()
 
@@ -464,7 +464,7 @@ class TestCacheWorkflow:
 
         computation_count = [0]
 
-        @thunk(n_outputs=1)
+        @thunk
         def expensive_compute(x):
             computation_count[0] += 1
             return x * 2
@@ -493,11 +493,11 @@ class TestCacheWorkflow:
         """Test caching in a multi-step pipeline."""
         db.register(scalar_class)
 
-        @thunk(n_outputs=1)
+        @thunk
         def step1(x):
             return x * 2
 
-        @thunk(n_outputs=1)
+        @thunk
         def step2(x):
             return x + 10
 
@@ -523,7 +523,7 @@ class TestAutomaticCacheChecking:
         configured_db.register(scalar_class)
         execution_count = [0]
 
-        @thunk(n_outputs=1)
+        @thunk
         def expensive_compute(x):
             execution_count[0] += 1
             return x * 2
@@ -547,7 +547,7 @@ class TestAutomaticCacheChecking:
         """Cached result should have correct data and properties."""
         configured_db.register(scalar_class)
 
-        @thunk(n_outputs=1)
+        @thunk
         def compute(x):
             return x * 3
 
@@ -565,7 +565,7 @@ class TestAutomaticCacheChecking:
         configured_db.register(scalar_class)
         execution_count = [0]
 
-        @thunk(n_outputs=1)
+        @thunk
         def compute(x):
             execution_count[0] += 1
             return x + 5
@@ -581,7 +581,7 @@ class TestAutomaticCacheChecking:
         configured_db.register(scalar_class)
         execution_count = [0]
 
-        @thunk(n_outputs=1)
+        @thunk
         def compute(x):
             execution_count[0] += 1
             return x * 2
@@ -602,7 +602,7 @@ class TestAutomaticCacheChecking:
         # No configure_database() called
         execution_count = [0]
 
-        @thunk(n_outputs=1)
+        @thunk
         def compute(x):
             execution_count[0] += 1
             return x * 2
@@ -617,7 +617,7 @@ class TestAutomaticCacheChecking:
         # Save registers the class automatically
         execution_count = [0]
 
-        @thunk(n_outputs=1)
+        @thunk
         def compute(x):
             execution_count[0] += 1
             return x * 2
@@ -641,7 +641,7 @@ class TestAutomaticCacheChecking:
         configured_db.register(scalar_class)
         execution_count = [0]
 
-        @thunk(n_outputs=2)
+        @thunk(unwrap_outputs=2)
         def split_compute(x):
             execution_count[0] += 1
             return x, x * 2
@@ -667,7 +667,7 @@ class TestAutomaticCacheChecking:
         configured_db.register(scalar_class)
         execution_count = [0]
 
-        @thunk(n_outputs=2)
+        @thunk(unwrap_outputs=2)
         def split_compute(x):
             execution_count[0] += 1
             return x, x * 2
@@ -691,7 +691,7 @@ class TestAutomaticCacheChecking:
         configured_db.register(array_class)
         execution_count = [0]
 
-        @thunk(n_outputs=1)
+        @thunk
         def normalize(arr):
             execution_count[0] += 1
             return arr / arr.max()
@@ -715,12 +715,12 @@ class TestAutomaticCacheChecking:
         step1_count = [0]
         step2_count = [0]
 
-        @thunk(n_outputs=1)
+        @thunk
         def step1(x):
             step1_count[0] += 1
             return x * 2
 
-        @thunk(n_outputs=1)
+        @thunk
         def step2(x):
             step2_count[0] += 1
             return x + 10
@@ -743,7 +743,7 @@ class TestAutomaticCacheChecking:
         """Cached ThunkOutput should have valid pipeline_thunk."""
         configured_db.register(scalar_class)
 
-        @thunk(n_outputs=1)
+        @thunk
         def compute(x):
             return x * 2
 
@@ -769,7 +769,7 @@ class TestGetCachedByKey:
         """Should return list of (data, record_id) tuples when cached."""
         db.register(scalar_class)
 
-        @thunk(n_outputs=1)
+        @thunk
         def compute(x):
             return x * 2
 
@@ -789,7 +789,7 @@ class TestGetCachedByKey:
         """Should return cached results via auto-registration from global registry."""
         db.register(scalar_class)
 
-        @thunk(n_outputs=1)
+        @thunk
         def compute(x):
             return x * 2
 
@@ -811,7 +811,7 @@ class TestGetCachedByKey:
         """Should return None if underlying data was deleted."""
         db.register(scalar_class)
 
-        @thunk(n_outputs=1)
+        @thunk
         def compute(x):
             return x * 2
 
@@ -830,7 +830,7 @@ class TestGetCachedByKey:
         """Should return list with all outputs for multi-output functions."""
         db.register(scalar_class)
 
-        @thunk(n_outputs=2)
+        @thunk(unwrap_outputs=2)
         def compute(x):
             return x, x * 2
 
@@ -839,7 +839,7 @@ class TestGetCachedByKey:
         record_id_b = scalar_class.save(b, db=db, subject=1, output="b")
 
         cache_key = a.pipeline_thunk.compute_cache_key()
-        cached = db.get_cached_by_key(cache_key, n_outputs=2)
+        cached = db.get_cached_by_key(cache_key, unwrap_outputs=2)
 
         assert cached is not None
         assert len(cached) == 2
@@ -850,7 +850,7 @@ class TestGetCachedByKey:
         """Should return None if not all outputs are cached."""
         db.register(scalar_class)
 
-        @thunk(n_outputs=2)
+        @thunk(unwrap_outputs=2)
         def compute(x):
             return x, x * 2
 
@@ -859,7 +859,7 @@ class TestGetCachedByKey:
         # Don't save b
 
         cache_key = a.pipeline_thunk.compute_cache_key()
-        cached = db.get_cached_by_key(cache_key, n_outputs=2)
+        cached = db.get_cached_by_key(cache_key, unwrap_outputs=2)
 
         assert cached is None
 
@@ -950,7 +950,7 @@ class TestAutoRegistration:
         db.register(AutoRegVar)
         record_id = AutoRegVar.save(42, db=db, test=1)
 
-        @thunk(n_outputs=1)
+        @thunk
         def process(x):
             return x * 2
 
@@ -963,7 +963,7 @@ class TestAutoRegistration:
         assert "AutoRegVar" not in db._registered_types
 
         # Cache lookup should auto-register and succeed
-        cached = db.get_cached_by_key(cache_key, n_outputs=1)
+        cached = db.get_cached_by_key(cache_key, unwrap_outputs=1)
 
         assert cached is not None
         assert cached[0][0] == 84  # 42 * 2
@@ -986,7 +986,7 @@ class TestAutoRegistration:
 
         execution_count = 0
 
-        @thunk(n_outputs=1)
+        @thunk
         def expensive_fn(x):
             nonlocal execution_count
             execution_count += 1

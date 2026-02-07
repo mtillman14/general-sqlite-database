@@ -49,7 +49,7 @@ TimeSeries(data).save(subject=1, session="baseline")
 loaded = TimeSeries.load(subject=1, session="baseline")
 
 # Track lineage with @thunk
-@thunk(n_outputs=1)
+@thunk
 def normalize(arr: np.ndarray) -> np.ndarray:
     return (arr - arr.mean()) / arr.std()
 
@@ -63,13 +63,13 @@ print(provenance["function_name"])  # "normalize"
 
 ## Why SciDB?
 
-| Problem | SciDB Solution |
-|---------|----------------|
-| "Which version of this data did I use?" | Content-based hashing ensures reproducibility |
-| "What processing produced this result?" | Automatic lineage tracking via `@thunk` |
-| "I already computed this, why recompute?" | Computation caching skips redundant work |
-| "How do I organize my experimental data?" | Flexible metadata addressing |
-| "I need to share this database" | Single portable SQLite file |
+| Problem                                   | SciDB Solution                                |
+| ----------------------------------------- | --------------------------------------------- |
+| "Which version of this data did I use?"   | Content-based hashing ensures reproducibility |
+| "What processing produced this result?"   | Automatic lineage tracking via `@thunk`       |
+| "I already computed this, why recompute?" | Computation caching skips redundant work      |
+| "How do I organize my experimental data?" | Flexible metadata addressing                  |
+| "I need to share this database"           | Single portable SQLite file                   |
 
 ## Documentation
 

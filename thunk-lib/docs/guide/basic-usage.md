@@ -7,47 +7,47 @@ The `@thunk` decorator transforms a regular function into a `Thunk` object:
 ```python
 from thunk import thunk
 
-@thunk(n_outputs=1)
+@thunk
 def process(data):
     return data * 2
 ```
 
 ### Parameters
 
-- **`n_outputs`** (default: 1): Number of values the function returns
-- **`unwrap`** (default: True): Whether to unwrap `OutputThunk` inputs automatically
+- **`unwrap_outputs`** (default: False): Whether to unpack a returned tuple into its constituent elements.
+- **`unwrap`** (default: True): Whether to unwrap `ThunkOutput` inputs automatically
 
 ### Understanding `unwrap`
 
-By default, if you pass an `OutputThunk` to a thunked function, it automatically extracts the `.data`:
+By default, if you pass an `ThunkOutput` to a thunked function, it automatically extracts the `.data`:
 
 ```python
-@thunk(n_outputs=1)
+@thunk
 def step1(x):
     return x + 1
 
-@thunk(n_outputs=1)
+@thunk
 def step2(x):
-    # x is automatically the raw value (6), not the OutputThunk
+    # x is automatically the raw value (6), not the ThunkOutput
     return x * 2
 
 result = step2(step1(5))  # (5+1) * 2 = 12
 ```
 
-With `unwrap=False`, you receive the full `OutputThunk`:
+With `unwrap=False`, you receive the full `ThunkOutput`:
 
 ```python
-@thunk(n_outputs=1, unwrap=False)
+@thunk(unwrap=False)
 def debug_step(x):
-    print(f"Received: {type(x)}")  # OutputThunk
+    print(f"Received: {type(x)}")  # ThunkOutput
     print(f"Value: {x.data}")
     print(f"Hash: {x.hash}")
     return x.data * 2
 ```
 
-## Working with OutputThunk
+## Working with ThunkOutput
 
-Every thunked function call returns an `OutputThunk`:
+Every thunked function call returns an `ThunkOutput`:
 
 ```python
 result = process([1, 2, 3])
@@ -67,7 +67,7 @@ print(result.was_cached)  # False (first computation)
 
 ## PipelineThunk: The Computation Record
 
-Each `OutputThunk` links to a `PipelineThunk` that records the invocation:
+Each `ThunkOutput` links to a `PipelineThunk` that records the invocation:
 
 ```python
 pt = result.pipeline_thunk
@@ -88,7 +88,7 @@ cache_key = pt.compute_cache_key()
 When a function returns multiple values:
 
 ```python
-@thunk(n_outputs=3)
+@thunk(unpack_outputs=True)
 def analyze(data):
     return min(data), max(data), sum(data) / len(data)
 
@@ -112,7 +112,7 @@ print(average.output_num)  # 2
 Thunks use content-based hashing for identity:
 
 ```python
-@thunk(n_outputs=1)
+@thunk
 def compute(x):
     return x * 2
 
@@ -133,7 +133,7 @@ This enables intelligent caching based on computation identity, not just input v
 If a thunked function raises an exception, it propagates normally:
 
 ```python
-@thunk(n_outputs=1)
+@thunk
 def risky(x):
     if x < 0:
         raise ValueError("Negative input")
@@ -143,14 +143,4 @@ try:
     result = risky(-1)
 except ValueError as e:
     print(e)  # "Negative input"
-```
-
-If `n_outputs` doesn't match the actual return:
-
-```python
-@thunk(n_outputs=2)
-def wrong():
-    return 42  # Returns 1 value, expected 2
-
-result = wrong()  # Raises ValueError
 ```

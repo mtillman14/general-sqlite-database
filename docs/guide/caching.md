@@ -4,7 +4,7 @@ SciDB automatically caches computation results. When you save a variable produce
 
 ## How Caching Works
 
-1. **Save populates cache** - When saving an `OutputThunk`, the cache is updated
+1. **Save populates cache** - When saving an `ThunkOutput`, the cache is updated
 2. **Cache key** - Hash of function + input hashes
 3. **Automatic lookup** - Thunks check the cache before executing
 
@@ -28,7 +28,7 @@ SciDB automatically caches computation results. When you save a variable produce
 Caching is fully automatic. Just save once, and future calls with the same inputs skip execution:
 
 ```python
-@thunk(n_outputs=1)
+@thunk
 def expensive_computation(data):
     print("Computing...")  # Only prints on first run
     return data * 2
@@ -44,6 +44,7 @@ print(result2.data)        # Same result, no recomputation
 ```
 
 **Requirements for automatic caching:**
+
 - Database must be configured (`configure_database(...)`)
 - Variable class must be registered (happens on first `save()` or `load()`)
 
@@ -52,7 +53,7 @@ print(result2.data)        # Same result, no recomputation
 Multi-output functions are also cached automatically. All outputs must be saved before caching takes effect:
 
 ```python
-@thunk(n_outputs=2)
+@thunk(unpack_outputs=True)
 def split_data(data):
     print("Splitting...")  # Only prints on first run
     return data[:len(data)//2], data[len(data)//2:]
@@ -87,7 +88,7 @@ For more control, use `check_cache()` explicitly:
 ```python
 from scidb import check_cache
 
-@thunk(n_outputs=1)
+@thunk
 def process(data):
     return data * 2
 
@@ -105,12 +106,12 @@ else:
 
 The cache key is a SHA-256 hash of:
 
-| Component | Source |
-|-----------|--------|
-| Function hash | Bytecode + constants |
-| Input record_ides | For saved variables |
-| Input content hashes | For unsaved values |
-| Output thunk hashes | For chained computations |
+| Component            | Source                   |
+| -------------------- | ------------------------ |
+| Function hash        | Bytecode + constants     |
+| Input record_ides    | For saved variables      |
+| Input content hashes | For unsaved values       |
+| Output thunk hashes  | For chained computations |
 
 This ensures cache hits only when:
 
@@ -132,6 +133,7 @@ for fn, count in stats['entries_by_function'].items():
 ## Cache Invalidation
 
 Cache invalidation is primarily useful for:
+
 - **Space management**: Removing old entries you no longer need
 - **Testing**: Forcing recomputation during development
 - **Cleanup**: Removing entries from functions that no longer exist
@@ -160,7 +162,7 @@ Remove entries for a specific version of a function:
 deleted = db.invalidate_cache(function_hash="abc123...")
 ```
 
-## OutputThunk Cache Properties
+## ThunkOutput Cache Properties
 
 ```python
 result = expensive_computation(data)
@@ -176,13 +178,13 @@ if cached:
 
 Cache misses happen when:
 
-| Scenario | Reason |
-|----------|--------|
-| First run | No previous result exists |
-| Different inputs | Input data changed |
-| Function modified | Bytecode hash changed |
-| Different constants | e.g., `x * 2` vs `x * 3` |
-| Cache invalidated | Manual invalidation |
+| Scenario            | Reason                    |
+| ------------------- | ------------------------- |
+| First run           | No previous result exists |
+| Different inputs    | Input data changed        |
+| Function modified   | Bytecode hash changed     |
+| Different constants | e.g., `x * 2` vs `x * 3`  |
+| Cache invalidated   | Manual invalidation       |
 
 ## Best Practices
 

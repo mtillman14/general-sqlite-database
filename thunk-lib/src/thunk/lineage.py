@@ -7,7 +7,7 @@ Example:
     from thunk import thunk
     from thunk.lineage import extract_lineage, get_raw_value
 
-    @thunk(n_outputs=1)
+    @thunk
     def process_signal(raw_data, calibration):
         return raw_data * calibration
 

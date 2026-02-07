@@ -283,7 +283,7 @@ class TestForEachExecution:
 
         InputVar.save(10, subject="S1", session="A")
 
-        @thunk(n_outputs=1)
+        @thunk()
         def double(x):
             return x * 2
 

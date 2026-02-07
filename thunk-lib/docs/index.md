@@ -20,7 +20,7 @@ Thunk solves all of these by wrapping your functions to automatically capture th
 ```python
 from thunk import thunk
 
-@thunk(n_outputs=1)
+@thunk
 def process(data, factor):
     return data * factor
 

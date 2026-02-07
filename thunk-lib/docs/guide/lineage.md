@@ -4,24 +4,24 @@ Thunk automatically tracks the computational lineage of every result, enabling f
 
 ## Understanding Lineage
 
-When you chain thunked functions, each `OutputThunk` maintains a reference to:
+When you chain thunked functions, each `ThunkOutput` maintains a reference to:
 
 1. The `PipelineThunk` that created it (which function, which inputs)
-2. Any `OutputThunk` inputs (creating a graph of computations)
+2. Any `ThunkOutput` inputs (creating a graph of computations)
 
 ```python
 from thunk import thunk
 
-@thunk(n_outputs=1)
+@thunk
 def load(path):
     return [1, 2, 3]  # Simulated data loading
 
-@thunk(n_outputs=1)
+@thunk
 def normalize(data):
     max_val = max(data)
     return [x / max_val for x in data]
 
-@thunk(n_outputs=1)
+@thunk
 def scale(data, factor):
     return [x * factor for x in data]
 
@@ -96,6 +96,7 @@ class LineageRecord:
 ### Input Descriptors
 
 Inputs from other thunks:
+
 ```python
 {
     "name": "arg_0",
@@ -107,6 +108,7 @@ Inputs from other thunks:
 ```
 
 Inputs from trackable variables (e.g., scidb):
+
 ```python
 {
     "name": "data",

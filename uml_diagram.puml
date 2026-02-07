@@ -48,7 +48,7 @@ package "scidb (Core Layer)" {
         +format_lineage(variable_class, version, **metadata): str
         +cache_computation(cache_key, function_name, ...): None
         +get_cached_computation(cache_key, variable_class): BaseVariable
-        +get_cached_by_key(cache_key, n_outputs): list[tuple]
+        +get_cached_by_key(cache_key): list[tuple]
         +invalidate_cache(function_name, function_hash): int
         +get_cache_stats(): dict
         +export_to_csv(variable_class, path, **metadata): int
@@ -84,12 +84,12 @@ package "thunk (Lazy Evaluation Layer)" {
 
     class Thunk {
         +fcn: Callable
-        +n_outputs: int
+        +unpack_output: bool
         +unwrap: bool
         +hash: str
         +pipeline_thunks: tuple[PipelineThunk, ...]
         __
-        +__init__(fcn, n_outputs, unwrap)
+        +__init__(fcn, unpack_output, unwrap)
         +__call__(*args, **kwargs): ThunkOutput | tuple
         +__eq__(other): bool
         +__hash__(): int
@@ -138,7 +138,7 @@ package "thunk (Lazy Evaluation Layer)" {
     }
 
     interface CacheBackend <<protocol>> {
-        +get_cached(cache_key: str, n_outputs: int): list[tuple] | None
+        +get_cached(cache_key: str): list[tuple] | None
     }
 }
 

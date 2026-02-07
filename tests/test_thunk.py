@@ -10,21 +10,28 @@ class TestThunkBasics:
     """Test basic Thunk functionality."""
 
     def test_thunk_decorator_creates_thunk(self):
-        @thunk(n_outputs=1)
+        @thunk()
         def my_func(x):
             return x * 2
 
         assert isinstance(my_func, Thunk)
 
-    def test_thunk_has_correct_n_outputs(self):
-        @thunk(n_outputs=3)
+    def test_thunk_has_correct_unpack_output(self):
+        @thunk(unpack_output=True)
         def multi_output(x):
             return x, x * 2, x * 3
 
-        assert multi_output.n_outputs == 3
+        assert multi_output.unpack_output is True
+
+    def test_thunk_unpack_output_false_by_default(self):
+        @thunk()
+        def single_output(x):
+            return x * 2
+
+        assert single_output.unpack_output is False
 
     def test_thunk_has_hash(self):
-        @thunk(n_outputs=1)
+        @thunk()
         def my_func(x):
             return x * 2
 
@@ -32,7 +39,7 @@ class TestThunkBasics:
         assert len(my_func.hash) == 64  # SHA-256 hex
 
     def test_same_function_same_hash(self):
-        @thunk(n_outputs=1)
+        @thunk()
         def func1(x):
             return x * 2
 
@@ -40,25 +47,25 @@ class TestThunkBasics:
         # But we can't easily test this without redefining the exact same function
 
     def test_different_functions_different_hash(self):
-        @thunk(n_outputs=1)
+        @thunk()
         def func1(x):
             return x * 2
 
-        @thunk(n_outputs=1)
+        @thunk()
         def func2(x):
             return x * 3
 
         assert func1.hash != func2.hash
 
     def test_thunk_preserves_function_name(self):
-        @thunk(n_outputs=1)
+        @thunk()
         def my_named_function(x):
             return x
 
         assert my_named_function.fcn.__name__ == "my_named_function"
 
     def test_thunk_repr(self):
-        @thunk(n_outputs=1)
+        @thunk()
         def my_func(x):
             return x
 
@@ -71,7 +78,7 @@ class TestThunkExecution:
     """Test Thunk execution and ThunkOutput creation."""
 
     def test_thunk_call_returns_thunk_output(self):
-        @thunk(n_outputs=1)
+        @thunk()
         def double(x):
             return x * 2
 
@@ -79,7 +86,7 @@ class TestThunkExecution:
         assert isinstance(result, ThunkOutput)
 
     def test_thunk_output_has_data(self):
-        @thunk(n_outputs=1)
+        @thunk()
         def double(x):
             return x * 2
 
@@ -87,7 +94,7 @@ class TestThunkExecution:
         assert result.data == 10
 
     def test_thunk_output_is_complete(self):
-        @thunk(n_outputs=1)
+        @thunk()
         def double(x):
             return x * 2
 
@@ -95,7 +102,7 @@ class TestThunkExecution:
         assert result.is_complete is True
 
     def test_multi_output_returns_tuple(self):
-        @thunk(n_outputs=3)
+        @thunk(unpack_output=True)
         def multi(x):
             return x, x * 2, x * 3
 
@@ -105,7 +112,7 @@ class TestThunkExecution:
         assert all(isinstance(r, ThunkOutput) for r in result)
 
     def test_multi_output_data(self):
-        @thunk(n_outputs=3)
+        @thunk(unpack_output=True)
         def multi(x):
             return x, x * 2, x * 3
 
@@ -115,7 +122,7 @@ class TestThunkExecution:
         assert c.data == 15
 
     def test_thunk_with_kwargs(self):
-        @thunk(n_outputs=1)
+        @thunk()
         def add(a, b=10):
             return a + b
 
@@ -127,7 +134,7 @@ class TestPipelineThunk:
     """Test PipelineThunk functionality."""
 
     def test_pipeline_thunk_captures_inputs(self):
-        @thunk(n_outputs=1)
+        @thunk()
         def process(data, factor):
             return data * factor
 
@@ -140,7 +147,7 @@ class TestPipelineThunk:
         assert pt.inputs["arg_1"] == 2
 
     def test_pipeline_thunk_captures_kwargs(self):
-        @thunk(n_outputs=1)
+        @thunk()
         def process(data, factor=1):
             return data * factor
 
@@ -150,7 +157,7 @@ class TestPipelineThunk:
         assert pt.inputs["factor"] == 3
 
     def test_pipeline_thunk_has_hash(self):
-        @thunk(n_outputs=1)
+        @thunk()
         def process(data):
             return data * 2
 
@@ -159,7 +166,7 @@ class TestPipelineThunk:
         assert len(result.pipeline_thunk.hash) == 64
 
     def test_same_inputs_same_pipeline_hash(self):
-        @thunk(n_outputs=1)
+        @thunk()
         def process(data):
             return data * 2
 
@@ -170,7 +177,7 @@ class TestPipelineThunk:
         assert result1.pipeline_thunk is result2.pipeline_thunk
 
     def test_different_inputs_different_pipeline_hash(self):
-        @thunk(n_outputs=1)
+        @thunk()
         def process(data):
             return data * 2
 
@@ -185,7 +192,7 @@ class TestThunkOutput:
     """Test ThunkOutput functionality."""
 
     def test_thunk_output_has_pipeline_thunk_reference(self):
-        @thunk(n_outputs=1)
+        @thunk()
         def process(data):
             return data * 2
 
@@ -193,7 +200,7 @@ class TestThunkOutput:
         assert isinstance(result.pipeline_thunk, PipelineThunk)
 
     def test_thunk_output_output_num(self):
-        @thunk(n_outputs=3)
+        @thunk(unpack_output=True)
         def multi(x):
             return x, x * 2, x * 3
 
@@ -203,7 +210,7 @@ class TestThunkOutput:
         assert c.output_num == 2
 
     def test_thunk_output_hash(self):
-        @thunk(n_outputs=1)
+        @thunk()
         def process(data):
             return data * 2
 
@@ -212,7 +219,7 @@ class TestThunkOutput:
         assert len(result.hash) == 64
 
     def test_thunk_output_equality_by_hash(self):
-        @thunk(n_outputs=1)
+        @thunk()
         def process(data):
             return data * 2
 
@@ -224,7 +231,7 @@ class TestThunkOutput:
         assert result1.hash == result2.hash
 
     def test_thunk_output_equality_with_value(self):
-        @thunk(n_outputs=1)
+        @thunk()
         def process(data):
             return data * 2
 
@@ -232,7 +239,7 @@ class TestThunkOutput:
         assert result == 10  # Compares with value
 
     def test_thunk_output_str(self):
-        @thunk(n_outputs=1)
+        @thunk()
         def process(data):
             return data * 2
 
@@ -240,7 +247,7 @@ class TestThunkOutput:
         assert str(result) == "10"
 
     def test_thunk_output_repr(self):
-        @thunk(n_outputs=1)
+        @thunk()
         def my_func(data):
             return data * 2
 
@@ -254,11 +261,11 @@ class TestThunkChaining:
     """Test chaining multiple thunks together."""
 
     def test_chain_two_thunks(self):
-        @thunk(n_outputs=1)
+        @thunk()
         def double(x):
             return x * 2
 
-        @thunk(n_outputs=1)
+        @thunk()
         def add_one(x):
             return x + 1
 
@@ -268,11 +275,11 @@ class TestThunkChaining:
         assert result.data == 11
 
     def test_chain_preserves_lineage(self):
-        @thunk(n_outputs=1)
+        @thunk()
         def step1(x):
             return x * 2
 
-        @thunk(n_outputs=1)
+        @thunk()
         def step2(x):
             return x + 1
 
@@ -286,15 +293,15 @@ class TestThunkChaining:
         assert pt.inputs["arg_0"].data == 10
 
     def test_long_chain(self):
-        @thunk(n_outputs=1)
+        @thunk()
         def add(x, y):
             return x + y
 
-        @thunk(n_outputs=1)
+        @thunk()
         def multiply(x, y):
             return x * y
 
-        @thunk(n_outputs=1)
+        @thunk()
         def square(x):
             return x * x
 
@@ -309,7 +316,7 @@ class TestThunkWithNumpy:
     """Test thunks with numpy arrays."""
 
     def test_numpy_array_input(self):
-        @thunk(n_outputs=1)
+        @thunk()
         def normalize(arr):
             return arr / arr.max()
 
@@ -320,7 +327,7 @@ class TestThunkWithNumpy:
         np.testing.assert_array_almost_equal(result.data, expected)
 
     def test_numpy_multiple_array_inputs(self):
-        @thunk(n_outputs=1)
+        @thunk()
         def add_arrays(a, b):
             return a + b
 
@@ -331,11 +338,11 @@ class TestThunkWithNumpy:
         np.testing.assert_array_equal(result.data, np.array([5, 7, 9]))
 
     def test_numpy_chain(self):
-        @thunk(n_outputs=1)
+        @thunk()
         def double(arr):
             return arr * 2
 
-        @thunk(n_outputs=1)
+        @thunk()
         def sum_array(arr):
             return arr.sum()
 
@@ -349,16 +356,16 @@ class TestThunkWithNumpy:
 class TestThunkErrorHandling:
     """Test error handling in thunks."""
 
-    def test_wrong_number_of_outputs_raises(self):
-        @thunk(n_outputs=2)
+    def test_non_tuple_with_unpack_output_raises(self):
+        @thunk(unpack_output=True)
         def single_output(x):
-            return x * 2  # Returns 1 output, but declared 2
+            return x * 2  # Returns non-tuple, but unpack_output=True expects tuple
 
-        with pytest.raises(ValueError, match="returned 1 outputs, but 2 were expected"):
+        with pytest.raises(ValueError, match="unpack_output=True but did not return a tuple"):
             single_output(5)
 
     def test_exception_in_function_propagates(self):
-        @thunk(n_outputs=1)
+        @thunk()
         def raises_error(x):
             raise RuntimeError("Test error")
 
@@ -371,7 +378,7 @@ class TestThunkUnwrap:
 
     def test_unwrap_true_by_default(self):
         """unwrap should be True by default."""
-        @thunk(n_outputs=1)
+        @thunk()
         def my_func(x):
             return x * 2
 
@@ -379,7 +386,7 @@ class TestThunkUnwrap:
 
     def test_unwrap_false_explicit(self):
         """Can set unwrap=False explicitly."""
-        @thunk(n_outputs=1, unwrap=False)
+        @thunk(unwrap=False)
         def my_func(x):
             return x
 
@@ -387,11 +394,11 @@ class TestThunkUnwrap:
 
     def test_unwrap_true_passes_raw_data_from_thunk_output(self):
         """With unwrap=True, ThunkOutput input is unwrapped to .data."""
-        @thunk(n_outputs=1)
+        @thunk()
         def step1(x):
             return x * 2
 
-        @thunk(n_outputs=1)
+        @thunk()
         def step2(x):
             # x should be the raw data (10), not an ThunkOutput
             assert not isinstance(x, ThunkOutput)
@@ -404,11 +411,11 @@ class TestThunkUnwrap:
 
     def test_unwrap_false_passes_thunk_output(self):
         """With unwrap=False, ThunkOutput input is passed through."""
-        @thunk(n_outputs=1)
+        @thunk()
         def step1(x):
             return x * 2
 
-        @thunk(n_outputs=1, unwrap=False)
+        @thunk(unwrap=False)
         def step2(x):
             # x should be the ThunkOutput itself
             assert isinstance(x, ThunkOutput)
@@ -421,11 +428,11 @@ class TestThunkUnwrap:
 
     def test_unwrap_false_preserves_lineage_info(self):
         """With unwrap=False, can access lineage info from input."""
-        @thunk(n_outputs=1)
+        @thunk()
         def step1(x):
             return x * 2
 
-        @thunk(n_outputs=1, unwrap=False)
+        @thunk(unwrap=False)
         def debug_step(x):
             # Can access lineage info
             assert hasattr(x, 'pipeline_thunk')
@@ -442,7 +449,7 @@ class TestThunkUnwrap:
         scalar_class.save(42, db=db, key="test")
         loaded = scalar_class.load(db=db, key="test")
 
-        @thunk(n_outputs=1)
+        @thunk()
         def process(x):
             # x should be the raw data (42), not the BaseVariable
             assert not hasattr(x, 'record_id')
@@ -458,7 +465,7 @@ class TestThunkUnwrap:
         scalar_class.save(42, db=db, key="test")
         loaded = scalar_class.load(db=db, key="test")
 
-        @thunk(n_outputs=1, unwrap=False)
+        @thunk(unwrap=False)
         def debug_process(var):
             # var should be the BaseVariable itself
             assert hasattr(var, 'record_id')
@@ -475,7 +482,7 @@ class TestThunkUnwrap:
         scalar_class.save(100, db=db, subject=1, trial=2, experiment="test")
         loaded = scalar_class.load(db=db, subject=1, trial=2)
 
-        @thunk(n_outputs=1, unwrap=False)
+        @thunk(unwrap=False)
         def inspect_and_process(var):
             assert var.metadata['subject'] == 1
             assert var.metadata['trial'] == 2
@@ -490,13 +497,13 @@ class TestThunkUnwrap:
         scalar_class.save(10, db=db, key="var1")
         loaded = scalar_class.load(db=db, key="var1")
 
-        @thunk(n_outputs=1)
+        @thunk()
         def step1(x):
             return x * 2
 
         thunk_output = step1(5)
 
-        @thunk(n_outputs=1)
+        @thunk()
         def combine(a, b, c):
             # a is from ThunkOutput (10), b is from BaseVariable (10), c is plain (3)
             assert a == 10
@@ -512,13 +519,13 @@ class TestThunkUnwrap:
         scalar_class.save(10, db=db, key="var1")
         loaded = scalar_class.load(db=db, key="var1")
 
-        @thunk(n_outputs=1)
+        @thunk()
         def step1(x):
             return x * 2
 
         thunk_output = step1(5)
 
-        @thunk(n_outputs=1, unwrap=False)
+        @thunk(unwrap=False)
         def combine(a, b, c):
             # a is ThunkOutput, b is BaseVariable, c is plain int
             assert isinstance(a, ThunkOutput)
@@ -531,7 +538,7 @@ class TestThunkUnwrap:
 
     def test_unwrap_in_repr(self):
         """unwrap should appear in Thunk repr."""
-        @thunk(n_outputs=1, unwrap=False)
+        @thunk(unwrap=False)
         def my_func(x):
             return x
 
@@ -543,11 +550,11 @@ class TestThunkUnwrap:
         scalar_class.save(42, db=db, key="input_var")
         loaded = scalar_class.load(db=db, key="input_var")
 
-        @thunk(n_outputs=1)
+        @thunk()
         def process_unwrapped(x):
             return x * 2
 
-        @thunk(n_outputs=1, unwrap=False)
+        @thunk(unwrap=False)
         def process_wrapped(var):
             return var.data * 2
 

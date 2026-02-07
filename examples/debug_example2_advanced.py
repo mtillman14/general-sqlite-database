@@ -123,13 +123,13 @@ print(f"Database configured: {db_path}")
 
 # Wrap scipy's butter filter design function
 # This returns filter coefficients (2 arrays: b and a)
-butter_filter = Thunk(scipy_signal.butter, n_outputs=2)
+butter_filter = Thunk(scipy_signal.butter, unpack_output=True)
 
 # Wrap scipy's filtfilt (zero-phase filtering)
-filtfilt = Thunk(scipy_signal.filtfilt, n_outputs=1)
+filtfilt = Thunk(scipy_signal.filtfilt)
 
 # Wrap scipy's hilbert transform for envelope detection
-hilbert = Thunk(scipy_signal.hilbert, n_outputs=1)
+hilbert = Thunk(scipy_signal.hilbert)
 
 print("Wrapped external functions: butter, filtfilt, hilbert")
 
@@ -138,11 +138,11 @@ print("Wrapped external functions: butter, filtfilt, hilbert")
 # STEP 5: Define Multi-Output Thunk Functions
 # Documentation: See docs/guide/lineage.md section "Multi-Output Functions"
 #
-# Key concept: Set n_outputs > 1 for functions returning multiple values.
+# Key concept: Set unpack_output=True for functions returning multiple values.
 # Each output becomes a separate ThunkOutput with its own lineage.
 # -----------------------------------------------------------------------------
 
-@thunk(n_outputs=2)
+@thunk(unpack_output=True)
 def split_signal(signal: np.ndarray, split_point: int) -> tuple:
     """
     Split a signal into two parts.
@@ -153,7 +153,7 @@ def split_signal(signal: np.ndarray, split_point: int) -> tuple:
     return signal[:split_point], signal[split_point:]
 
 
-@thunk(n_outputs=3)
+@thunk(unpack_output=True)
 def analyze_segments(signal: np.ndarray) -> tuple:
     """
     Analyze signal in three segments: early, middle, late.
@@ -178,7 +178,7 @@ def analyze_segments(signal: np.ndarray) -> tuple:
 # STEP 6: Define Single-Output Processing Functions
 # -----------------------------------------------------------------------------
 
-@thunk(n_outputs=1)
+@thunk()
 def compute_envelope(analytic_signal: np.ndarray) -> np.ndarray:
     """
     Compute the envelope (magnitude) of an analytic signal.
@@ -188,7 +188,7 @@ def compute_envelope(analytic_signal: np.ndarray) -> np.ndarray:
     return np.abs(analytic_signal)
 
 
-@thunk(n_outputs=1)
+@thunk()
 def detect_peaks(signal: np.ndarray, threshold: float) -> dict:
     """
     Detect peaks above a threshold.
@@ -373,7 +373,7 @@ print(f"Right2.was_cached: {right2.was_cached}")
 print("\n--- Manual Cache Check Demo ---")
 
 # Create a thunk for analysis
-@thunk(n_outputs=1)
+@thunk()
 def expensive_analysis(signal: np.ndarray) -> dict:
     """Simulates an expensive computation"""
     import time

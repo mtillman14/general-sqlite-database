@@ -9,11 +9,11 @@ Wrap processing functions with `@thunk` to enable lineage tracking:
 ```python
 from scidb import thunk
 
-@thunk(n_outputs=1)
+@thunk
 def process_signal(signal: np.ndarray, factor: float) -> np.ndarray:
     return signal * factor
 
-# Returns OutputThunk, not raw array
+# Returns ThunkOutput, not raw array
 result = process_signal(data, 2.5)
 print(result.data)  # The actual array
 ```
@@ -21,7 +21,7 @@ print(result.data)  # The actual array
 ### Multiple Outputs
 
 ```python
-@thunk(n_outputs=2)
+@thunk(unpack_outputs=True)
 def split_data(data: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
     mid = len(data) // 2
     return data[:mid], data[mid:]
@@ -33,7 +33,7 @@ first_half, second_half = split_data(data)
 
 1. **Thunk wraps function** - Creates a `Thunk` object with function hash
 2. **Call creates PipelineThunk** - Captures all inputs
-3. **Execution returns OutputThunk** - Wraps result with lineage reference
+3. **Execution returns ThunkOutput** - Wraps result with lineage reference
 4. **Save extracts lineage** - Stores provenance in database
 
 ```
@@ -41,7 +41,7 @@ first_half, second_half = split_data(data)
     │
     ▼
 ┌─────────┐      ┌───────────────┐      ┌─────────────┐
-│  Thunk  │──────│ PipelineThunk │──────│ OutputThunk │
+│  Thunk  │──────│ PipelineThunk │──────│ ThunkOutput │
 │ (func)  │      │ (inputs)      │      │ (result)    │
 └─────────┘      └───────────────┘      └─────────────┘
     │                   │                      │
@@ -55,10 +55,10 @@ first_half, second_half = split_data(data)
 
 ## Automatic Lineage Capture
 
-When saving an `OutputThunk`, lineage is captured automatically:
+When saving an `ThunkOutput`, lineage is captured automatically:
 
 ```python
-@thunk(n_outputs=1)
+@thunk
 def normalize(arr):
     return (arr - arr.mean()) / arr.std()
 
@@ -111,6 +111,7 @@ print(db.format_lineage(FinalResult, subject=1))
 ```
 
 Output of `format_lineage()`:
+
 ```
 └── FinalResult (record_id: abc123...)
     ├── function: compute_stats [hash: def456...]
@@ -138,15 +139,15 @@ for d in derived:
 Lineage tracks through multiple processing steps:
 
 ```python
-@thunk(n_outputs=1)
+@thunk
 def step1(data):
     return data * 2
 
-@thunk(n_outputs=1)
+@thunk
 def step2(data):
     return data + 1
 
-@thunk(n_outputs=1)
+@thunk
 def step3(data):
     return data ** 2
 
@@ -199,9 +200,9 @@ from scidb import Thunk
 from scipy.signal import butter, filtfilt, welch
 from sklearn.preprocessing import StandardScaler
 
-thunked_butter = Thunk(butter, n_outputs=2)      # Returns (b, a)
-thunked_filtfilt = Thunk(filtfilt, n_outputs=1)
-thunked_welch = Thunk(welch, n_outputs=2)        # Returns (freqs, psd)
+thunked_butter = Thunk(butter)      # Returns (b, a)
+thunked_filtfilt = Thunk(filtfilt)
+thunked_welch = Thunk(welch)        # Returns (freqs, psd)
 ```
 
 ### Example: Signal Processing Pipeline
@@ -212,9 +213,9 @@ from scidb import Thunk, BaseVariable, configure_database
 import numpy as np
 
 # Wrap scipy functions
-thunked_butter = Thunk(butter, n_outputs=2)
-thunked_filtfilt = Thunk(filtfilt, n_outputs=1)
-thunked_welch = Thunk(welch, n_outputs=2)
+thunked_butter = Thunk(butter)
+thunked_filtfilt = Thunk(filtfilt)
+thunked_welch = Thunk(welch)
 
 # Define variable types
 class SignalData(BaseVariable):
@@ -262,8 +263,8 @@ from scidb import Thunk
 scaler = StandardScaler()
 pca = PCA(n_components=10)
 
-thunked_fit_transform = Thunk(scaler.fit_transform, n_outputs=1)
-thunked_pca_fit_transform = Thunk(pca.fit_transform, n_outputs=1)
+thunked_fit_transform = Thunk(scaler.fit_transform)
+thunked_pca_fit_transform = Thunk(pca.fit_transform)
 
 # Pipeline with lineage
 scaled = thunked_fit_transform(raw_features)
@@ -283,12 +284,12 @@ from scipy.signal import butter, filtfilt, welch, hilbert
 from scipy.fft import fft, ifft
 
 # Signal processing
-thunk_butter = Thunk(butter, n_outputs=2)
-thunk_filtfilt = Thunk(filtfilt, n_outputs=1)
-thunk_welch = Thunk(welch, n_outputs=2)
-thunk_hilbert = Thunk(hilbert, n_outputs=1)
-thunk_fft = Thunk(fft, n_outputs=1)
-thunk_ifft = Thunk(ifft, n_outputs=1)
+thunk_butter = Thunk(butter)
+thunk_filtfilt = Thunk(filtfilt)
+thunk_welch = Thunk(welch)
+thunk_hilbert = Thunk(hilbert)
+thunk_fft = Thunk(fft)
+thunk_ifft = Thunk(ifft)
 ```
 
 ```python
@@ -305,7 +306,7 @@ When pipelines are split across separate files/scripts, lineage is still tracked
 
 ```python
 # step1.py
-@thunk(n_outputs=1)
+@thunk
 def preprocess(data):
     return data * 2
 
@@ -317,7 +318,7 @@ Intermediate.save(result, db=db, subject=1, stage="preprocessed")
 # step2.py (separate execution)
 loaded = Intermediate.load(db=db, subject=1, stage="preprocessed")
 
-@thunk(n_outputs=1)
+@thunk
 def analyze(data):
     # Receives the raw numpy array (loaded.data)
     return data.mean()
@@ -333,10 +334,10 @@ The key: pass the `BaseVariable` instance, not `loaded.data`. The thunk automati
 
 ## Debugging with `unwrap=False`
 
-By default, thunks unwrap `BaseVariable` and `OutputThunk` inputs to their raw data. Use `unwrap=False` to receive the wrapper objects for debugging:
+By default, thunks unwrap `BaseVariable` and `ThunkOutput` inputs to their raw data. Use `unwrap=False` to receive the wrapper objects for debugging:
 
 ```python
-@thunk(n_outputs=1, unwrap=False)
+@thunk
 def debug_process(var):
     # var is the BaseVariable, not raw data
     print(f"Input record_id: {var.record_id}")
@@ -349,6 +350,7 @@ result = debug_process(loaded)
 ```
 
 This is useful for:
+
 - Tracing data provenance during debugging
 - Logging metadata alongside processing
 - Building introspection tools
@@ -361,20 +363,20 @@ Don't thunk functions called in loops that accumulate results:
 
 ```python
 # DON'T do this
-@thunk(n_outputs=1)
+@thunk
 def process_item(item):
     return item * 2
 
 results = []
 for item in items:
-    results.append(process_item(item))  # Returns OutputThunk
-pd.concat(results)  # Error: can't concat OutputThunks
+    results.append(process_item(item))  # Returns ThunkOutput
+pd.concat(results)  # Error: can't concat ThunkOutputs
 
 # DO this instead
 def process_item(item):  # No @thunk
     return item * 2
 
-@thunk(n_outputs=1)
+@thunk
 def process_all(items):
     return [process_item(item) for item in items]
 ```

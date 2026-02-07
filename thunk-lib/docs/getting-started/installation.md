@@ -55,7 +55,7 @@ from thunk import thunk, __version__
 
 print(f"Thunk version: {__version__}")
 
-@thunk(n_outputs=1)
+@thunk
 def test(x):
     return x * 2
 

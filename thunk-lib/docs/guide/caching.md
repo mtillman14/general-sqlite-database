@@ -45,16 +45,17 @@ Cache keys are computed from:
 
 1. **Function hash**: SHA-256 of bytecode + constants
 2. **Input lineage**: For each input:
-   - `OutputThunk`: Uses its lineage-based hash
+   - `ThunkOutput`: Uses its lineage-based hash
    - Trackable variable: Uses lineage_hash if available
    - Raw value: Uses content hash
 
 This means:
+
 - Same function + same inputs = same cache key
 - Same content but different computation = different cache key
 
 ```python
-@thunk(n_outputs=1)
+@thunk
 def process(x):
     return x * 2
 
@@ -91,7 +92,7 @@ class SimpleCache:
 cache = SimpleCache()
 configure_cache(cache)
 
-@thunk(n_outputs=1)
+@thunk
 def expensive(x):
     print("Computing...")
     return x ** 2
@@ -137,7 +138,7 @@ from thunk import thunk
 # This automatically configures thunk's cache
 db = configure_database("experiment.db")
 
-@thunk(n_outputs=1)
+@thunk
 def process(data):
     return data * 2
 

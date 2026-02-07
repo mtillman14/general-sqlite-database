@@ -4,7 +4,7 @@ This module re-exports the thunk library and provides scidb-specific integration
 The core thunk functionality is provided by the standalone `thunk` package.
 
 Example:
-    @thunk(n_outputs=1)
+    @thunk
     def process_signal(raw: np.ndarray, cal_factor: float) -> np.ndarray:
         return raw * cal_factor
 

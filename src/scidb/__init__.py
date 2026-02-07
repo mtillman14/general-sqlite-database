@@ -34,7 +34,7 @@ Example:
     loaded = RotationMatrix.load(subject=1, trial=1)
 
     # With lineage tracking
-    @thunk(n_outputs=1)
+    @thunk
     def process(data):
         return data * 2
 

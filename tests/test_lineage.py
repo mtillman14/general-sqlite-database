@@ -62,7 +62,7 @@ class TestGetRawValue:
     """Test get_raw_value function."""
 
     def test_get_raw_value_from_thunk_output(self):
-        @thunk(n_outputs=1)
+        @thunk()
         def double(x):
             return x * 2
 
@@ -77,7 +77,7 @@ class TestGetRawValue:
         assert get_raw_value([1, 2, 3]) == [1, 2, 3]
 
     def test_get_raw_value_numpy_array(self):
-        @thunk(n_outputs=1)
+        @thunk()
         def process(arr):
             return arr * 2
 
@@ -92,7 +92,7 @@ class TestExtractLineage:
     """Test extract_lineage function."""
 
     def test_extract_lineage_basic(self):
-        @thunk(n_outputs=1)
+        @thunk()
         def double(x):
             return x * 2
 
@@ -104,7 +104,7 @@ class TestExtractLineage:
         assert len(lineage.function_hash) == 64
 
     def test_extract_lineage_with_constant_input(self):
-        @thunk(n_outputs=1)
+        @thunk()
         def multiply(x, factor):
             return x * factor
 
@@ -117,11 +117,11 @@ class TestExtractLineage:
         assert len(lineage.inputs) == 0
 
     def test_extract_lineage_with_thunk_input(self):
-        @thunk(n_outputs=1)
+        @thunk()
         def step1(x):
             return x * 2
 
-        @thunk(n_outputs=1)
+        @thunk()
         def step2(x):
             return x + 1
 
@@ -136,7 +136,7 @@ class TestExtractLineage:
         assert lineage.inputs[0]["source_function"] == "step1"
 
     def test_extract_lineage_constant_has_hash(self):
-        @thunk(n_outputs=1)
+        @thunk()
         def process(data, factor):
             return data * factor
 
@@ -150,7 +150,7 @@ class TestExtractLineage:
             assert "value_type" in const
 
     def test_extract_lineage_with_numpy(self):
-        @thunk(n_outputs=1)
+        @thunk()
         def normalize(arr):
             return arr / arr.max()
 
@@ -174,7 +174,7 @@ class TestExtractLineageWithSavedVariables:
         scalar_class.save(42, db=db, subject=1)
         var = scalar_class.load(db=db, subject=1)
 
-        @thunk(n_outputs=1)
+        @thunk()
         def process(x):
             return x * 2
 
@@ -193,7 +193,7 @@ class TestGetLineageChain:
     """Test get_lineage_chain function."""
 
     def test_single_step_chain(self):
-        @thunk(n_outputs=1)
+        @thunk()
         def process(x):
             return x * 2
 
@@ -204,15 +204,15 @@ class TestGetLineageChain:
         assert chain[0].function_name == "process"
 
     def test_multi_step_chain(self):
-        @thunk(n_outputs=1)
+        @thunk()
         def step1(x):
             return x * 2
 
-        @thunk(n_outputs=1)
+        @thunk()
         def step2(x):
             return x + 1
 
-        @thunk(n_outputs=1)
+        @thunk()
         def step3(x):
             return x ** 2
 
@@ -229,7 +229,7 @@ class TestGetLineageChain:
         assert chain[0].function_name == "step3"
 
     def test_chain_max_depth(self):
-        @thunk(n_outputs=1)
+        @thunk()
         def increment(x):
             return x + 1
 
@@ -250,7 +250,7 @@ class TestLineageIntegration:
         """Saving a thunk result should store lineage."""
         db.register(scalar_class)
 
-        @thunk(n_outputs=1)
+        @thunk()
         def double(x):
             return x * 2
 
@@ -284,7 +284,7 @@ class TestLineageIntegration:
         input_record_id = scalar_class.save(10, db=db, subject=1, role="input")
         input_var = scalar_class.load(db=db, subject=1, role="input")
 
-        @thunk(n_outputs=1)
+        @thunk()
         def process(x):
             return x * 2
 
@@ -309,11 +309,11 @@ class TestLineageIntegration:
         scalar_class.save(10, db=db, subject=1, role="input")
         input_var = scalar_class.load(db=db, subject=1, role="input")
 
-        @thunk(n_outputs=1)
+        @thunk()
         def double(x):
             return x * 2
 
-        @thunk(n_outputs=1)
+        @thunk()
         def triple(x):
             return x * 3
 
@@ -336,15 +336,15 @@ class TestLineageIntegration:
         """Test lineage through a multi-step pipeline."""
         db.register(scalar_class)
 
-        @thunk(n_outputs=1)
+        @thunk()
         def step1(x):
             return x * 2
 
-        @thunk(n_outputs=1)
+        @thunk()
         def step2(x):
             return x + 10
 
-        @thunk(n_outputs=1)
+        @thunk()
         def step3(x):
             return x ** 2
 
@@ -370,7 +370,7 @@ class TestGetFullLineage:
 
     def test_get_full_lineage_single_step(self, db, scalar_class):
         """Test full lineage for a single processing step."""
-        @thunk(n_outputs=1)
+        @thunk()
         def double(x):
             return x * 2
 
@@ -395,11 +395,11 @@ class TestGetFullLineage:
 
     def test_get_full_lineage_multi_step(self, db, scalar_class):
         """Test full lineage through a multi-step pipeline."""
-        @thunk(n_outputs=1)
+        @thunk()
         def step1(x):
             return x * 2
 
-        @thunk(n_outputs=1)
+        @thunk()
         def step2(x):
             return x + 10
 
@@ -433,7 +433,7 @@ class TestGetFullLineage:
 
     def test_get_full_lineage_with_constants(self, db, scalar_class):
         """Test that constants are captured in full lineage."""
-        @thunk(n_outputs=1)
+        @thunk()
         def multiply(x, factor):
             return x * factor
 
@@ -461,7 +461,7 @@ class TestGetFullLineage:
 
     def test_get_full_lineage_max_depth(self, db, scalar_class):
         """Test max_depth parameter prevents infinite recursion."""
-        @thunk(n_outputs=1)
+        @thunk()
         def increment(x):
             return x + 1
 
@@ -490,7 +490,7 @@ class TestGetFullLineage:
 
     def test_format_lineage_basic(self, db, scalar_class):
         """Test format_lineage produces readable output."""
-        @thunk(n_outputs=1)
+        @thunk()
         def process(x):
             return x * 2
 
@@ -521,11 +521,11 @@ class TestGetFullLineage:
 
     def test_format_lineage_multi_step(self, db, scalar_class):
         """Test format_lineage with multi-step pipeline."""
-        @thunk(n_outputs=1)
+        @thunk()
         def step1(x):
             return x * 2
 
-        @thunk(n_outputs=1)
+        @thunk()
         def step2(x):
             return x + 10
 
@@ -548,7 +548,7 @@ class TestGetFullLineage:
 
     def test_format_lineage_with_constants(self, db, scalar_class):
         """Test format_lineage shows constants."""
-        @thunk(n_outputs=1)
+        @thunk()
         def scale(x, factor):
             return x * factor
 
@@ -564,7 +564,7 @@ class TestGetFullLineage:
 
     def test_get_full_lineage_by_record_id(self, db, scalar_class):
         """Test get_full_lineage with explicit record_id."""
-        @thunk(n_outputs=1)
+        @thunk()
         def double(x):
             return x * 2
 

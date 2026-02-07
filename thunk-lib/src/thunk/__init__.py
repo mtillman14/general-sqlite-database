@@ -1,18 +1,17 @@
-"""Thunk: Lazy Evaluation and Lineage Tracking for Python.
+"""Thunk: Lineage Tracking for Python.
 
 A lightweight library for building data processing pipelines with automatic
 provenance tracking, inspired by Haskell's thunk concept.
 
 Features:
-- Lazy evaluation with automatic memoization
 - Full lineage tracking for reproducibility
-- Pluggable caching backends
+- Automatic input capture and output wrapping
 - Zero dependencies on heavy frameworks
 
 Example:
     from thunk import thunk
 
-    @thunk(n_outputs=1)
+    @thunk
     def process(data, factor):
         return data * factor
 
@@ -20,33 +19,19 @@ Example:
     print(result.data)  # The computed value
     print(result.pipeline_thunk.inputs)  # Captured inputs for provenance
 
-For multi-output functions:
+For multi-output functions, use unpack_output=True:
 
-    @thunk(n_outputs=2)
+    @thunk(unpack_output=True)
     def split(data):
         return data[:len(data)//2], data[len(data)//2:]
 
-    first_half, second_half = split(my_data)
-
-To enable caching:
-
-    from thunk import configure_cache
-
-    class MyCache:
-        def get_cached(self, cache_key, n_outputs):
-            # Return list of (data, id) tuples or None
-            return None
-
-    configure_cache(MyCache())
+    first_half, second_half = split(my_data)  # Each is a ThunkOutput
 """
 
 from .core import (
-    CacheBackend,
     ThunkOutput,
     PipelineThunk,
     Thunk,
-    configure_cache,
-    get_cache_backend,
     thunk,
 )
 from .hashing import canonical_hash
@@ -68,10 +53,6 @@ __all__ = [
     "ThunkOutput",
     # Decorator
     "thunk",
-    # Cache configuration
-    "CacheBackend",
-    "configure_cache",
-    "get_cache_backend",
     # Input classification
     "InputKind",
     "ClassifiedInput",

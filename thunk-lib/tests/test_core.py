@@ -6,8 +6,6 @@ from thunk import (
     ThunkOutput,
     PipelineThunk,
     Thunk,
-    configure_cache,
-    get_cache_backend,
     thunk,
 )
 
@@ -16,7 +14,7 @@ class TestThunkDecorator:
     """Test the @thunk decorator."""
 
     def test_basic_thunk(self):
-        @thunk(n_outputs=1)
+        @thunk
         def double(x):
             return x * 2
 
@@ -25,14 +23,14 @@ class TestThunkDecorator:
         assert result.data == 10
 
     def test_thunk_preserves_name(self):
-        @thunk(n_outputs=1)
+        @thunk
         def my_function(x):
             return x
 
         assert my_function.__name__ == "my_function"
 
     def test_multi_output(self):
-        @thunk(n_outputs=2)
+        @thunk(unpack_output=True)
         def split(x):
             return x, x * 2
 
@@ -42,8 +40,8 @@ class TestThunkDecorator:
         assert a.output_num == 0
         assert b.output_num == 1
 
-    def test_wrong_output_count_raises(self):
-        @thunk(n_outputs=2)
+    def test_non_tuple_with_unpack_raises(self):
+        @thunk(unpack_output=True)
         def wrong():
             return 42
 
@@ -55,7 +53,7 @@ class TestThunkOutput:
     """Test ThunkOutput behavior."""
 
     def test_hash_deterministic(self):
-        @thunk(n_outputs=1)
+        @thunk
         def process(x):
             return x * 2
 
@@ -64,7 +62,7 @@ class TestThunkOutput:
         assert r1.hash == r2.hash
 
     def test_hash_different_for_different_inputs(self):
-        @thunk(n_outputs=1)
+        @thunk
         def process(x):
             return x * 2
 
@@ -73,7 +71,7 @@ class TestThunkOutput:
         assert r1.hash != r2.hash
 
     def test_str_shows_data(self):
-        @thunk(n_outputs=1)
+        @thunk
         def process(x):
             return x * 2
 
@@ -81,7 +79,7 @@ class TestThunkOutput:
         assert str(result) == "10"
 
     def test_equality_with_same_hash(self):
-        @thunk(n_outputs=1)
+        @thunk
         def process(x):
             return x * 2
 
@@ -90,7 +88,7 @@ class TestThunkOutput:
         assert r1 == r2
 
     def test_equality_with_raw_data(self):
-        @thunk(n_outputs=1)
+        @thunk
         def process(x):
             return x * 2
 
@@ -102,7 +100,7 @@ class TestPipelineThunk:
     """Test PipelineThunk behavior."""
 
     def test_captures_inputs(self):
-        @thunk(n_outputs=1)
+        @thunk
         def process(x, y):
             return x + y
 
@@ -111,7 +109,7 @@ class TestPipelineThunk:
         assert pt.inputs == {"arg_0": 5, "arg_1": 10}
 
     def test_captures_kwargs(self):
-        @thunk(n_outputs=1)
+        @thunk
         def process(x, factor=2):
             return x * factor
 
@@ -120,26 +118,26 @@ class TestPipelineThunk:
         assert "factor" in pt.inputs
         assert pt.inputs["factor"] == 3
 
-    def test_cache_key_deterministic(self):
-        @thunk(n_outputs=1)
+    def test_lineage_hash_deterministic(self):
+        @thunk
         def process(x):
             return x * 2
 
         r1 = process(5)
         r2 = process(5)
-        key1 = r1.pipeline_thunk.compute_cache_key()
-        key2 = r2.pipeline_thunk.compute_cache_key()
+        key1 = r1.pipeline_thunk.compute_lineage_hash()
+        key2 = r2.pipeline_thunk.compute_lineage_hash()
         assert key1 == key2
 
-    def test_cache_key_different_for_different_inputs(self):
-        @thunk(n_outputs=1)
+    def test_lineage_hash_different_for_different_inputs(self):
+        @thunk
         def process(x):
             return x * 2
 
         r1 = process(5)
         r2 = process(6)
-        key1 = r1.pipeline_thunk.compute_cache_key()
-        key2 = r2.pipeline_thunk.compute_cache_key()
+        key1 = r1.pipeline_thunk.compute_lineage_hash()
+        key2 = r2.pipeline_thunk.compute_lineage_hash()
         assert key1 != key2
 
 
@@ -147,11 +145,11 @@ class TestChaining:
     """Test chained thunk computations."""
 
     def test_basic_chain(self):
-        @thunk(n_outputs=1)
+        @thunk
         def add_one(x):
             return x + 1
 
-        @thunk(n_outputs=1)
+        @thunk
         def double(x):
             return x * 2
 
@@ -159,11 +157,11 @@ class TestChaining:
         assert result.data == 12  # (5 + 1) * 2
 
     def test_chain_captures_lineage(self):
-        @thunk(n_outputs=1)
+        @thunk
         def step1(x):
             return x + 1
 
-        @thunk(n_outputs=1)
+        @thunk
         def step2(x):
             return x * 2
 
@@ -176,13 +174,13 @@ class TestChaining:
         assert input_val.data == 6
 
     def test_unwrap_true_by_default(self):
-        @thunk(n_outputs=1)
+        @thunk
         def check_type(x):
             # With unwrap=True, x should be raw data
             assert not isinstance(x, ThunkOutput)
             return x * 2
 
-        @thunk(n_outputs=1)
+        @thunk
         def produce(x):
             return x + 1
 
@@ -190,11 +188,11 @@ class TestChaining:
         assert result.data == 12
 
     def test_unwrap_false(self):
-        @thunk(n_outputs=1)
+        @thunk
         def produce(x):
             return x + 1
 
-        @thunk(n_outputs=1, unwrap=False)
+        @thunk(unwrap=False)
         def check_type(x):
             # With unwrap=False, x should be ThunkOutput
             assert isinstance(x, ThunkOutput)
@@ -202,61 +200,3 @@ class TestChaining:
 
         result = check_type(produce(5))
         assert result.data == 12
-
-
-class TestCacheBackend:
-    """Test cache backend configuration."""
-
-    def setup_method(self):
-        # Clear cache before each test
-        configure_cache(None)
-
-    def teardown_method(self):
-        # Clear cache after each test
-        configure_cache(None)
-
-    def test_no_cache_by_default(self):
-        assert get_cache_backend() is None
-
-    def test_configure_cache(self):
-        class MyCache:
-            def get_cached(self, cache_key, n_outputs):
-                return None
-
-        cache = MyCache()
-        configure_cache(cache)
-        assert get_cache_backend() is cache
-
-    def test_cache_hit(self):
-        execution_count = [0]
-
-        @thunk(n_outputs=1)
-        def expensive(x):
-            execution_count[0] += 1
-            return x * 2
-
-        class SimpleCache:
-            def __init__(self):
-                self.store = {}
-
-            def get_cached(self, cache_key, n_outputs):
-                if cache_key in self.store:
-                    return self.store[cache_key]
-                return None
-
-        cache = SimpleCache()
-        configure_cache(cache)
-
-        # First call - executes
-        r1 = expensive(5)
-        assert execution_count[0] == 1
-        assert r1.was_cached is False
-
-        # Store in cache
-        cache.store[r1.pipeline_thunk.compute_cache_key()] = [(r1.data, "id1")]
-
-        # Second call - cache hit
-        r2 = expensive(5)
-        assert execution_count[0] == 1  # Not executed again
-        assert r2.was_cached is True
-        assert r2.cached_id == "id1"

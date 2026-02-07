@@ -132,12 +132,12 @@ db = get_database()
 
 ## Thunk System
 
-### `@thunk(n_outputs=1, unwrap=True)`
+### `@thunk(unpack_outputs=False, unwrap=True)`
 
 Decorator for lineage-tracked functions with automatic caching.
 
 ```python
-@thunk(n_outputs=1)
+@thunk
 def process(data: np.ndarray) -> np.ndarray:
     return data * 2
 
@@ -147,10 +147,10 @@ result.data  # The actual result
 
 **Parameters:**
 
-| Parameter   | Default | Description                                                                                                                          |
-| ----------- | ------- | ------------------------------------------------------------------------------------------------------------------------------------ |
-| `n_outputs` | `1`     | Number of outputs the function returns                                                                                               |
-| `unwrap`    | `True`  | If True, unwrap `BaseVariable` and `ThunkOutput` inputs to raw data. If False, pass wrapper objects directly (useful for debugging). |
+| Parameter        | Default | Description                                                                                                                          |
+| ---------------- | ------- | ------------------------------------------------------------------------------------------------------------------------------------ |
+| `unpack_outputs` | `False` | If True, split a returned tuple into its constituent elements.                                                                       |
+| `unwrap`         | `True`  | If True, unwrap `BaseVariable` and `ThunkOutput` inputs to raw data. If False, pass wrapper objects directly (useful for debugging). |
 
 **Automatic caching:**
 
@@ -167,7 +167,7 @@ result2.was_cached       # True
 For multi-output functions, all outputs must be saved before caching takes effect:
 
 ```python
-@thunk(n_outputs=2)
+@thunk(unpack_outputs=True)
 def split(data):
     return data[:5], data[5:]
 
@@ -188,7 +188,7 @@ Intermediate.save(result, db=db, subject=1)
 # step2.py
 loaded = Intermediate.load(db=db, subject=1)
 
-@thunk(n_outputs=1)
+@thunk
 def analyze(data):  # Receives raw data (loaded.data)
     return data.mean()
 
@@ -198,7 +198,7 @@ result = analyze(loaded)  # Pass the variable, lineage is captured
 **Debugging with unwrap=False:**
 
 ```python
-@thunk(n_outputs=1, unwrap=False)
+@thunk(unwrap=False)
 def debug_process(var):
     print(f"Input record_id: {var.record_id}")
     print(f"Input metadata: {var.metadata}")
@@ -213,12 +213,12 @@ Wrapper for a function with lineage tracking.
 
 **Attributes:**
 
-| Attribute   | Type       | Description              |
-| ----------- | ---------- | ------------------------ |
-| `fcn`       | `Callable` | The wrapped function     |
-| `n_outputs` | `int`      | Number of outputs        |
-| `unwrap`    | `bool`     | Whether to unwrap inputs |
-| `hash`      | `str`      | SHA-256 of bytecode      |
+| Attribute        | Type       | Description                        |
+| ---------------- | ---------- | ---------------------------------- |
+| `fcn`            | `Callable` | The wrapped function               |
+| `unpack_outputs` | `bool`     | Whether to unpack a returned tuple |
+| `unwrap`         | `bool`     | Whether to unwrap inputs           |
+| `hash`           | `str`      | SHA-256 of bytecode                |
 
 ---
 

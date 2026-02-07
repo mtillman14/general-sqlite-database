@@ -170,7 +170,7 @@ from scidb import configure_database, BaseVariable, thunk
 
 db = configure_database("experiment.db")  # lineage_mode="strict" by default
 
-@thunk(n_outputs=1)
+@thunk
 def process(data):
     return data * 2
 
@@ -188,7 +188,7 @@ from scidb import configure_database, BaseVariable, thunk
 
 db = configure_database("experiment.db", lineage_mode="ephemeral")
 
-@thunk(n_outputs=1)
+@thunk
 def process(data):
     return data * 2
 

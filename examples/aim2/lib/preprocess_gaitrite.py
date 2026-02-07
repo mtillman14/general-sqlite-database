@@ -16,7 +16,7 @@ def split_into_walks(raw_df: pd.DataFrame) -> list[pd.DataFrame]:
     return walks
 
 
-@thunk(n_outputs=3)
+@thunk(unpack_outputs=True)
 def preprocess_walk(walk_df: pd.DataFrame) -> tuple[list, list, list]:
     """
     Preprocess a single GaitRite walk.

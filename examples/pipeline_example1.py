@@ -58,7 +58,7 @@ def load_emg_data(intervention: str) -> pd.DataFrame:
     return df
 
 
-@thunk(n_outputs=1)
+@thunk()
 def load_emg_data_all_interventions(config: dict) -> pd.DataFrame:
     """Load EMG data for all interventions specified in the config."""
     interventions = config.get("interventions", [])
@@ -70,14 +70,14 @@ def load_emg_data_all_interventions(config: dict) -> pd.DataFrame:
     return df
 
 
-@thunk(n_outputs=1)
+@thunk()
 def filter_emg_data(df: pd.DataFrame) -> pd.DataFrame:
     """Filter EMG data."""
     # Placeholder for filtering logic
     return df
 
 
-@thunk(n_outputs=1)
+@thunk()
 def compute_max_emg(df: pd.DataFrame) -> pd.DataFrame:
     """Compute maximum EMG values."""
     max_values = df.max()
