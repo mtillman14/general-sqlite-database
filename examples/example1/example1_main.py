@@ -111,19 +111,19 @@ print(f"Loaded record_id: {loaded_reading.record_id}")
 #
 # Key concept: When you call a @thunk function:
 # - It executes the function
-# - Returns an OutputThunk wrapping the result
-# - OutputThunk.data gives you the actual computed value
-# - OutputThunk carries lineage info (what function + inputs produced it)
+# - Returns an ThunkOutput wrapping the result
+# - ThunkOutput.data gives you the actual computed value
+# - ThunkOutput carries lineage info (what function + inputs produced it)
 # -----------------------------------------------------------------------------
 
 # Load the raw data (as a BaseVariable with lineage tracking)
 raw = SensorReading.load(sensor="accelerometer", trial=1)
 
 # Step 1: Apply moving average filter
-# Set a breakpoint here to inspect the OutputThunk
+# Set a breakpoint here to inspect the ThunkOutput
 smoothed = apply_moving_average(raw, window_size=5)
 
-# smoothed is an OutputThunk, not a numpy array
+# smoothed is an ThunkOutput, not a numpy array
 # - smoothed.data: The actual numpy array result
 # - smoothed.pipeline_thunk: Info about the function call
 # - smoothed.was_cached: Whether this came from cache (False on first run)
@@ -133,7 +133,7 @@ print(f"Smoothed data shape: {smoothed.data.shape}")
 print(f"Was cached: {smoothed.was_cached}")
 
 # Step 2: Normalize the smoothed signal
-# Note: We pass the OutputThunk directly - @thunk auto-unwraps it
+# Note: We pass the ThunkOutput directly - @thunk auto-unwraps it
 normalized = normalize_signal(smoothed)
 
 print(f"Normalized data range: [{normalized.data.min():.3f}, {normalized.data.max():.3f}]")
@@ -148,7 +148,7 @@ print(f"Statistics: {stats.data}")
 # STEP 6: Save Results with Lineage
 # Documentation: See docs/guide/lineage.md section "Saving with Lineage"
 #
-# Key concept: When you save an OutputThunk result:
+# Key concept: When you save an ThunkOutput result:
 # - The data is stored in the variable's table
 # - The lineage (what function + inputs) is stored in _lineage table
 # - The computation is cached in _computation_cache table
@@ -165,7 +165,7 @@ processed_record_id = ProcessedSignal.save(normalized.data,
     processing="normalized"
 )
 
-# Save with lineage tracking (pass the OutputThunk)
+# Save with lineage tracking (pass the ThunkOutput)
 # This stores BOTH the data AND the computation that produced it
 processed_lineage_record_id = ProcessedSignal.save(normalized,
     sensor="accelerometer",

@@ -1,5 +1,5 @@
 from base_dag import DAG
-from ross_thunk.thunk import Thunk, OutputThunk
+from ross_thunk.thunk import Thunk, ThunkOutput
 from ross_thunk.constant import Constant
 
 def build_dag(thunks: tuple[Thunk]) -> DAG:
@@ -16,12 +16,12 @@ def build_dag(thunks: tuple[Thunk]) -> DAG:
         dag.add_node(pipeline_thunk)
 
         # Add edges based on outputs
-        for output_thunk in pipeline_thunk.outputs:
-            dag.add_edge(pipeline_thunk, output_thunk)
+        for thunk_output in pipeline_thunk.outputs:
+            dag.add_edge(pipeline_thunk, thunk_output)
 
         # Add edges based on inputs
         for input_value in pipeline_thunk.inputs.values():
-            if isinstance(input_value, OutputThunk):
+            if isinstance(input_value, ThunkOutput):
                 dag.add_edge(input_value, pipeline_thunk)
             else:
                 # If the input is a constant, wrap it in a Constant node

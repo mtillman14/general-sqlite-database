@@ -25,11 +25,10 @@ from thunk import (
     LineageRecord,
     extract_lineage,
     find_unsaved_variables,
-    get_lineage_chain,
     get_raw_value,
     get_upstream_lineage,
 )
-from thunk import OutputThunk
+from thunk import ThunkOutput
 
 if TYPE_CHECKING:
     from .database import DatabaseManager
@@ -40,7 +39,7 @@ def check_cache(
     pipeline_thunk: "PipelineThunk",
     variable_class: type,
     db: "DatabaseManager | None" = None,
-) -> "OutputThunk | None":
+) -> "ThunkOutput | None":
     """
     Check if a computation result is cached in the scidb database.
 
@@ -66,7 +65,7 @@ def check_cache(
         db: Database to check (uses global if not provided)
 
     Returns:
-        OutputThunk with cached value, or None if not cached
+        ThunkOutput with cached value, or None if not cached
     """
     if db is None:
         from .database import get_database
@@ -81,8 +80,8 @@ def check_cache(
     if cached_var is None:
         return None
 
-    # Create an OutputThunk representing the cached result
-    return OutputThunk(
+    # Create an ThunkOutput representing the cached result
+    return ThunkOutput(
         pipeline_thunk=pipeline_thunk,
         output_num=0,
         is_complete=True,
@@ -96,7 +95,6 @@ __all__ = [
     "LineageRecord",
     "extract_lineage",
     "find_unsaved_variables",
-    "get_lineage_chain",
     "get_raw_value",
     "get_upstream_lineage",
     "check_cache",

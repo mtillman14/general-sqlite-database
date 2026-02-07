@@ -16,7 +16,7 @@ pipeline_data = {
     'timestamp': datetime.now()
 }
 
-# Example OutputThunk data with complex value
+# Example ThunkOutput data with complex value
 output_data = {
     'id': str(uuid.uuid4()),
     'func_name': 'generate_output',
@@ -34,19 +34,19 @@ output_data = {
 
 # Write different types of thunks
 db.write_pipeline_thunk(pipeline_data)
-db.write_output_thunk(output_data)
+db.write_thunk_output(output_data)
 
 print("Reading thunks back...")
 
 # Read them back
 retrieved_pipeline = db.get_pipeline_thunk(pipeline_data['id'])
-retrieved_output = db.get_output_thunk(output_data['id'])
+retrieved_output = db.get_thunk_output(output_data['id'])
 
 print(f"Pipeline thunk: {retrieved_pipeline}")
 print(f"Output thunk: {retrieved_output}")
 
 print("\n=== Demonstrates Different Storage Strategies ===")
 print("PipelineThunk: Simple JSON storage, same across databases")
-print("OutputThunk: Complex value storage, different strategies per database")
+print("ThunkOutput: Complex value storage, different strategies per database")
 print("- SQLite: Separate columns for different value types")
 print("- PostgreSQL: Native JSONB for complex values")

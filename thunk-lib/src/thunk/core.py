@@ -8,7 +8,7 @@ Example:
     def process_signal(raw: np.ndarray, cal_factor: float) -> np.ndarray:
         return raw * cal_factor
 
-    result = process_signal(raw_data, 2.5)  # Returns OutputThunk
+    result = process_signal(raw_data, 2.5)  # Returns ThunkOutput
     print(result.data)  # The actual computed data
     print(result.pipeline_thunk.inputs)  # Captured inputs for lineage
 """
@@ -17,7 +17,7 @@ from functools import wraps
 from hashlib import sha256
 from typing import Any, Callable, Protocol, runtime_checkable
 
-from .hashing import canonical_hash
+from .inputs import classify_inputs, is_trackable_variable
 
 STRING_REPR_DELIMITER = "-"
 
@@ -108,7 +108,7 @@ class Thunk:
         Args:
             fcn: The function to wrap
             n_outputs: Number of output values the function returns
-            unwrap: If True (default), unwrap OutputThunk inputs to their raw
+            unwrap: If True (default), unwrap ThunkOutput inputs to their raw
                    data before calling the function. If False, pass the wrapper
                    objects directly (useful for debugging/inspection).
         """
@@ -138,7 +138,7 @@ class Thunk:
     def __hash__(self) -> int:
         return int(self.hash[:16], 16)
 
-    def __call__(self, *args, **kwargs) -> "OutputThunk | tuple[OutputThunk, ...]":
+    def __call__(self, *args, **kwargs) -> "ThunkOutput | tuple[ThunkOutput, ...]":
         """
         Create a PipelineThunk and execute or defer.
 
@@ -146,11 +146,11 @@ class Thunk:
         are cached, returns them without re-executing the function.
 
         Returns:
-            OutputThunk or tuple of OutputThunks wrapping the result(s)
+            ThunkOutput or tuple of ThunkOutputs wrapping the result(s)
         """
         pipeline_thunk = PipelineThunk(self, *args, **kwargs)
 
-        # Check for existing equivalent PipelineThunk
+        # Check for existing equivalent PipelineThunk in the tuple of PipelineThunks
         for existing in self.pipeline_thunks:
             if pipeline_thunk._matches(existing):
                 pipeline_thunk = existing
@@ -166,9 +166,9 @@ class Thunk:
                 cached = backend.get_cached(cache_key, self.n_outputs)
 
                 if cached is not None:
-                    # Build OutputThunks from cached results
+                    # Build ThunkOutputs from cached results
                     outputs = tuple(
-                        OutputThunk(
+                        ThunkOutput(
                             pipeline_thunk=pipeline_thunk,
                             output_num=i,
                             is_complete=True,
@@ -186,6 +186,7 @@ class Thunk:
         except Exception:
             pass  # No cache or error, execute normally
 
+        # Run the thunked function if the result is not cached.
         return pipeline_thunk(*args, **kwargs)
 
 
@@ -201,7 +202,7 @@ class PipelineThunk:
     Attributes:
         thunk: The parent Thunk that created this
         inputs: Dict mapping argument names to values
-        outputs: Tuple of OutputThunks after execution
+        outputs: Tuple of ThunkOutputs after execution
         unwrap: Whether to unwrap inputs before calling the function
     """
 
@@ -225,43 +226,12 @@ class PipelineThunk:
         # Capture keyword args
         self.inputs.update(kwargs)
 
-        self.outputs: tuple[OutputThunk, ...] = ()
+        self.outputs: tuple[ThunkOutput, ...] = ()
 
     @property
     def hash(self) -> str:
         """Dynamic hash based on thunk + inputs (lineage-based, metadata-agnostic)."""
-        # Create a stable hash of inputs based on lineage
-        input_parts = []
-        for name in sorted(self.inputs.keys()):
-            value = self.inputs[name]
-            if isinstance(value, OutputThunk):
-                # Freshly computed: use pipeline hash (already lineage-based)
-                input_parts.append((name, "output", value.hash))
-            elif self._is_trackable_variable(value):
-                # Variable with lineage info: use lineage_hash if available
-                lineage_hash = getattr(value, "_lineage_hash", None) or getattr(
-                    value, "lineage_hash", None
-                )
-                if lineage_hash is not None:
-                    input_parts.append((name, "lineage", lineage_hash))
-                else:
-                    # Raw data with no lineage: check if it wraps an OutputThunk
-                    inner_data = getattr(value, "data", value)
-                    if isinstance(inner_data, OutputThunk):
-                        # Unsaved variable wrapping OutputThunk - use the thunk's hash
-                        input_parts.append((name, "unsaved_thunk", value.__class__.__name__, inner_data.hash))
-                    else:
-                        # Raw data: use content + type
-                        content_hash = canonical_hash(inner_data)
-                        type_name = value.__class__.__name__
-                        input_parts.append((name, "raw", type_name, content_hash))
-            else:
-                # Literal value: use content hash
-                input_parts.append((name, "value", canonical_hash(value)))
-
-        input_str = str(input_parts)
-        combined = f"{self.thunk.hash}{STRING_REPR_DELIMITER}{input_str}"
-        return sha256(combined.encode()).hexdigest()
+        return self.compute_cache_key()
 
     def __hash__(self) -> int:
         return int(self.hash[:16], 16)
@@ -276,16 +246,16 @@ class PipelineThunk:
     def is_complete(self) -> bool:
         """True if all inputs are concrete values (not pending thunks)."""
         for value in self.inputs.values():
-            if isinstance(value, OutputThunk) and not value.is_complete:
+            if isinstance(value, ThunkOutput) and not value.is_complete:
                 return False
         return True
 
-    def __call__(self, *args, **kwargs) -> "OutputThunk | tuple[OutputThunk, ...]":
+    def __call__(self, *args, **kwargs) -> "ThunkOutput | tuple[ThunkOutput, ...]":
         """
-        Execute the function if complete, return OutputThunk(s).
+        Execute the function if complete, return ThunkOutput(s).
 
         Returns:
-            OutputThunk or tuple of OutputThunks wrapping the result(s)
+            ThunkOutput or tuple of ThunkOutputs wrapping the result(s)
         """
         result: tuple = tuple(None for _ in range(self.thunk.n_outputs))
 
@@ -318,9 +288,9 @@ class PipelineThunk:
                     f"but {self.thunk.n_outputs} were expected."
                 )
 
-        # Wrap outputs in OutputThunks
+        # Wrap outputs in ThunkOutputs
         outputs = tuple(
-            OutputThunk(self, i, self.is_complete, val) for i, val in enumerate(result)
+            ThunkOutput(self, i, self.is_complete, val) for i, val in enumerate(result)
         )
         self.outputs = outputs
 
@@ -328,37 +298,23 @@ class PipelineThunk:
             return outputs[0]
         return outputs
 
-    @staticmethod
-    def _is_trackable_variable(obj: Any) -> bool:
-        """Check if obj is a trackable variable with lineage support.
-
-        Looks for characteristic attributes of variables that support lineage
-        tracking (like scidb's BaseVariable).
-        """
-        return (
-            hasattr(obj, "data")
-            and hasattr(obj, "_record_id")
-            and hasattr(obj, "to_db")
-            and hasattr(obj, "from_db")
-        )
-
     def _deep_unwrap(self, value: Any) -> Any:
-        """Recursively unwrap OutputThunks and trackable variables to raw data.
+        """Recursively unwrap ThunkOutputs and trackable variables to raw data.
 
         Handles cases like:
-        - OutputThunk -> raw data
+        - ThunkOutput -> raw data
         - BaseVariable -> raw data
-        - BaseVariable wrapping OutputThunk -> raw data (recursive)
+        - BaseVariable wrapping ThunkOutput -> raw data (recursive)
         """
-        # Unwrap OutputThunk
-        if isinstance(value, OutputThunk):
+        # Unwrap ThunkOutput
+        if isinstance(value, ThunkOutput):
             return value.data
 
         # Unwrap trackable variable (e.g., BaseVariable)
-        if self._is_trackable_variable(value):
+        if is_trackable_variable(value):
             inner = getattr(value, "data", value)
-            # If the variable's data is itself an OutputThunk, unwrap that too
-            if isinstance(inner, OutputThunk):
+            # If the variable's data is itself an ThunkOutput, unwrap that too
+            if isinstance(inner, ThunkOutput):
                 return inner.data
             return inner
 
@@ -370,7 +326,7 @@ class PipelineThunk:
 
         The cache key is based on LINEAGE (how values were computed), not metadata:
         - Function hash (bytecode + constants)
-        - For OutputThunk inputs: use lineage-based hash
+        - For ThunkOutput inputs: use lineage-based hash
         - For trackable variable inputs: use lineage_hash if computed, else content+type
         - For raw values: use content hash
 
@@ -380,35 +336,9 @@ class PipelineThunk:
         Returns:
             SHA-256 hash suitable for cache lookup
         """
-        input_hashes = []
-        for name in sorted(self.inputs.keys()):
-            value = self.inputs[name]
-            if isinstance(value, OutputThunk):
-                # Freshly computed: use pipeline hash (already lineage-based)
-                input_hashes.append((name, "output", value.hash))
-            elif self._is_trackable_variable(value):
-                # Variable with lineage: use stored lineage_hash if available
-                lineage_hash = getattr(value, "_lineage_hash", None) or getattr(
-                    value, "lineage_hash", None
-                )
-                if lineage_hash is not None:
-                    input_hashes.append((name, "lineage", lineage_hash))
-                else:
-                    # Raw data with no lineage: check if it wraps an OutputThunk
-                    inner_data = getattr(value, "data", value)
-                    if isinstance(inner_data, OutputThunk):
-                        # Unsaved variable wrapping OutputThunk - use the thunk's hash
-                        input_hashes.append((name, "unsaved_thunk", value.__class__.__name__, inner_data.hash))
-                    else:
-                        # Raw data: use content + type
-                        content_hash = canonical_hash(inner_data)
-                        type_name = value.__class__.__name__
-                        input_hashes.append((name, "raw", type_name, content_hash))
-            else:
-                # Literal value: use content hash
-                input_hashes.append((name, "value", canonical_hash(value)))
-
-        cache_input = f"{self.thunk.hash}{STRING_REPR_DELIMITER}{input_hashes}"
+        classified = classify_inputs(self.inputs)
+        input_tuples = [c.to_cache_tuple() for c in classified]
+        cache_input = f"{self.thunk.hash}{STRING_REPR_DELIMITER}{input_tuples}"
         return sha256(cache_input.encode()).hexdigest()
 
     def _matches(self, other: "PipelineThunk") -> bool:
@@ -424,11 +354,11 @@ class PipelineThunk:
             self_val = self.inputs[key]
             other_val = other.inputs[key]
 
-            # Compare OutputThunks by hash
-            if isinstance(self_val, OutputThunk) and isinstance(other_val, OutputThunk):
+            # Compare ThunkOutputs by hash
+            if isinstance(self_val, ThunkOutput) and isinstance(other_val, ThunkOutput):
                 if self_val.hash != other_val.hash:
                     return False
-            elif isinstance(self_val, OutputThunk) or isinstance(other_val, OutputThunk):
+            elif isinstance(self_val, ThunkOutput) or isinstance(other_val, ThunkOutput):
                 return False
             else:
                 # Compare other values directly
@@ -453,7 +383,7 @@ class PipelineThunk:
         return True
 
 
-class OutputThunk:
+class ThunkOutput:
     """
     Wraps a function output with lineage information.
 
@@ -462,8 +392,8 @@ class OutputThunk:
     - Output index (for multi-output functions)
     - The actual computed data
 
-    This is the key to provenance: every OutputThunk knows its parent
-    PipelineThunk, which knows its inputs (possibly other OutputThunks).
+    This is the key to provenance: every ThunkOutput knows its parent
+    PipelineThunk, which knows its inputs (possibly other ThunkOutputs).
 
     Attributes:
         pipeline_thunk: The PipelineThunk that produced this output
@@ -485,7 +415,7 @@ class OutputThunk:
         cached_id: str | None = None,
     ):
         """
-        Initialize an OutputThunk.
+        Initialize an ThunkOutput.
 
         Args:
             pipeline_thunk: The PipelineThunk that produced this
@@ -520,15 +450,15 @@ class OutputThunk:
 
     def __repr__(self) -> str:
         fcn_name = self.pipeline_thunk.thunk.fcn.__name__
-        return f"OutputThunk(fn={fcn_name}, output={self.output_num}, complete={self.is_complete})"
+        return f"ThunkOutput(fn={fcn_name}, output={self.output_num}, complete={self.is_complete})"
 
     def __str__(self) -> str:
         """Show only the data when printed."""
         return str(self.data)
 
     def __eq__(self, other: object) -> bool:
-        """Compare by hash if OutputThunk, otherwise compare data."""
-        if isinstance(other, OutputThunk):
+        """Compare by hash if ThunkOutput, otherwise compare data."""
+        if isinstance(other, ThunkOutput):
             return self.hash == other.hash
         return self.data == other
 
@@ -550,7 +480,7 @@ def thunk(n_outputs: int = 1, unwrap: bool = True) -> Callable[[Callable], Thunk
         def process_signal(raw, calibration):
             return raw * calibration
 
-        result = process_signal(raw_data, cal_data)  # Returns OutputThunk
+        result = process_signal(raw_data, cal_data)  # Returns ThunkOutput
         print(result.data)  # The actual computed data
         print(result.pipeline_thunk.inputs)  # Captured inputs
 
@@ -564,7 +494,7 @@ def thunk(n_outputs: int = 1, unwrap: bool = True) -> Callable[[Callable], Thunk
 
     Args:
         n_outputs: Number of outputs the function returns (default 1)
-        unwrap: If True (default), unwrap OutputThunk and variable inputs
+        unwrap: If True (default), unwrap ThunkOutput and variable inputs
                to their raw data (.data). If False, pass the wrapper
                objects directly for inspection/debugging.
 

@@ -3,7 +3,7 @@
 import pytest
 
 from thunk import (
-    OutputThunk,
+    ThunkOutput,
     PipelineThunk,
     Thunk,
     configure_cache,
@@ -21,7 +21,7 @@ class TestThunkDecorator:
             return x * 2
 
         result = double(5)
-        assert isinstance(result, OutputThunk)
+        assert isinstance(result, ThunkOutput)
         assert result.data == 10
 
     def test_thunk_preserves_name(self):
@@ -51,8 +51,8 @@ class TestThunkDecorator:
             wrong()
 
 
-class TestOutputThunk:
-    """Test OutputThunk behavior."""
+class TestThunkOutput:
+    """Test ThunkOutput behavior."""
 
     def test_hash_deterministic(self):
         @thunk(n_outputs=1)
@@ -170,16 +170,16 @@ class TestChaining:
         result = step2(step1(5))
         pt = result.pipeline_thunk
 
-        # Input should be an OutputThunk
+        # Input should be an ThunkOutput
         input_val = pt.inputs["arg_0"]
-        assert isinstance(input_val, OutputThunk)
+        assert isinstance(input_val, ThunkOutput)
         assert input_val.data == 6
 
     def test_unwrap_true_by_default(self):
         @thunk(n_outputs=1)
         def check_type(x):
             # With unwrap=True, x should be raw data
-            assert not isinstance(x, OutputThunk)
+            assert not isinstance(x, ThunkOutput)
             return x * 2
 
         @thunk(n_outputs=1)
@@ -196,8 +196,8 @@ class TestChaining:
 
         @thunk(n_outputs=1, unwrap=False)
         def check_type(x):
-            # With unwrap=False, x should be OutputThunk
-            assert isinstance(x, OutputThunk)
+            # With unwrap=False, x should be ThunkOutput
+            assert isinstance(x, ThunkOutput)
             return x.data * 2
 
         result = check_type(produce(5))

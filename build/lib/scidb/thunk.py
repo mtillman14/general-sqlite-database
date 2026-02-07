@@ -8,7 +8,7 @@ Example:
     def process_signal(raw: np.ndarray, cal_factor: float) -> np.ndarray:
         return raw * cal_factor
 
-    result = process_signal(raw_data, 2.5)  # Returns OutputThunk
+    result = process_signal(raw_data, 2.5)  # Returns ThunkOutput
     print(result.data)  # The actual computed data
     print(result.pipeline_thunk.inputs)  # Captured inputs for lineage
 """
@@ -16,7 +16,7 @@ Example:
 # Re-export everything from the thunk library
 from thunk import (
     CacheBackend,
-    OutputThunk,
+    ThunkOutput,
     PipelineThunk,
     Thunk,
     configure_cache,
@@ -27,7 +27,7 @@ from thunk import (
 __all__ = [
     "Thunk",
     "PipelineThunk",
-    "OutputThunk",
+    "ThunkOutput",
     "thunk",
     "CacheBackend",
     "configure_cache",

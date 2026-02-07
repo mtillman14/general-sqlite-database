@@ -16,7 +16,7 @@ Example:
     def process(data, factor):
         return data * factor
 
-    result = process(input_data, 2.5)  # Returns OutputThunk
+    result = process(input_data, 2.5)  # Returns ThunkOutput
     print(result.data)  # The computed value
     print(result.pipeline_thunk.inputs)  # Captured inputs for provenance
 
@@ -42,7 +42,7 @@ To enable caching:
 
 from .core import (
     CacheBackend,
-    OutputThunk,
+    ThunkOutput,
     PipelineThunk,
     Thunk,
     configure_cache,
@@ -50,11 +50,11 @@ from .core import (
     thunk,
 )
 from .hashing import canonical_hash
+from .inputs import InputKind, ClassifiedInput, classify_input, is_trackable_variable
 from .lineage import (
     LineageRecord,
     extract_lineage,
     find_unsaved_variables,
-    get_lineage_chain,
     get_raw_value,
     get_upstream_lineage,
 )
@@ -65,18 +65,22 @@ __all__ = [
     # Core classes
     "Thunk",
     "PipelineThunk",
-    "OutputThunk",
+    "ThunkOutput",
     # Decorator
     "thunk",
     # Cache configuration
     "CacheBackend",
     "configure_cache",
     "get_cache_backend",
+    # Input classification
+    "InputKind",
+    "ClassifiedInput",
+    "classify_input",
+    "is_trackable_variable",
     # Lineage
     "LineageRecord",
     "extract_lineage",
     "find_unsaved_variables",
-    "get_lineage_chain",
     "get_raw_value",
     "get_upstream_lineage",
     # Hashing

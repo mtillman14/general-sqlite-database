@@ -139,7 +139,7 @@ print("Wrapped external functions: butter, filtfilt, hilbert")
 # Documentation: See docs/guide/lineage.md section "Multi-Output Functions"
 #
 # Key concept: Set n_outputs > 1 for functions returning multiple values.
-# Each output becomes a separate OutputThunk with its own lineage.
+# Each output becomes a separate ThunkOutput with its own lineage.
 # -----------------------------------------------------------------------------
 
 @thunk(n_outputs=2)
@@ -147,7 +147,7 @@ def split_signal(signal: np.ndarray, split_point: int) -> tuple:
     """
     Split a signal into two parts.
 
-    Returns two separate OutputThunks, each with independent lineage.
+    Returns two separate ThunkOutputs, each with independent lineage.
     Both must be saved for caching to work (docs/guide/caching.md).
     """
     return signal[:split_point], signal[split_point:]
@@ -261,7 +261,7 @@ print(f"Envelope shape: {envelope.data.shape}")
 # STEP 9: Save Results to Populate Cache
 # Documentation: See docs/guide/caching.md section "How Caching Works"
 #
-# Key concept: Saving an OutputThunk automatically populates the cache.
+# Key concept: Saving an ThunkOutput automatically populates the cache.
 # The cache key is computed from: function hash + input hashes.
 # -----------------------------------------------------------------------------
 

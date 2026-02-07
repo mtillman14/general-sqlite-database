@@ -15,14 +15,14 @@ class ThunkDatabase:
         """Write a PipelineThunk."""
         self.writer.write_thunk('pipeline', thunk_data)
     
-    def write_output_thunk(self, thunk_data: Dict[str, Any]) -> None:
-        """Write an OutputThunk."""
+    def write_thunk_output(self, thunk_data: Dict[str, Any]) -> None:
+        """Write an ThunkOutput."""
         self.writer.write_thunk('output', thunk_data)
     
     def get_pipeline_thunk(self, thunk_id: str) -> Optional[Dict[str, Any]]:
         """Get a PipelineThunk by ID."""
         return self.reader.get_thunk_by_id('pipeline', thunk_id)
     
-    def get_output_thunk(self, thunk_id: str) -> Optional[Dict[str, Any]]:
-        """Get an OutputThunk by ID."""
+    def get_thunk_output(self, thunk_id: str) -> Optional[Dict[str, Any]]:
+        """Get an ThunkOutput by ID."""
         return self.reader.get_thunk_by_id('output', thunk_id)

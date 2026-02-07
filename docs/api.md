@@ -22,28 +22,28 @@ class MyVariable(BaseVariable):
 
 **Instance Attributes:**
 
-| Attribute | Type | Description |
-|-----------|------|-------------|
-| `data` | `Any` | The native data |
-| `record_id` | `str \| None` | Version hash (after save/load) |
-| `metadata` | `dict \| None` | Metadata (after save/load) |
+| Attribute   | Type           | Description                    |
+| ----------- | -------------- | ------------------------------ |
+| `data`      | `Any`          | The native data                |
+| `record_id` | `str \| None`  | Version hash (after save/load) |
+| `metadata`  | `dict \| None` | Metadata (after save/load)     |
 
 **Class Methods:**
 
-| Method | Description |
-|--------|-------------|
-| `save(data, db=None, **metadata)` | Save data to database, returns record_id |
-| `load(db=None, version="latest", **metadata)` | Load single result (latest version at schema location) |
-| `load_all(db=None, as_df=False, include_record_id=False, **metadata)` | Load all matching as generator or DataFrame |
-| `list_versions(db=None, **metadata)` | List all versions at a schema location |
-| `save_from_dataframe(df, data_column, metadata_columns, db=None, **common_metadata)` | Save each row as separate record |
-| `table_name()` | Get SQLite table name |
+| Method                                                                               | Description                                            |
+| ------------------------------------------------------------------------------------ | ------------------------------------------------------ |
+| `save(data, db=None, **metadata)`                                                    | Save data to database, returns record_id               |
+| `load(db=None, version="latest", **metadata)`                                        | Load single result (latest version at schema location) |
+| `load_all(db=None, as_df=False, include_record_id=False, **metadata)`                | Load all matching as generator or DataFrame            |
+| `list_versions(db=None, **metadata)`                                                 | List all versions at a schema location                 |
+| `save_from_dataframe(df, data_column, metadata_columns, db=None, **common_metadata)` | Save each row as separate record                       |
+| `table_name()`                                                                       | Get SQLite table name                                  |
 
 **Instance Methods:**
 
-| Method | Description |
-|--------|-------------|
-| `to_csv(path)` | Export data to CSV file |
+| Method          | Description                     |
+| --------------- | ------------------------------- |
+| `to_csv(path)`  | Export data to CSV file         |
 | `get_preview()` | Get human-readable data summary |
 
 ---
@@ -61,34 +61,34 @@ db = DatabaseManager(
 
 **Constructor Parameters:**
 
-| Parameter | Type | Description |
-|-----------|------|-------------|
-| `db_path` | `str \| Path` | Path to SQLite database file |
-| `schema_keys` | `list[str]` | **Required.** Metadata keys that identify dataset location |
-| `lineage_mode` | `str` | `"strict"` (default) or `"ephemeral"` |
+| Parameter      | Type          | Description                                                |
+| -------------- | ------------- | ---------------------------------------------------------- |
+| `db_path`      | `str \| Path` | Path to SQLite database file                               |
+| `schema_keys`  | `list[str]`   | **Required.** Metadata keys that identify dataset location |
+| `lineage_mode` | `str`         | `"strict"` (default) or `"ephemeral"`                      |
 
 **Methods:**
 
-| Method | Description |
-|--------|-------------|
-| `register(variable_class)` | Register a variable type (optional, auto-registers on save/load) |
-| `save(variable, metadata, lineage=None)` | Save variable (internal) |
-| `load(variable_class, metadata, version="latest")` | Load single variable (latest at schema location) |
-| `load_all(variable_class, metadata)` | Generator yielding all matching variables |
-| `list_versions(variable_class, **metadata)` | List all versions at schema location |
-| `get_provenance(variable_class, version=None, **metadata)` | Get immediate lineage info |
-| `get_full_lineage(variable_class, version=None, max_depth=100, **metadata)` | Get complete lineage chain |
-| `format_lineage(variable_class, version=None, **metadata)` | Get print-friendly lineage |
-| `get_derived_from(variable_class, version=None, **metadata)` | Find derived variables |
-| `has_lineage(record_id)` | Check if lineage exists |
-| `export_to_csv(variable_class, path, **metadata)` | Export matching records to CSV |
-| `preview_data(variable_class, **metadata)` | Get formatted preview of records |
-| `get_cached_computation(cache_key, variable_class)` | Look up cached result by key and type |
-| `get_cached_by_key(cache_key)` | Look up cached result by key only (used for auto-caching) |
-| `cache_computation(...)` | Store computation in cache |
-| `invalidate_cache(function_name=None, function_hash=None)` | Clear cache entries |
-| `get_cache_stats()` | Get cache statistics |
-| `close()` | Close connection |
+| Method                                                                      | Description                                                      |
+| --------------------------------------------------------------------------- | ---------------------------------------------------------------- |
+| `register(variable_class)`                                                  | Register a variable type (optional, auto-registers on save/load) |
+| `save(variable, metadata, lineage=None)`                                    | Save variable (internal)                                         |
+| `load(variable_class, metadata, version="latest")`                          | Load single variable (latest at schema location)                 |
+| `load_all(variable_class, metadata)`                                        | Generator yielding all matching variables                        |
+| `list_versions(variable_class, **metadata)`                                 | List all versions at schema location                             |
+| `get_provenance(variable_class, version=None, **metadata)`                  | Get immediate lineage info                                       |
+| `get_full_lineage(variable_class, version=None, max_depth=100, **metadata)` | Get complete lineage chain                                       |
+| `format_lineage(variable_class, version=None, **metadata)`                  | Get print-friendly lineage                                       |
+| `get_derived_from(variable_class, version=None, **metadata)`                | Find derived variables                                           |
+| `has_lineage(record_id)`                                                    | Check if lineage exists                                          |
+| `export_to_csv(variable_class, path, **metadata)`                           | Export matching records to CSV                                   |
+| `preview_data(variable_class, **metadata)`                                  | Get formatted preview of records                                 |
+| `get_cached_computation(cache_key, variable_class)`                         | Look up cached result by key and type                            |
+| `get_cached_by_key(cache_key)`                                              | Look up cached result by key only (used for auto-caching)        |
+| `cache_computation(...)`                                                    | Store computation in cache                                       |
+| `invalidate_cache(function_name=None, function_hash=None)`                  | Clear cache entries                                              |
+| `get_cache_stats()`                                                         | Get cache statistics                                             |
+| `close()`                                                                   | Close connection                                                 |
 
 ---
 
@@ -107,11 +107,11 @@ db = configure_database(
 
 **Parameters:**
 
-| Parameter | Type | Description |
-|-----------|------|-------------|
-| `db_path` | `str \| Path` | Path to SQLite database file |
-| `schema_keys` | `list[str]` | **Required.** Metadata keys that identify dataset location |
-| `lineage_mode` | `str` | `"strict"` (default) or `"ephemeral"` |
+| Parameter      | Type          | Description                                                |
+| -------------- | ------------- | ---------------------------------------------------------- |
+| `db_path`      | `str \| Path` | Path to SQLite database file                               |
+| `schema_keys`  | `list[str]`   | **Required.** Metadata keys that identify dataset location |
+| `lineage_mode` | `str`         | `"strict"` (default) or `"ephemeral"`                      |
 
 **Returns:** `DatabaseManager`
 
@@ -141,16 +141,16 @@ Decorator for lineage-tracked functions with automatic caching.
 def process(data: np.ndarray) -> np.ndarray:
     return data * 2
 
-result = process(data)  # Returns OutputThunk
+result = process(data)  # Returns ThunkOutput
 result.data  # The actual result
 ```
 
 **Parameters:**
 
-| Parameter | Default | Description |
-|-----------|---------|-------------|
-| `n_outputs` | `1` | Number of outputs the function returns |
-| `unwrap` | `True` | If True, unwrap `BaseVariable` and `OutputThunk` inputs to raw data. If False, pass wrapper objects directly (useful for debugging). |
+| Parameter   | Default | Description                                                                                                                          |
+| ----------- | ------- | ------------------------------------------------------------------------------------------------------------------------------------ |
+| `n_outputs` | `1`     | Number of outputs the function returns                                                                                               |
+| `unwrap`    | `True`  | If True, unwrap `BaseVariable` and `ThunkOutput` inputs to raw data. If False, pass wrapper objects directly (useful for debugging). |
 
 **Automatic caching:**
 
@@ -213,12 +213,12 @@ Wrapper for a function with lineage tracking.
 
 **Attributes:**
 
-| Attribute | Type | Description |
-|-----------|------|-------------|
-| `fcn` | `Callable` | The wrapped function |
-| `n_outputs` | `int` | Number of outputs |
-| `unwrap` | `bool` | Whether to unwrap inputs |
-| `hash` | `str` | SHA-256 of bytecode |
+| Attribute   | Type       | Description              |
+| ----------- | ---------- | ------------------------ |
+| `fcn`       | `Callable` | The wrapped function     |
+| `n_outputs` | `int`      | Number of outputs        |
+| `unwrap`    | `bool`     | Whether to unwrap inputs |
+| `hash`      | `str`      | SHA-256 of bytecode      |
 
 ---
 
@@ -228,44 +228,44 @@ A specific invocation with captured inputs.
 
 **Attributes:**
 
-| Attribute | Type | Description |
-|-----------|------|-------------|
-| `thunk` | `Thunk` | Parent thunk |
-| `inputs` | `dict` | Captured inputs |
-| `outputs` | `tuple[OutputThunk]` | Results after execution |
-| `hash` | `str` | Hash of thunk + inputs |
+| Attribute | Type                 | Description             |
+| --------- | -------------------- | ----------------------- |
+| `thunk`   | `Thunk`              | Parent thunk            |
+| `inputs`  | `dict`               | Captured inputs         |
+| `outputs` | `tuple[ThunkOutput]` | Results after execution |
+| `hash`    | `str`                | Hash of thunk + inputs  |
 
 **Methods:**
 
-| Method | Description |
-|--------|-------------|
+| Method                | Description               |
+| --------------------- | ------------------------- |
 | `compute_cache_key()` | Generate cache lookup key |
 
 ---
 
-### `OutputThunk`
+### `ThunkOutput`
 
 Wraps a function output with lineage.
 
 **Attributes:**
 
-| Attribute | Type | Description |
-|-----------|------|-------------|
-| `pipeline_thunk` | `PipelineThunk` | Producer |
-| `output_num` | `int` | Output index |
-| `data` | `Any` | Computed result |
-| `is_complete` | `bool` | Whether computed |
-| `was_cached` | `bool` | From cache |
-| `cached_id` | `str \| None` | Cached version hash |
-| `hash` | `str` | Lineage hash |
+| Attribute        | Type            | Description         |
+| ---------------- | --------------- | ------------------- |
+| `pipeline_thunk` | `PipelineThunk` | Producer            |
+| `output_num`     | `int`           | Output index        |
+| `data`           | `Any`           | Computed result     |
+| `is_complete`    | `bool`          | Whether computed    |
+| `was_cached`     | `bool`          | From cache          |
+| `cached_id`      | `str \| None`   | Cached version hash |
+| `hash`           | `str`           | Lineage hash        |
 
 ---
 
 ## Lineage Functions
 
-### `extract_lineage(output_thunk)`
+### `extract_lineage(thunk_output)`
 
-Extract lineage from an OutputThunk.
+Extract lineage from an ThunkOutput.
 
 ```python
 lineage = extract_lineage(result)
@@ -278,10 +278,10 @@ print(lineage.function_name)
 
 ### `get_raw_value(data)`
 
-Unwrap OutputThunk to raw value.
+Unwrap ThunkOutput to raw value.
 
 ```python
-raw = get_raw_value(output_thunk)  # Returns output_thunk.data
+raw = get_raw_value(thunk_output)  # Returns thunk_output.data
 raw = get_raw_value(plain_data)    # Returns plain_data unchanged
 ```
 
@@ -297,7 +297,7 @@ if cached:
     print(cached.data)
 ```
 
-**Returns:** `OutputThunk | None`
+**Returns:** `ThunkOutput | None`
 
 ---
 
@@ -307,24 +307,24 @@ Provenance data structure.
 
 **Attributes:**
 
-| Attribute | Type | Description |
-|-----------|------|-------------|
-| `function_name` | `str` | Function name |
-| `function_hash` | `str` | Function bytecode hash |
-| `inputs` | `list[dict]` | Input descriptors |
-| `constants` | `list[dict]` | Constant descriptors |
+| Attribute       | Type         | Description            |
+| --------------- | ------------ | ---------------------- |
+| `function_name` | `str`        | Function name          |
+| `function_hash` | `str`        | Function bytecode hash |
+| `inputs`        | `list[dict]` | Input descriptors      |
+| `constants`     | `list[dict]` | Constant descriptors   |
 
 ---
 
 ## Exceptions
 
-| Exception | Description |
-|-----------|-------------|
-| `SciDBError` | Base exception |
-| `NotRegisteredError` | Loading a type that was never saved |
-| `NotFoundError` | No matching data |
-| `DatabaseNotConfiguredError` | Global DB not configured |
-| `ReservedMetadataKeyError` | Using reserved metadata key |
+| Exception                    | Description                         |
+| ---------------------------- | ----------------------------------- |
+| `SciDBError`                 | Base exception                      |
+| `NotRegisteredError`         | Loading a type that was never saved |
+| `NotFoundError`              | No matching data                    |
+| `DatabaseNotConfiguredError` | Global DB not configured            |
+| `ReservedMetadataKeyError`   | Using reserved metadata key         |
 
 ---
 

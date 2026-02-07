@@ -7,7 +7,7 @@ from .SQLiteConnection import SQLiteConnection
 from .PostgreSQLConnection import PostgreSQLConnection
 from .ThunkStorageHandler import ThunkStorageHandler
 from .PipelineThunkStorageHandler import PipelineThunkStorageHandler
-from .OutputThunkStorageHandler import OutputThunkStorageHandler
+from .ThunkOutputStorageHandler import ThunkOutputStorageHandler
 from .ThunkStorageRegistry import ThunkStorageRegistry
 
 class ThunkWriter:
@@ -39,7 +39,7 @@ class ThunkWriter:
     def _initialize_default_handlers(self):
         """Register default storage handlers."""
         self.storage_registry.register_handler('pipeline', PipelineThunkStorageHandler())
-        self.storage_registry.register_handler('output', OutputThunkStorageHandler())
+        self.storage_registry.register_handler('output', ThunkOutputStorageHandler())
     
     def _initialize_databases(self):
         """Initialize all tables for all registered handlers."""

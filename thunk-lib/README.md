@@ -7,7 +7,7 @@ Thunk is a lightweight library inspired by Haskell's thunk concept, designed for
 ## Features
 
 - **Automatic Lineage Tracking**: Every computation captures its inputs and function, building a complete provenance graph
-- **Lazy Evaluation**: Results are wrapped in `OutputThunk` objects that carry lineage information
+- **Lazy Evaluation**: Results are wrapped in `ThunkOutput` objects that carry lineage information
 - **Pluggable Caching**: Configure custom cache backends to avoid redundant computations
 - **Zero Heavy Dependencies**: Core functionality works without numpy/pandas (optional integrations available)
 - **Type Safe**: Full type hints and PEP 561 compliance
@@ -37,7 +37,7 @@ from thunk import thunk
 def process(data, factor):
     return data * factor
 
-# Call returns an OutputThunk, not the raw result
+# Call returns an ThunkOutput, not the raw result
 result = process([1, 2, 3], 2)
 
 # Access the computed value
@@ -139,9 +139,9 @@ configure_cache(cache)
 Decorator to convert a function into a Thunk.
 
 - `n_outputs`: Number of return values (default: 1)
-- `unwrap`: If True, automatically unwrap `OutputThunk` inputs to their raw data
+- `unwrap`: If True, automatically unwrap `ThunkOutput` inputs to their raw data
 
-### `OutputThunk`
+### `ThunkOutput`
 
 Wrapper around computed values that carries lineage.
 
@@ -157,7 +157,7 @@ Represents a specific function invocation with captured inputs.
 
 - `.thunk`: The parent `Thunk` (function wrapper)
 - `.inputs`: Dict of captured input values
-- `.outputs`: Tuple of `OutputThunk` results
+- `.outputs`: Tuple of `ThunkOutput` results
 - `.compute_cache_key()`: Generate cache key based on lineage
 
 ### `LineageRecord`
@@ -171,9 +171,9 @@ Structured provenance information.
 
 ### Utility Functions
 
-- `extract_lineage(output_thunk)`: Get `LineageRecord` for an output
-- `get_lineage_chain(output_thunk)`: Get full lineage history
-- `get_raw_value(data)`: Unwrap `OutputThunk` or return as-is
+- `extract_lineage(thunk_output)`: Get `LineageRecord` for an output
+- `get_lineage_chain(thunk_output)`: Get full lineage history
+- `get_raw_value(data)`: Unwrap `ThunkOutput` or return as-is
 - `canonical_hash(obj)`: Deterministic hash for any Python object
 - `configure_cache(backend)`: Set global cache backend
 

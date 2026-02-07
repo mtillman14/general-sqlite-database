@@ -9,7 +9,7 @@ from scidb import (
     check_cache,
     thunk,
 )
-from scidb.thunk import OutputThunk, PipelineThunk
+from scidb.thunk import ThunkOutput, PipelineThunk
 
 
 class TestCacheTableCreation:
@@ -240,8 +240,8 @@ class TestCacheLookup:
 class TestCheckCacheHelper:
     """Test the check_cache helper function."""
 
-    def test_check_cache_returns_output_thunk_on_hit(self, db, scalar_class):
-        """check_cache should return OutputThunk when cached."""
+    def test_check_cache_returns_thunk_output_on_hit(self, db, scalar_class):
+        """check_cache should return ThunkOutput when cached."""
         db.register(scalar_class)
 
         @thunk(n_outputs=1)
@@ -257,7 +257,7 @@ class TestCheckCacheHelper:
         cached = check_cache(result2.pipeline_thunk, scalar_class, db=db)
 
         assert cached is not None
-        assert isinstance(cached, OutputThunk)
+        assert isinstance(cached, ThunkOutput)
         assert cached.data == 20
         assert cached.was_cached is True
 
@@ -275,7 +275,7 @@ class TestCheckCacheHelper:
         assert cached is None
 
     def test_check_cache_cached_id(self, db, scalar_class):
-        """Cached OutputThunk should have cached_id set."""
+        """Cached ThunkOutput should have cached_id set."""
         db.register(scalar_class)
 
         @thunk(n_outputs=1)
@@ -291,8 +291,8 @@ class TestCheckCacheHelper:
         assert cached.cached_id == original_record_id
 
 
-class TestOutputThunkCacheProperties:
-    """Test OutputThunk cache-related properties."""
+class TestThunkOutputCacheProperties:
+    """Test ThunkOutput cache-related properties."""
 
     def test_was_cached_false_by_default(self):
         @thunk(n_outputs=1)
@@ -311,7 +311,7 @@ class TestOutputThunkCacheProperties:
         assert result.cached_id is None
 
     def test_was_cached_true_when_from_cache(self, db, scalar_class):
-        """OutputThunk from cache should have was_cached=True."""
+        """ThunkOutput from cache should have was_cached=True."""
         db.register(scalar_class)
 
         @thunk(n_outputs=1)
@@ -740,7 +740,7 @@ class TestAutomaticCacheChecking:
         assert final2.data == 20
 
     def test_auto_cache_preserves_pipeline_thunk(self, configured_db, scalar_class):
-        """Cached OutputThunk should have valid pipeline_thunk."""
+        """Cached ThunkOutput should have valid pipeline_thunk."""
         configured_db.register(scalar_class)
 
         @thunk(n_outputs=1)

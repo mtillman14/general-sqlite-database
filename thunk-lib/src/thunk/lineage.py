@@ -1,7 +1,7 @@
 """Lineage extraction for provenance tracking.
 
 This module provides utilities for extracting lineage information from
-OutputThunks and converting it to a storable format.
+ThunkOutputs and converting it to a storable format.
 
 Example:
     from thunk import thunk
@@ -26,8 +26,8 @@ Example:
 from dataclasses import dataclass, field
 from typing import Any
 
-from .core import OutputThunk, PipelineThunk
-from .hashing import canonical_hash
+from .core import ThunkOutput
+from .inputs import classify_inputs, InputKind, is_trackable_variable
 
 
 @dataclass
@@ -67,9 +67,9 @@ class LineageRecord:
         )
 
 
-def extract_lineage(output_thunk: OutputThunk) -> LineageRecord:
+def extract_lineage(thunk_output: ThunkOutput) -> LineageRecord:
     """
-    Extract lineage information from an OutputThunk.
+    Extract lineage information from a ThunkOutput.
 
     Traverses the input graph to capture:
     - Function name and hash
@@ -77,92 +77,25 @@ def extract_lineage(output_thunk: OutputThunk) -> LineageRecord:
     - Constant values
 
     Args:
-        output_thunk: The OutputThunk to extract lineage from
+        thunk_output: The ThunkOutput to extract lineage from
 
     Returns:
         LineageRecord containing the provenance information
     """
-    pt = output_thunk.pipeline_thunk
+    pt = thunk_output.pipeline_thunk
 
+    # Classify all inputs using the shared classifier
+    classified = classify_inputs(pt.inputs)
+
+    # Separate into inputs (variables/thunks) and constants
     inputs = []
     constants = []
 
-    for name, value in pt.inputs.items():
-        if isinstance(value, OutputThunk):
-            # Input came from another thunk
-            inputs.append(
-                {
-                    "name": name,
-                    "source_type": "thunk",
-                    "source_function": value.pipeline_thunk.thunk.fcn.__name__,
-                    "source_hash": value.hash,
-                    "output_num": value.output_num,
-                }
-            )
-        elif _is_trackable_variable(value):
-            # Input is a trackable variable (e.g., scidb BaseVariable)
-            record_id = getattr(value, "_record_id", None) or getattr(value, "record_id", None)
-            metadata = getattr(value, "_metadata", None) or getattr(
-                value, "metadata", None
-            )
-
-            if record_id is not None:
-                # Saved variable - can be dereferenced later
-                inputs.append(
-                    {
-                        "name": name,
-                        "source_type": "variable",
-                        "type": type(value).__name__,
-                        "record_id": record_id,
-                        "metadata": metadata,
-                    }
-                )
-            else:
-                # Unsaved variable - still an input, but no record_id to reference
-                inner_data = getattr(value, "data", None)
-                if isinstance(inner_data, OutputThunk):
-                    # Unsaved variable wrapping an OutputThunk - can trace lineage
-                    inputs.append(
-                        {
-                            "name": name,
-                            "source_type": "unsaved_variable",
-                            "type": type(value).__name__,
-                            "inner_source": "thunk",
-                            "source_function": inner_data.pipeline_thunk.thunk.fcn.__name__,
-                            "source_hash": inner_data.hash,
-                            "output_num": inner_data.output_num,
-                        }
-                    )
-                else:
-                    # Unsaved variable with raw data - store content hash
-                    try:
-                        value_hash = canonical_hash(inner_data if inner_data is not None else value)
-                    except Exception:
-                        value_hash = "unhashable"
-
-                    inputs.append(
-                        {
-                            "name": name,
-                            "source_type": "unsaved_variable",
-                            "type": type(value).__name__,
-                            "content_hash": value_hash,
-                        }
-                    )
+    for c in classified:
+        if c.kind == InputKind.CONSTANT:
+            constants.append(c.to_lineage_dict())
         else:
-            # Input is a constant/literal
-            try:
-                value_hash = canonical_hash(value)
-            except Exception:
-                value_hash = "unhashable"
-
-            constants.append(
-                {
-                    "name": name,
-                    "value_hash": value_hash,
-                    "value_repr": repr(value)[:200],  # Truncate for storage
-                    "value_type": type(value).__name__,
-                }
-            )
+            inputs.append(c.to_lineage_dict())
 
     return LineageRecord(
         function_name=pt.thunk.fcn.__name__,
@@ -174,72 +107,35 @@ def extract_lineage(output_thunk: OutputThunk) -> LineageRecord:
 
 def get_raw_value(data: Any) -> Any:
     """
-    Unwrap OutputThunk to get raw value, or return as-is.
+    Unwrap ThunkOutput to get raw value, or return as-is.
 
     This is used when saving a variable whose data might be wrapped
-    in an OutputThunk from a thunked computation.
+    in a ThunkOutput from a thunked computation.
 
     Args:
-        data: Either an OutputThunk or a raw value
+        data: Either a ThunkOutput or a raw value
 
     Returns:
-        The raw data (unwrapped if OutputThunk, otherwise unchanged)
+        The raw data (unwrapped if ThunkOutput, otherwise unchanged)
     """
-    if isinstance(data, OutputThunk):
+    if isinstance(data, ThunkOutput):
         return data.data
     return data
 
 
-def get_lineage_chain(output_thunk: OutputThunk, max_depth: int = 100) -> list[LineageRecord]:
-    """
-    Extract the full lineage chain from an OutputThunk.
-
-    Recursively traverses the input graph to capture the complete
-    provenance history up to max_depth.
-
-    Args:
-        output_thunk: The OutputThunk to extract lineage from
-        max_depth: Maximum recursion depth to prevent infinite loops
-
-    Returns:
-        List of LineageRecords from output back to inputs
-    """
-    if max_depth <= 0:
-        return []
-
-    chain = [extract_lineage(output_thunk)]
-
-    # Recursively extract lineage from input OutputThunks
-    for name, value in output_thunk.pipeline_thunk.inputs.items():
-        if isinstance(value, OutputThunk):
-            chain.extend(get_lineage_chain(value, max_depth - 1))
-
-    return chain
-
-
-def _is_trackable_variable(obj: Any) -> bool:
-    """Check if obj is a trackable variable with lineage support."""
-    return (
-        hasattr(obj, "data")
-        and hasattr(obj, "_record_id")
-        and hasattr(obj, "to_db")
-        and hasattr(obj, "from_db")
-    )
-
-
 def find_unsaved_variables(
-    output_thunk: OutputThunk,
+    thunk_output: ThunkOutput,
     max_depth: int = 100,
 ) -> list[tuple[Any, str]]:
     """
-    Find all unsaved BaseVariables in the upstream chain of an OutputThunk.
+    Find all unsaved BaseVariables in the upstream chain of a ThunkOutput.
 
     Traverses the in-memory lineage chain to find any BaseVariable that
     hasn't been saved (has no record_id). This is used by strict lineage mode
     to validate that all intermediates are saved.
 
     Args:
-        output_thunk: The OutputThunk to start traversal from
+        thunk_output: The ThunkOutput to start traversal from
         max_depth: Maximum recursion depth to prevent infinite loops
 
     Returns:
@@ -260,7 +156,7 @@ def find_unsaved_variables(
             return
         visited.add(obj_id)
 
-        if isinstance(thunk_or_var, OutputThunk):
+        if isinstance(thunk_or_var, ThunkOutput):
             # Traverse into the pipeline thunk's inputs
             pt = thunk_or_var.pipeline_thunk
             func_name = pt.thunk.fcn.__name__
@@ -268,34 +164,33 @@ def find_unsaved_variables(
                 input_path = f"{func_name}() -> {name}" if not path else f"{path} -> {func_name}() -> {name}"
                 traverse(value, input_path, depth - 1)
 
-        elif _is_trackable_variable(thunk_or_var):
+        elif is_trackable_variable(thunk_or_var):
             record_id = getattr(thunk_or_var, "_record_id", None) or getattr(thunk_or_var, "record_id", None)
             if record_id is None:
                 # Found an unsaved variable
                 unsaved.append((thunk_or_var, path))
 
-                # Check if it wraps an OutputThunk - if so, continue traversing
+                # Check if it wraps a ThunkOutput - if so, continue traversing
                 inner_data = getattr(thunk_or_var, "data", None)
-                if isinstance(inner_data, OutputThunk):
+                if isinstance(inner_data, ThunkOutput):
                     traverse(inner_data, path, depth - 1)
 
-    traverse(output_thunk, "", max_depth)
+    traverse(thunk_output, "", max_depth)
     return unsaved
 
 
 def get_upstream_lineage(
-    output_thunk: OutputThunk,
+    thunk_output: ThunkOutput,
     max_depth: int = 100,
 ) -> list[dict]:
     """
-    Get lineage information for all upstream computations, including through
-    unsaved variables.
+    Get lineage information for all upstream computations.
 
-    This traverses the full in-memory chain, extracting lineage even for
+    Traverses the full in-memory chain, extracting lineage even for
     unsaved intermediate variables (ephemeral mode).
 
     Args:
-        output_thunk: The OutputThunk to start from
+        thunk_output: The ThunkOutput to start from
         max_depth: Maximum recursion depth
 
     Returns:
@@ -304,7 +199,7 @@ def get_upstream_lineage(
     lineages = []
     visited = set()
 
-    def traverse(thunk: OutputThunk, depth: int) -> None:
+    def traverse(thunk: ThunkOutput, depth: int) -> None:
         if depth <= 0:
             return
 
@@ -317,15 +212,15 @@ def get_upstream_lineage(
         lineage = extract_lineage(thunk)
         lineages.append(lineage.to_dict())
 
-        # Recurse into input OutputThunks
+        # Recurse into input ThunkOutputs
         for name, value in thunk.pipeline_thunk.inputs.items():
-            if isinstance(value, OutputThunk):
+            if isinstance(value, ThunkOutput):
                 traverse(value, depth - 1)
-            elif _is_trackable_variable(value):
-                # Check if unsaved variable wraps an OutputThunk
+            elif is_trackable_variable(value):
+                # Check if unsaved variable wraps a ThunkOutput
                 inner = getattr(value, "data", None)
-                if isinstance(inner, OutputThunk):
+                if isinstance(inner, ThunkOutput):
                     traverse(inner, depth - 1)
 
-    traverse(output_thunk, max_depth)
+    traverse(thunk_output, max_depth)
     return lineages

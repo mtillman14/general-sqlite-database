@@ -90,7 +90,7 @@ package "thunk (Lazy Evaluation Layer)" {
         +pipeline_thunks: tuple[PipelineThunk, ...]
         __
         +__init__(fcn, n_outputs, unwrap)
-        +__call__(*args, **kwargs): OutputThunk | tuple
+        +__call__(*args, **kwargs): ThunkOutput | tuple
         +__eq__(other): bool
         +__hash__(): int
     }
@@ -98,11 +98,11 @@ package "thunk (Lazy Evaluation Layer)" {
     class PipelineThunk {
         +thunk: Thunk
         +inputs: dict[str, Any]
-        +outputs: tuple[OutputThunk, ...]
+        +outputs: tuple[ThunkOutput, ...]
         +unwrap: bool
         __
         +__init__(thunk, *args, **kwargs)
-        +__call__(*args, **kwargs): OutputThunk | tuple
+        +__call__(*args, **kwargs): ThunkOutput | tuple
         +hash: str <<property>>
         +compute_cache_key(): str
         +is_complete: bool <<property>>
@@ -111,7 +111,7 @@ package "thunk (Lazy Evaluation Layer)" {
         -_matches(other): bool
     }
 
-    class OutputThunk {
+    class ThunkOutput {
         +pipeline_thunk: PipelineThunk
         +output_num: int
         +is_complete: bool
@@ -174,12 +174,12 @@ DatabaseManager ..|> CacheBackend : implements
 
 ' Thunk system relationships
 Thunk "1" *-- "*" PipelineThunk : creates >
-PipelineThunk "1" *-- "1..*" OutputThunk : produces >
-OutputThunk "*" --> "1" PipelineThunk : references >
+PipelineThunk "1" *-- "1..*" ThunkOutput : produces >
+ThunkOutput "*" --> "1" PipelineThunk : references >
 
 ' Cross-layer relationships
-BaseVariable "1" o-- "0..1" OutputThunk : wraps >
-BaseVariable ..> LineageRecord : extracts from OutputThunk >
+BaseVariable "1" o-- "0..1" ThunkOutput : wraps >
+BaseVariable ..> LineageRecord : extracts from ThunkOutput >
 BaseVariable ..> DatabaseManager : uses for persistence >
 
 ' Utility dependencies

@@ -6,14 +6,14 @@ from .DatabaseConnection import DatabaseConnection
 from .SQLiteConnection import SQLiteConnection
 from .PostgreSQLConnection import PostgreSQLConnection
 
-class OutputThunkStorageHandler(ThunkStorageHandler):
-    """Storage handler for OutputThunk - complex value storage requirements."""
+class ThunkOutputStorageHandler(ThunkStorageHandler):
+    """Storage handler for ThunkOutput - complex value storage requirements."""
     
     def get_table_name(self) -> str:
-        return "output_thunks"
+        return "thunk_outputs"
     
     def get_create_table_sql(self, db_connection: DatabaseConnection) -> str:
-        """Create table SQL that varies significantly by database for OutputThunk."""
+        """Create table SQL that varies significantly by database for ThunkOutput."""
         if isinstance(db_connection, SQLiteConnection):
             # SQLite: Store complex values as separate columns
             return f"""
@@ -71,7 +71,7 @@ class OutputThunkStorageHandler(ThunkStorageHandler):
         return indexes
     
     def serialize_thunk_data(self, thunk_data: Dict[str, Any], db_connection: DatabaseConnection) -> Dict[str, Any]:
-        """Transform data for storage - OutputThunk has complex value handling."""
+        """Transform data for storage - ThunkOutput has complex value handling."""
         value = thunk_data.get('value')
         
         if isinstance(db_connection, SQLiteConnection):
@@ -173,7 +173,7 @@ class OutputThunkStorageHandler(ThunkStorageHandler):
             }
     
     def get_insert_sql(self, db_connection: DatabaseConnection) -> str:
-        """Get database-specific INSERT SQL for OutputThunk."""
+        """Get database-specific INSERT SQL for ThunkOutput."""
         table_name = self.get_table_name()
         placeholder = db_connection.get_parameter_placeholder()
         

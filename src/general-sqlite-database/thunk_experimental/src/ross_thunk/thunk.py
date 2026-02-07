@@ -105,13 +105,13 @@ class PipelineThunk(Thunk):
 
     def __call__(self, *args, as_thunk: bool = True, **kwargs) -> Any:
         """If complete (i.e. all inputs specified), run the thunked function with the provided arguments.
-        If not complete, return OutputThunk(s) representing the output(s) of the function."""
+        If not complete, return ThunkOutput(s) representing the output(s) of the function."""
         is_complete = self.is_complete
         result = tuple(None for _ in range(self.thunk.n_outputs))
         if is_complete:
             args_list = list(args)
             for arg_num in range(len(args_list)):
-                if isinstance(args_list[arg_num], OutputThunk):
+                if isinstance(args_list[arg_num], ThunkOutput):
                     args_list[arg_num] = args_list[arg_num].value
             result = self.thunk.fcn(*args_list, **kwargs)
             # Ensure result is a tuple of the correct length
@@ -126,7 +126,7 @@ class PipelineThunk(Thunk):
                     return result[0]
                 return result
             
-        outputs = tuple(OutputThunk(pipeline_thunk=self, output_num=output_num, is_complete=is_complete, value = res) for output_num, res in enumerate(result))
+        outputs = tuple(ThunkOutput(pipeline_thunk=self, output_num=output_num, is_complete=is_complete, value = res) for output_num, res in enumerate(result))
         self.outputs = outputs
         if self.thunk.n_outputs == 1:
             return outputs[0]
@@ -142,7 +142,7 @@ class PipelineThunk(Thunk):
     def is_complete(self) -> bool:
         """Check if any inputs are Thunks. If not, then the function is "complete" and ready to be evaluated."""
         for value in self.inputs.values():
-            if value is Thunk or (isinstance(value, OutputThunk) and not value.is_complete):
+            if value is Thunk or (isinstance(value, ThunkOutput) and not value.is_complete):
                 return False
         return True
     
@@ -188,7 +188,7 @@ class PipelineThunk(Thunk):
         return True    
     
 
-class OutputThunk(Thunk):
+class ThunkOutput(Thunk):
     """A Thunk subclass that represents the output value of a thunked function.
     This is useful for tracking the provenance of data in a pipeline.
     """
@@ -210,7 +210,7 @@ class OutputThunk(Thunk):
 
     
     def __repr__(self):
-        string_repr = "OutputThunk(source_fcn_name={source_thunk}, hash={hash}, value={value})"
+        string_repr = "ThunkOutput(source_fcn_name={source_thunk}, hash={hash}, value={value})"
         try:
                 return string_repr.format(
                     source_thunk=self.pipeline_thunk.thunk.fcn.__name__,
@@ -227,8 +227,8 @@ class OutputThunk(Thunk):
 
     def __eq__(self, other):
         """Data must come from the same source thunk and have the same value to be considered equal.
-        Otherwise, if compared to a non-OutputThunk, compare the contained value."""
-        if not isinstance(other, OutputThunk):
+        Otherwise, if compared to a non-ThunkOutput, compare the contained value."""
+        if not isinstance(other, ThunkOutput):
             return self.value == other
         return self.hash == other.hash
     

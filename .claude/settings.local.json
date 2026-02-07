@@ -4,7 +4,8 @@
       "Bash(mkdir:*)",
       "Bash(pip show:*)",
       "Bash(find:*)",
-      "Bash(tree:*)"
+      "Bash(tree:*)",
+      "Bash(wc:*)"
     ]
   }
 }

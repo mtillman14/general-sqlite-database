@@ -63,9 +63,9 @@ class TestPublicAPIExports:
         from scidb import PipelineThunk
         assert PipelineThunk is not None
 
-    def test_output_thunk_exported(self):
-        from scidb import OutputThunk
-        assert OutputThunk is not None
+    def test_thunk_output_exported(self):
+        from scidb import ThunkOutput
+        assert ThunkOutput is not None
 
     def test_lineage_record_exported(self):
         from scidb import LineageRecord
@@ -116,7 +116,7 @@ class TestAllExports:
         assert "thunk" in scidb.__all__
         assert "Thunk" in scidb.__all__
         assert "PipelineThunk" in scidb.__all__
-        assert "OutputThunk" in scidb.__all__
+        assert "ThunkOutput" in scidb.__all__
 
     def test_all_contains_lineage_exports(self):
         import scidb

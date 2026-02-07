@@ -83,9 +83,9 @@ class BaseVariable:
         if self.data is None:
             return None
         from .hashing import canonical_hash
-        from .thunk import OutputThunk
+        from .thunk import ThunkOutput
         data = self.data
-        if isinstance(data, OutputThunk):
+        if isinstance(data, ThunkOutput):
             from .lineage import get_raw_value
             data = get_raw_value(data)
         return canonical_hash(data)
@@ -157,13 +157,13 @@ class BaseVariable:
         """
         Save data to the database as this variable type.
 
-        Accepts OutputThunk (from thunked computation), an existing BaseVariable
+        Accepts ThunkOutput (from thunked computation), an existing BaseVariable
         instance, or raw data. Lineage is automatically extracted and stored
         when applicable, and computations are cached for future reuse.
 
         Args:
             data: The data to save. Can be:
-                - OutputThunk: result from a @thunk decorated function
+                - ThunkOutput: result from a @thunk decorated function
                 - BaseVariable: an existing variable instance
                 - Any other type: raw data (numpy array, etc.)
             db: Optional explicit database. If None, uses global database.
@@ -199,7 +199,7 @@ class BaseVariable:
         """
         from .database import get_database, get_user_id
         from .exceptions import ReservedMetadataKeyError, UnsavedIntermediateError
-        from .thunk import OutputThunk
+        from .thunk import ThunkOutput
         from .lineage import extract_lineage, find_unsaved_variables, get_raw_value
 
         # Validate metadata keys
@@ -214,15 +214,15 @@ class BaseVariable:
         # Normalize input: extract raw data and lineage info based on input type
         lineage = None
         lineage_hash = None
-        output_thunk = None
+        thunk_output = None
         raw_data = None
 
-        if isinstance(data, OutputThunk):
+        if isinstance(data, ThunkOutput):
             # Data from a thunk computation
-            output_thunk = data
+            thunk_output = data
 
             # Check for unsaved intermediates based on lineage mode
-            unsaved = find_unsaved_variables(output_thunk)
+            unsaved = find_unsaved_variables(thunk_output)
 
             if db.lineage_mode == "strict" and unsaved:
                 # Strict mode: raise error for unsaved intermediates
@@ -244,8 +244,8 @@ class BaseVariable:
                 user_id = get_user_id()
                 for var, path in unsaved:
                     inner_data = getattr(var, "data", None)
-                    if isinstance(inner_data, OutputThunk):
-                        # Generate ephemeral ID from the OutputThunk's hash
+                    if isinstance(inner_data, ThunkOutput):
+                        # Generate ephemeral ID from the ThunkOutput's hash
                         ephemeral_id = f"ephemeral:{inner_data.hash[:32]}"
                         var_type = type(var).__name__
 
@@ -260,9 +260,9 @@ class BaseVariable:
                             user_id=user_id,
                         )
 
-            lineage = extract_lineage(output_thunk)
-            lineage_hash = output_thunk.pipeline_thunk.compute_cache_key()
-            raw_data = get_raw_value(output_thunk)
+            lineage = extract_lineage(thunk_output)
+            lineage_hash = thunk_output.pipeline_thunk.compute_cache_key()
+            raw_data = get_raw_value(thunk_output)
 
         elif isinstance(data, BaseVariable):
             # Existing variable instance - extract its data and lineage
@@ -282,15 +282,15 @@ class BaseVariable:
         instance._metadata = metadata
 
         # Populate computation cache if this came from a thunk
-        if output_thunk is not None:
+        if thunk_output is not None:
             cache_key = lineage_hash
             db.cache_computation(
                 cache_key=cache_key,
-                function_name=output_thunk.pipeline_thunk.thunk.fcn.__name__,
-                function_hash=output_thunk.pipeline_thunk.thunk.hash,
+                function_name=thunk_output.pipeline_thunk.thunk.fcn.__name__,
+                function_hash=thunk_output.pipeline_thunk.thunk.hash,
                 output_type=cls.__name__,
                 output_record_id=record_id,
-                output_num=output_thunk.output_num,
+                output_num=thunk_output.output_num,
             )
 
         return record_id

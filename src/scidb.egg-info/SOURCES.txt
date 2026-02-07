@@ -15,7 +15,7 @@ src/general-sqlite-database/thunk_experimental/src/ross_thunk/constant.py
 src/general-sqlite-database/thunk_experimental/src/ross_thunk/data_level.py
 src/general-sqlite-database/thunk_experimental/src/ross_thunk/thunk.py
 src/general-sqlite-database/thunk_experimental/src/ross_thunk/thunk_persistence/DatabaseConnection.py
-src/general-sqlite-database/thunk_experimental/src/ross_thunk/thunk_persistence/OutputThunkStorageHandler.py
+src/general-sqlite-database/thunk_experimental/src/ross_thunk/thunk_persistence/ThunkOutputStorageHandler.py
 src/general-sqlite-database/thunk_experimental/src/ross_thunk/thunk_persistence/PipelineThunkStorageHandler.py
 src/general-sqlite-database/thunk_experimental/src/ross_thunk/thunk_persistence/PostgreSQLConnection.py
 src/general-sqlite-database/thunk_experimental/src/ross_thunk/thunk_persistence/SQLiteConnection.py

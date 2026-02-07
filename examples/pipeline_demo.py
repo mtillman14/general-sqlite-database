@@ -20,7 +20,7 @@ Phase 2 - Thunk System & Lineage:
 Phase 3 - Computation Caching:
   - Automatic cache population on save
   - check_cache() for cache lookup before execution
-  - was_cached property on OutputThunk
+  - was_cached property on ThunkOutput
   - Cache stats and invalidation
 
 Run this script and step through it line by line to see all features in action!
@@ -243,7 +243,7 @@ def main():
         print("\n[6] Processing temperature column with thunks...")
         print("    Running: extract_column -> normalize -> compute_stats")
 
-        # Each thunk call returns an OutputThunk with lineage info
+        # Each thunk call returns an ThunkOutput with lineage info
         temp_series = extract_column(loaded_raw.data, "temperature")
         print(f"    extract_column returned: {type(temp_series).__name__}")
 

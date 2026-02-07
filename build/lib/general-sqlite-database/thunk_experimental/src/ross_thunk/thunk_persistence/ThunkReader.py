@@ -7,7 +7,7 @@ from .SQLiteConnection import SQLiteConnection
 from .PostgreSQLConnection import PostgreSQLConnection
 from .ThunkStorageHandler import ThunkStorageHandler
 from .PipelineThunkStorageHandler import PipelineThunkStorageHandler
-from .OutputThunkStorageHandler import OutputThunkStorageHandler
+from .ThunkOutputStorageHandler import ThunkOutputStorageHandler
 from .ThunkStorageRegistry import ThunkStorageRegistry
 
 class ThunkReader:
@@ -37,7 +37,7 @@ class ThunkReader:
     def _initialize_default_handlers(self):
         """Register default storage handlers."""
         self.storage_registry.register_handler('pipeline', PipelineThunkStorageHandler())
-        self.storage_registry.register_handler('output', OutputThunkStorageHandler())
+        self.storage_registry.register_handler('output', ThunkOutputStorageHandler())
     
     def get_thunk_by_id(self, thunk_type: str, thunk_id: str) -> Optional[Dict[str, Any]]:
         """Get a thunk by ID using the appropriate storage handler."""

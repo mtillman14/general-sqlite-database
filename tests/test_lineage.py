@@ -5,7 +5,7 @@ import pandas as pd
 import pytest
 
 from scidb.lineage import LineageRecord, extract_lineage, get_lineage_chain, get_raw_value
-from scidb.thunk import OutputThunk, thunk
+from scidb.thunk import ThunkOutput, thunk
 
 
 class TestLineageRecord:
@@ -61,7 +61,7 @@ class TestLineageRecord:
 class TestGetRawValue:
     """Test get_raw_value function."""
 
-    def test_get_raw_value_from_output_thunk(self):
+    def test_get_raw_value_from_thunk_output(self):
         @thunk(n_outputs=1)
         def double(x):
             return x * 2
@@ -71,7 +71,7 @@ class TestGetRawValue:
         assert raw == 10
 
     def test_get_raw_value_passthrough(self):
-        # Non-OutputThunk values should pass through unchanged
+        # Non-ThunkOutput values should pass through unchanged
         assert get_raw_value(42) == 42
         assert get_raw_value("hello") == "hello"
         assert get_raw_value([1, 2, 3]) == [1, 2, 3]
@@ -130,7 +130,7 @@ class TestExtractLineage:
         lineage = extract_lineage(result)
 
         assert lineage.function_name == "step2"
-        # The input is an OutputThunk
+        # The input is an ThunkOutput
         assert len(lineage.inputs) == 1
         assert lineage.inputs[0]["source_type"] == "thunk"
         assert lineage.inputs[0]["source_function"] == "step1"

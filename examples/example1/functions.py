@@ -4,7 +4,7 @@
 # Key concept: @thunk wraps a function to:
 # - Capture the function's bytecode hash (for versioning)
 # - Track inputs when called (for lineage)
-# - Return an OutputThunk that carries lineage information
+# - Return an ThunkOutput that carries lineage information
 #
 # The n_outputs parameter tells thunk how many values the function returns.
 

@@ -110,7 +110,7 @@ class TestGetLineageChain:
 class TestGetRawValue:
     """Test get_raw_value function."""
 
-    def test_unwraps_output_thunk(self):
+    def test_unwraps_thunk_output(self):
         @thunk(n_outputs=1)
         def process(x):
             return x * 2

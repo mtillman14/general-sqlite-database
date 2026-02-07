@@ -38,7 +38,7 @@ Example:
     def process(data):
         return data * 2
 
-    result = process(loaded)  # Returns OutputThunk with lineage
+    result = process(loaded)  # Returns ThunkOutput with lineage
     RotationMatrix.save(result, subject=1, trial=1, stage="processed")
 
     # Query provenance
@@ -62,7 +62,7 @@ from .lineage import (
     get_raw_value,
 )
 from .paths import PathGenerator
-from .thunk import OutputThunk, PipelineThunk, Thunk, thunk
+from .thunk import ThunkOutput, PipelineThunk, Thunk, thunk
 from .variable import BaseVariable
 
 __version__ = "0.1.0"
@@ -81,7 +81,7 @@ __all__ = [
     "thunk",
     "Thunk",
     "PipelineThunk",
-    "OutputThunk",
+    "ThunkOutput",
     # Lineage & Caching
     "LineageRecord",
     "extract_lineage",
