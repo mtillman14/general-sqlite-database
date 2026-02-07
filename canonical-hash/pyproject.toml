@@ -3,9 +3,9 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [project]
-name = "thunk"
+name = "canonicalhash"
 version = "0.1.0"
-description = "Lazy evaluation and lineage tracking for Python data pipelines"
+description = "Deterministic hashing for arbitrary Python objects"
 readme = "README.md"
 license = "MIT"
 requires-python = ">=3.10"
@@ -13,13 +13,12 @@ authors = [
     { name = "SciDB Contributors" }
 ]
 keywords = [
-    "thunk",
-    "lazy-evaluation",
-    "lineage",
-    "provenance",
-    "pipeline",
-    "data-science",
+    "hash",
+    "deterministic",
+    "canonical",
+    "cache-key",
     "reproducibility",
+    "data-science",
 ]
 classifiers = [
     "Development Status :: 4 - Beta",
@@ -35,9 +34,7 @@ classifiers = [
     "Topic :: Software Development :: Libraries :: Python Modules",
     "Typing :: Typed",
 ]
-dependencies = [
-    "canonicalhash>=0.1.0",
-]
+dependencies = []
 
 [project.optional-dependencies]
 numpy = ["numpy>=1.20"]
@@ -49,16 +46,10 @@ dev = [
     "mypy>=1.0",
     "ruff>=0.1.0",
 ]
-docs = [
-    "mkdocs>=1.5",
-    "mkdocs-material>=9.0",
-    "mkdocstrings[python]>=0.24",
-]
 
 [project.urls]
-Documentation = "https://github.com/example/thunk#readme"
-Repository = "https://github.com/example/thunk"
-Issues = "https://github.com/example/thunk/issues"
+Repository = "https://github.com/example/canonicalhash"
+Issues = "https://github.com/example/canonicalhash/issues"
 
 [tool.hatch.build.targets.sdist]
 include = [
@@ -66,7 +57,7 @@ include = [
 ]
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/thunk"]
+packages = ["src/canonicalhash"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
@@ -97,4 +88,4 @@ ignore = [
 ]
 
 [tool.ruff.lint.isort]
-known-first-party = ["thunk"]
+known-first-party = ["canonicalhash"]

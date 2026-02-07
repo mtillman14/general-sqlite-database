@@ -3,9 +3,9 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [project]
-name = "thunk"
+name = "pathgen"
 version = "0.1.0"
-description = "Lazy evaluation and lineage tracking for Python data pipelines"
+description = "Template-based path generation for data pipelines"
 readme = "README.md"
 license = "MIT"
 requires-python = ">=3.10"
@@ -13,13 +13,12 @@ authors = [
     { name = "SciDB Contributors" }
 ]
 keywords = [
-    "thunk",
-    "lazy-evaluation",
-    "lineage",
-    "provenance",
-    "pipeline",
-    "data-science",
-    "reproducibility",
+    "path",
+    "template",
+    "file-discovery",
+    "metadata",
+    "data-pipeline",
+    "batch-processing",
 ]
 classifiers = [
     "Development Status :: 4 - Beta",
@@ -35,30 +34,19 @@ classifiers = [
     "Topic :: Software Development :: Libraries :: Python Modules",
     "Typing :: Typed",
 ]
-dependencies = [
-    "canonicalhash>=0.1.0",
-]
+dependencies = []
 
 [project.optional-dependencies]
-numpy = ["numpy>=1.20"]
-pandas = ["pandas>=1.3"]
-all = ["numpy>=1.20", "pandas>=1.3"]
 dev = [
     "pytest>=7.0",
     "pytest-cov>=4.0",
     "mypy>=1.0",
     "ruff>=0.1.0",
 ]
-docs = [
-    "mkdocs>=1.5",
-    "mkdocs-material>=9.0",
-    "mkdocstrings[python]>=0.24",
-]
 
 [project.urls]
-Documentation = "https://github.com/example/thunk#readme"
-Repository = "https://github.com/example/thunk"
-Issues = "https://github.com/example/thunk/issues"
+Repository = "https://github.com/example/pathgen"
+Issues = "https://github.com/example/pathgen/issues"
 
 [tool.hatch.build.targets.sdist]
 include = [
@@ -66,7 +54,7 @@ include = [
 ]
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/thunk"]
+packages = ["src/pathgen"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
@@ -97,4 +85,4 @@ ignore = [
 ]
 
 [tool.ruff.lint.isort]
-known-first-party = ["thunk"]
+known-first-party = ["pathgen"]

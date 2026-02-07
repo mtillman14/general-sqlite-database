@@ -5,7 +5,7 @@ A lightweight database framework for scientific computing that provides:
 - Type-safe serialization of numpy arrays, DataFrames, and custom types
 - Automatic content-based versioning
 - Flexible metadata-based addressing
-- Portable single-file SQLite storage
+- Portable single-file DuckDB storage
 - Automatic lineage tracking via thunks
 
 Example:

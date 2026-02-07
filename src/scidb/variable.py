@@ -1,8 +1,6 @@
 """Base class for database-storable variables."""
 
-from abc import ABC, abstractmethod
 from typing import TYPE_CHECKING, Any, Self
-import re
 
 import pandas as pd
 
@@ -10,7 +8,7 @@ if TYPE_CHECKING:
     from .database import DatabaseManager
 
 
-class BaseVariable(ABC):
+class BaseVariable:
     """
     Abstract base class for all database-storable variable types.
 
@@ -102,24 +100,28 @@ class BaseVariable(ABC):
         """
         return self._lineage_hash
 
-    @abstractmethod
     def to_db(self) -> pd.DataFrame:
         """
         Convert native data to a DataFrame for storage.
 
-        The DataFrame will be serialized and stored as a BLOB.
-        This method defines the schema for this variable type.
+        Override this method to customize serialization. The default
+        implementation stores the data directly (works for scalars,
+        arrays, lists, dicts via type inference in the storage layer).
 
         Returns:
             pd.DataFrame: Tabular representation of the data
         """
-        pass
+        # Default: wrap data in a single-column DataFrame
+        # The storage layer handles type inference
+        return pd.DataFrame({"value": [self.data]})
 
     @classmethod
-    @abstractmethod
     def from_db(cls, df: pd.DataFrame) -> Any:
         """
         Convert a DataFrame back to the native data type.
+
+        Override this method to customize deserialization. The default
+        implementation extracts the 'value' column.
 
         Args:
             df: The DataFrame retrieved from storage
@@ -127,20 +129,22 @@ class BaseVariable(ABC):
         Returns:
             The native Python object
         """
-        pass
+        # Default: extract from single-column DataFrame
+        if len(df) == 1:
+            return df["value"].iloc[0]
+        return df["value"].tolist()
 
     @classmethod
     def table_name(cls) -> str:
         """
-        Get the SQLite table name for this variable type.
+        Get the table name for this variable type.
 
-        Converts CamelCase class name to snake_case.
+        Returns the exact class name (e.g., "StepLength", "EMGData").
 
         Returns:
-            str: Table name (e.g., "rotation_matrix", "emg_data")
+            str: Table name matching the class name
         """
-        # Convert CamelCase to snake_case
-        return re.sub(r"(?<!^)(?=[A-Z])", "_", cls.__name__).lower()
+        return cls.__name__
 
     @classmethod
     def save(
@@ -535,18 +539,9 @@ class BaseVariable(ABC):
         df = self.to_db()
         df.to_csv(path, index=False)
 
-    def get_preview(self) -> str:
-        """
-        Get a human-readable preview of this variable's data.
-
-        Returns:
-            A string summarizing the data (shape, sample values, stats)
-
-        Example:
-            var = TimeSeries.load(db=db, subject=1)
-            print(var.get_preview())
-        """
-        from .preview import generate_preview
-
-        df = self.to_db()
-        return generate_preview(df)
+    def __repr__(self) -> str:
+        """Return a string representation of this variable."""
+        type_name = type(self).__name__
+        if self._record_id:
+            return f"{type_name}(record_id={self._record_id[:12]}...)"
+        return f"{type_name}(data={type(self.data).__name__})"
