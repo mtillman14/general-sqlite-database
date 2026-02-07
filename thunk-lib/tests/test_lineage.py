@@ -5,7 +5,7 @@ import pytest
 from thunk import (
     LineageRecord,
     extract_lineage,
-    get_lineage_chain,
+    get_upstream_lineage,
     get_raw_value,
     thunk,
 )
@@ -58,8 +58,8 @@ class TestExtractLineage:
         assert lineage.inputs[0]["source_function"] == "step1"
 
 
-class TestGetLineageChain:
-    """Test get_lineage_chain function."""
+class TestGetUpstreamLineage:
+    """Test get_upstream_lineage function."""
 
     def test_single_step(self):
         @thunk
@@ -67,10 +67,10 @@ class TestGetLineageChain:
             return x * 2
 
         result = process(5)
-        chain = get_lineage_chain(result)
+        chain = get_upstream_lineage(result)
 
         assert len(chain) == 1
-        assert chain[0].function_name == "process"
+        assert chain[0]["function_name"] == "process"
 
     def test_multi_step_chain(self):
         @thunk
@@ -86,10 +86,10 @@ class TestGetLineageChain:
             return x - 1
 
         result = step3(step2(step1(5)))
-        chain = get_lineage_chain(result)
+        chain = get_upstream_lineage(result)
 
         assert len(chain) == 3
-        names = [r.function_name for r in chain]
+        names = [r["function_name"] for r in chain]
         assert names == ["step3", "step2", "step1"]
 
     def test_max_depth_limit(self):
@@ -103,7 +103,7 @@ class TestGetLineageChain:
             result = step(result)
 
         # With max_depth=3, should only get 3 records
-        chain = get_lineage_chain(result, max_depth=3)
+        chain = get_upstream_lineage(result, max_depth=3)
         assert len(chain) <= 3
 
 

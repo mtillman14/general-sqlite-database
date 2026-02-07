@@ -172,7 +172,7 @@ Structured provenance information.
 
 ### Input Classification
 
-- `InputKind`: Enum with values `VARIABLE`, `THUNK_OUTPUT`, `CONSTANT`
+- `InputKind`: Enum with values `THUNK_OUTPUT`, `SAVED_VARIABLE`, `UNSAVED_THUNK`, `RAW_DATA`, `CONSTANT`
 - `ClassifiedInput`: Dataclass holding classified input info
 - `classify_input(name, value)`: Classify a single input
 - `is_trackable_variable(obj)`: Check if an object is a trackable variable

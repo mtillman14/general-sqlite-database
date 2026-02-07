@@ -6,7 +6,8 @@
       "Bash(find:*)",
       "Bash(tree:*)",
       "Bash(wc:*)",
-      "Bash(ls:*)"
+      "Bash(ls:*)",
+      "Bash(done)"
     ]
   }
 }
