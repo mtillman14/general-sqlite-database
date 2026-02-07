@@ -10,15 +10,23 @@ pip install scidb
 
 ## 1. Define a Variable Type
 
-Every data type you want to store needs a `BaseVariable` subclass that defines how to serialize/deserialize it:
+For most data types (scalars, numpy arrays, lists, dicts), no serialization methods are needed — SciDuck handles them natively:
 
 ```python
 from scidb import BaseVariable
-import pandas as pd
 import numpy as np
 
 class SignalData(BaseVariable):
     schema_version = 1  # Increment when changing the schema
+```
+
+For custom multi-column serialization, override `to_db()` and `from_db()`:
+
+```python
+import pandas as pd
+
+class CustomSignal(BaseVariable):
+    schema_version = 1
 
     def to_db(self) -> pd.DataFrame:
         """Convert numpy array to DataFrame for storage."""
@@ -38,11 +46,12 @@ class SignalData(BaseVariable):
 ```python
 from scidb import configure_database
 
-# schema_keys defines which metadata keys identify dataset location
+# dataset_schema_keys defines which metadata keys identify dataset location
 # (vs. computational variants at that location)
 db = configure_database(
-    "my_experiment.db",
-    schema_keys=["subject", "trial", "condition"]
+    "my_experiment.duckdb",
+    dataset_schema_keys=["subject", "trial", "condition"],
+    pipeline_db_path="pipeline.db",
 )
 ```
 
@@ -86,18 +95,14 @@ def compute_power(signal: np.ndarray) -> float:
     return np.mean(signal ** 2)
 
 # Run pipeline - lineage tracked automatically
+# Pass the loaded variable (not .data) to preserve lineage
 raw = SignalData.load(subject=1, trial=1)
-filtered = bandpass_filter(raw.data, low=1.0, high=40.0)
+filtered = bandpass_filter(raw, low=1.0, high=40.0)
 power = compute_power(filtered)
 
 # Save result - lineage captured
 class PowerValue(BaseVariable):
     schema_version = 1
-    def to_db(self):
-        return pd.DataFrame({"power": [self.data]})
-    @classmethod
-    def from_db(cls, df):
-        return df["power"].iloc[0]
 
 PowerValue.save(power, subject=1, trial=1, stage="power")
 
@@ -132,10 +137,10 @@ When one variable class represents multiple data types, create subclasses:
 ```python
 # Create specialized types - each gets its own table
 class Temperature(SignalData):
-    pass  # Table: temperature
+    pass  # Table: Temperature
 
 class Humidity(SignalData):
-    pass  # Table: humidity
+    pass  # Table: Humidity
 
 # Data stored in separate tables (auto-registered on first save)
 Temperature.save(temp_array, sensor=1, day="monday")

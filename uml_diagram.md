@@ -5,7 +5,7 @@
 SciDB is a scientific data versioning framework with two main layers:
 
 - **Core Layer (scidb)**: Database management and variable persistence
-- **Thunk Layer**: Lazy evaluation and lineage tracking
+- **Thunk Layer**: Lineage tracking and computation caching
 
 ---
 
@@ -20,41 +20,41 @@ classDiagram
         <<abstract>>
         +data: Any
         +schema_version: int
-        -_vhash: str
+        -_record_id: str
         -_metadata: dict
         -_content_hash: str
         -_lineage_hash: str
         +to_db()* DataFrame
         +from_db(df)* Any
-        +save(db, **metadata) str
-        +load(db, version, **metadata) BaseVariable
-        +table_name() str
-        +get_preview() str
+        +save(data, index, **metadata)$ str
+        +load(version, loc, iloc, **metadata)$ BaseVariable
+        +table_name()$ str
     }
 
     class DatabaseManager {
-        +db_path: Path
+        +dataset_db_path: Path
         +lineage_mode: str
-        +connection: Connection
+        -_duck: SciDuck
+        -_pipeline_db: PipelineDB
         -_registered_types: dict
         +register(variable_class)
         +save(variable, metadata, lineage) str
+        +save_variable(variable_class, data, **metadata) str
         +load(variable_class, metadata, version) BaseVariable
         +list_versions(**metadata) list
         +get_provenance(version, **metadata) dict
-        +get_full_lineage(version, max_depth) dict
-        +cache_computation(cache_key, ...)
-        +get_cached_computation(cache_key) BaseVariable
-        +invalidate_cache(function_name) int
+        +find_by_lineage(pipeline_thunk) list
+        +has_lineage(record_id) bool
     }
 
     %% ===== THUNK LAYER =====
     class Thunk {
         +fcn: Callable
-        +unpack_outputs: bool
+        +unpack_output: bool
         +unwrap: bool
         +hash: str
         +pipeline_thunks: tuple
+        +query: Any$
         +__call__(*args, **kwargs) ThunkOutput
     }
 
@@ -65,7 +65,7 @@ classDiagram
         +unwrap: bool
         +hash: str
         +is_complete: bool
-        +compute_cache_key() str
+        +compute_lineage_hash() str
     }
 
     class ThunkOutput {
@@ -74,8 +74,6 @@ classDiagram
         +is_complete: bool
         +data: Any
         +hash: str
-        +was_cached: bool
-        +cached_id: str
     }
 
     class LineageRecord {
@@ -83,13 +81,21 @@ classDiagram
         +function_hash: str
         +inputs: list
         +constants: list
-        +to_dict() dict
-        +from_dict(data)$ LineageRecord
     }
 
-    class CacheBackend {
-        <<interface>>
-        +get_cached(cache_key) list
+    %% ===== STORAGE BACKENDS =====
+    class SciDuck {
+        +db_path: str
+        +dataset_schema: list
+        +save(name, data, **schema_keys)
+        +load(name, **schema_keys)
+    }
+
+    class PipelineDB {
+        +db_path: Path
+        +save_lineage(...)
+        +find_by_lineage_hash(hash) list
+        +get_lineage(record_id) dict
     }
 
     %% ===== EXCEPTIONS =====
@@ -124,7 +130,8 @@ classDiagram
     %% Core relationships
     DatabaseManager "1" --> "*" BaseVariable : manages
     DatabaseManager "1" --> "*" LineageRecord : stores
-    DatabaseManager ..|> CacheBackend : implements
+    DatabaseManager "1" *-- "1" SciDuck : data storage
+    DatabaseManager "1" *-- "1" PipelineDB : lineage storage
 
     %% Thunk system
     Thunk "1" *-- "*" PipelineThunk : creates
@@ -135,6 +142,7 @@ classDiagram
     BaseVariable "1" o-- "0..1" ThunkOutput : wraps
     BaseVariable ..> LineageRecord : extracts
     BaseVariable ..> DatabaseManager : uses
+    Thunk ..> DatabaseManager : queries (Thunk.query)
 ```
 
 ---
@@ -166,12 +174,13 @@ classDiagram
 ┌─────────────────────────────────────────────────────────────────────┐
 │                       DatabaseManager                                │
 │                                                                      │
-│  ┌──────────────┐ ┌──────────────┐ ┌──────────────┐ ┌─────────────┐ │
-│  │_registered_  │ │  _data       │ │  _lineage    │ │_computation_│ │
-│  │   types      │ │(content-addr)│ │              │ │   cache     │ │
-│  └──────────────┘ └──────────────┘ └──────────────┘ └─────────────┘ │
-│                                                                      │
-│                        SQLite Database                               │
+│  ┌──────────────────────────┐    ┌──────────────────────────┐       │
+│  │   SciDuck (DuckDB)       │    │   PipelineDB (SQLite)    │       │
+│  │                          │    │                          │       │
+│  │  - Data storage          │◄───│  - Lineage records       │       │
+│  │  - Type registration     │ref │  - Cache lookups         │       │
+│  │  - Version metadata      │    │  - Ephemeral entries     │       │
+│  └──────────────────────────┘    └──────────────────────────┘       │
 └─────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -182,21 +191,20 @@ classDiagram
 ### 1. Save Operation
 
 ```
-BaseVariable.save()
+BaseVariable.save(data, **metadata)
     │
     ├─► If data is ThunkOutput: extract LineageRecord
     │
-    ├─► to_db() → DataFrame
+    ├─► Native storage: SciDuck infers DuckDB types
+    │   OR Custom: to_db() → DataFrame
     │
     └─► DatabaseManager.save()
             │
-            ├─► serialize DataFrame (Parquet)
             ├─► compute content_hash
-            ├─► generate vhash
-            ├─► store in _data table (deduplicated)
-            ├─► store metadata in variable table
-            ├─► store LineageRecord in _lineage table
-            └─► populate _computation_cache
+            ├─► generate record_id
+            ├─► store data in SciDuck (DuckDB)
+            ├─► store LineageRecord in PipelineDB (SQLite)
+            └─► return record_id
 ```
 
 ### 2. Lineage Tracking Flow
@@ -211,15 +219,11 @@ process(my_var)             ─────► PipelineThunk (captures inputs)
                                         │
                                         │ execute
                                         ▼
-result = ...                ─────► ThunkOutput (lazy result + lineage)
-                                        │
-                                        │ wrap
-                                        ▼
-MyVariable(data=result)     ─────► BaseVariable with lineage
+result = ...                ─────► ThunkOutput (result + lineage)
                                         │
                                         │ save()
                                         ▼
-                            ─────► LineageRecord stored in DB
+                            ─────► LineageRecord stored in PipelineDB
 ```
 
 ---
@@ -233,7 +237,6 @@ MyVariable(data=result)     ─────► BaseVariable with lineage
 | `o--`   | Aggregation (shared lifecycle) |
 | `-->`   | Association                    |
 | `..>`   | Dependency                     |
-| `..\|>` | Implements interface           |
 
 ---
 

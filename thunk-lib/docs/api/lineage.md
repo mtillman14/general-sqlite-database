@@ -15,7 +15,11 @@
     options:
       show_root_heading: true
 
-::: thunk.lineage.get_lineage_chain
+::: thunk.lineage.get_upstream_lineage
+    options:
+      show_root_heading: true
+
+::: thunk.lineage.find_unsaved_variables
     options:
       show_root_heading: true
 

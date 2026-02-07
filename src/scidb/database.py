@@ -21,13 +21,13 @@ from .exceptions import (
 from .hashing import generate_record_id, canonical_hash
 from .variable import BaseVariable
 
-# Import SciDuck - adjust path as needed
+# Add sub-package paths
 import sys
-sys.path.insert(0, str(Path(__file__).parent.parent))
-from sciduck.sciduck import SciDuck, _infer_duckdb_type, _python_to_storage, _storage_to_python
+_project_root = Path(__file__).parent.parent.parent
+sys.path.insert(0, str(_project_root / "sciduck" / "src"))
+sys.path.insert(0, str(_project_root / "pipelinedb-lib" / "src"))
 
-# Import PipelineDB for lineage storage
-sys.path.insert(0, str(Path(__file__).parent.parent.parent / "pipelinedb-lib" / "src"))
+from sciduck import SciDuck, _infer_duckdb_type, _python_to_storage, _storage_to_python
 from pipelinedb import PipelineDB
 
 
@@ -118,13 +118,13 @@ def get_database() -> "DatabaseManager":
 
 class DatabaseManager:
     """
-    Manages database connection and variable storage using SciDuck backend.
+    Manages data storage (DuckDB via SciDuck) and lineage persistence (SQLite via PipelineDB).
 
     Example:
         db = configure_database("experiment.duckdb", ["subject", "session"], "pipeline.db")
 
-        RawSignal.save(np.eye(3), subject=1, trial=1)
-        loaded = RawSignal.load(subject=1, trial=1)
+        RawSignal.save(np.eye(3), subject=1, session=1)
+        loaded = RawSignal.load(subject=1, session=1)
     """
 
     VALID_LINEAGE_MODES = ("strict", "ephemeral")

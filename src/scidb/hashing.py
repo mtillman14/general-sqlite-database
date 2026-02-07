@@ -1,7 +1,7 @@
 """Deterministic hashing for arbitrary Python objects.
 
 This module re-exports hashing functionality from the canonicalhash package
-for backwards compatibility within scidb.
+for convenience within scidb.
 """
 
 from canonicalhash import canonical_hash, generate_record_id

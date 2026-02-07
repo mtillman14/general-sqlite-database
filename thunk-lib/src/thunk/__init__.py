@@ -6,7 +6,7 @@ provenance tracking, inspired by Haskell's thunk concept.
 Features:
 - Full lineage tracking for reproducibility
 - Automatic input capture and output wrapping
-- Zero dependencies on heavy frameworks
+- Lightweight (core dependency: canonicalhash)
 
 Example:
     from thunk import thunk

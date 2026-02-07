@@ -5,7 +5,8 @@
       "Bash(pip show:*)",
       "Bash(find:*)",
       "Bash(tree:*)",
-      "Bash(wc:*)"
+      "Bash(wc:*)",
+      "Bash(ls:*)"
     ]
   }
 }

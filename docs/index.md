@@ -2,7 +2,7 @@
 
 **Scientific Data Versioning Framework**
 
-SciDB is a lightweight database framework for scientific computing that provides automatic versioning, provenance tracking, and computation caching in a portable single-file SQLite database.
+SciDB is a lightweight database framework for scientific computing that provides automatic versioning, provenance tracking, and computation caching using DuckDB for data storage and SQLite for lineage persistence.
 
 ## Key Features
 
@@ -12,7 +12,7 @@ SciDB is a lightweight database framework for scientific computing that provides
 - **Lineage tracking** - Automatic provenance capture via `@thunk` decorator
 - **External library support** - Wrap functions from scipy, sklearn, etc. with `Thunk(fn)`
 - **Computation caching** - Skip redundant computations automatically
-- **Portable storage** - Single SQLite file with Parquet-serialized data
+- **Portable storage** - DuckDB file for data, SQLite file for lineage
 
 ## Installation
 
@@ -25,25 +25,17 @@ pip install scidb
 ```python
 from scidb import BaseVariable, configure_database, thunk
 import numpy as np
-import pandas as pd
 
-# Define a variable type
+# Define a variable type (native storage - no to_db/from_db needed)
 class TimeSeries(BaseVariable):
     schema_version = 1
 
-    def to_db(self) -> pd.DataFrame:
-        return pd.DataFrame({"value": self.data})
-
-    @classmethod
-    def from_db(cls, df: pd.DataFrame) -> np.ndarray:
-        return df["value"].values
-
-# Setup
-db = configure_database("experiment.db")
+# Setup (DuckDB for data, SQLite for lineage)
+db = configure_database("experiment.duckdb", ["subject", "session"], "pipeline.db")
 
 # Save with metadata
 data = np.array([1.0, 2.0, 3.0])
-TimeSeries(data).save(subject=1, session="baseline")
+TimeSeries.save(data, subject=1, session="baseline")
 
 # Load by metadata
 loaded = TimeSeries.load(subject=1, session="baseline")
@@ -53,8 +45,8 @@ loaded = TimeSeries.load(subject=1, session="baseline")
 def normalize(arr: np.ndarray) -> np.ndarray:
     return (arr - arr.mean()) / arr.std()
 
-result = normalize(loaded.data)
-TimeSeries(result).save(subject=1, session="normalized")
+result = normalize(loaded)  # Pass the variable, not .data
+TimeSeries.save(result, subject=1, session="normalized")
 
 # Query provenance
 provenance = db.get_provenance(TimeSeries, subject=1, session="normalized")
@@ -69,7 +61,7 @@ print(provenance["function_name"])  # "normalize"
 | "What processing produced this result?"   | Automatic lineage tracking via `@thunk`       |
 | "I already computed this, why recompute?" | Computation caching skips redundant work      |
 | "How do I organize my experimental data?" | Flexible metadata addressing                  |
-| "I need to share this database"           | Single portable SQLite file                   |
+| "I need to share this database"           | Portable DuckDB + SQLite files                |
 
 ## Documentation
 

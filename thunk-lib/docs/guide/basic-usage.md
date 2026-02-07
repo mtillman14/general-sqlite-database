@@ -14,7 +14,7 @@ def process(data):
 
 ### Parameters
 
-- **`unwrap_outputs`** (default: False): Whether to unpack a returned tuple into its constituent elements.
+- **`unpack_output`** (default: False): Whether to unpack a returned tuple into separate ThunkOutputs.
 - **`unwrap`** (default: True): Whether to unwrap `ThunkOutput` inputs automatically
 
 ### Understanding `unwrap`
@@ -61,8 +61,8 @@ print(result.is_complete)  # True
 # Get unique identifier
 print(result.hash)
 
-# Check cache status
-print(result.was_cached)  # False (first computation)
+# Get output index (for multi-output functions)
+print(result.output_num)  # 0
 ```
 
 ## PipelineThunk: The Computation Record
@@ -79,8 +79,8 @@ print(pt.inputs)
 # Parent Thunk (the function wrapper)
 print(pt.thunk.fcn.__name__)  # 'process'
 
-# Generate cache key
-cache_key = pt.compute_cache_key()
+# Generate lineage hash (used for cache key computation)
+lineage_hash = pt.compute_lineage_hash()
 ```
 
 ## Multi-Output Functions
@@ -88,7 +88,7 @@ cache_key = pt.compute_cache_key()
 When a function returns multiple values:
 
 ```python
-@thunk(unpack_outputs=True)
+@thunk(unpack_output=True)
 def analyze(data):
     return min(data), max(data), sum(data) / len(data)
 

@@ -8,8 +8,8 @@ Once-per-pipeline setup
 
 ```python
 pipeline_db = PipelineDB("path/to/pipeline.sqlite")
-sciduck_db = SciDuckDB("path/to/sci.duckdb", dataset_schema = ["subject", "session", "trial"])
-Thunk.query = QueryByMetadata
+sciduck_db = SciDuck("path/to/sci.duckdb", dataset_schema = ["subject", "session", "trial"])
+Thunk.query = db  # DatabaseManager instance (set by configure_database)
 ```
 
 ```
@@ -27,7 +27,7 @@ BaseVariable                                      @thunk functions
 ┌─────────────────────────────────────────────────────────────────┐
 │                        SciDB Integration Layer                  │
 │  - Bridges data storage and lineage                             │
-│  - Provides QueryByMetadata for cache lookups                   │
+│  - Provides find_by_lineage for cache lookups                   │
 └────────────────┬────────────────────────┬───────────────────────┘
                  │                        │
                  ▼                        ▼
@@ -112,10 +112,10 @@ records = db.find_by_lineage_hash("def456")
 Bridges SciDuck (data) and PipelineDB (lineage) with the BaseVariable abstraction. Provides:
 
 - `BaseVariable`: Type-safe serialization with metadata addressing
-- `QueryByMetadata`: Cache lookups via lineage hash
+- `DatabaseManager.find_by_lineage()`: Cache lookups via lineage hash
 - `configure_database()`: Unified configuration
 
-At the start of the pipeline, set `Thunk.query = QueryByMetadata`. That allows `Thunk.__call__()` to run queries by the lineage metadata for the current Thunk. If no cached result is found, the function executes. If found, returns the previously computed data.
+`configure_database()` sets `Thunk.query` to the `DatabaseManager` instance. That allows `Thunk.__call__()` to run queries by the lineage hash for the current Thunk. If no cached result is found, the function executes. If found, returns the previously computed data.
 
 User-facing API:
 
@@ -128,7 +128,7 @@ class RotationMatrix(BaseVariable):
     pass
 
 # Setup (creates both DuckDB for data and SQLite for lineage)
-db = configure_database("experiment.db", schema_keys=["subject", "trial"])
+db = configure_database("experiment.duckdb", ["subject", "trial"], "pipeline.db")
 
 # Save/load
 RotationMatrix.save(np.eye(3), subject=1, trial=1)

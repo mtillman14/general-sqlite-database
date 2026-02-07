@@ -16,7 +16,8 @@ class PathGenerator:
         path_template: A format string with placeholders for metadata fields.
                       Uses Python's str.format() syntax, e.g., "{subject}/trial_{trial}.mat"
         root_folder: Optional root folder path. If provided, paths are resolved
-                    relative to this folder.
+                    relative to this folder. If None, paths are resolved
+                    relative to the current working directory (via Path.resolve()).
         **metadata: Keyword arguments where each key is a metadata field name and
                    each value is an iterable of values for that field.
 
@@ -28,17 +29,17 @@ class PathGenerator:
         ...     trial=range(5)
         ... )
 
-        >>> for path, metadata in paths:
-        ...     print(path, metadata)
-        # /data/experiment/0/trial_0.mat {"subject": 0, "trial": 0}
-        # /data/experiment/0/trial_1.mat {"subject": 0, "trial": 1}
+        >>> for path, meta in paths:
+        ...     print(path, meta)
+        # /data/experiment/0/trial_0.mat {'subject': 0, 'trial': 0}
+        # /data/experiment/0/trial_1.mat {'subject': 0, 'trial': 1}
         # ...
 
         >>> # Can also access by index or get length
         >>> print(len(paths))  # 15
         >>> path, meta = paths[0]
         >>> print(path)  # /data/experiment/0/trial_0.mat
-        >>> print(meta)  # {"subject": 0, "trial": 0}
+        >>> print(meta)  # {'subject': 0, 'trial': 0}
     """
 
     def __init__(

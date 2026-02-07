@@ -437,7 +437,7 @@ class BaseVariable:
             path: Output file path (will be overwritten if exists)
 
         Example:
-            var = TimeSeries.load(db=db, subject=1)
+            var = TimeSeries.load(subject=1)
             var.to_csv("subject1_data.csv")
         """
         df = self.to_db()

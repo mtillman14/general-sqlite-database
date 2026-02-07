@@ -78,7 +78,7 @@ rules = {
 2. **Missing lineage**: Records saved without lineage (raw data) can't be inferred
    - These would be skipped with a warning
 
-3. **Schema migration**: After inference, the old parquet paths are still valid (they use schema keys only), but the metadata in SQLite needs updating
+3. **Schema migration**: After inference, the DuckDB table data is still valid (it uses schema keys only), but the metadata JSON needs updating
 
 ### API Sketch
 

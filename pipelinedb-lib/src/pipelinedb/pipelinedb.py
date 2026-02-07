@@ -20,11 +20,11 @@ class PipelineDB:
         db.save_lineage(
             output_record_id="abc123",
             output_type="ProcessedData",
-            lineage_hash="def456",
             function_name="process_data",
             function_hash="ghi789",
             inputs=[{"name": "arg_0", "record_id": "xyz000", "type": "RawData"}],
             constants=[],
+            lineage_hash="def456",
         )
 
         # Cache lookup
@@ -44,7 +44,7 @@ class PipelineDB:
         self._ensure_schema()
 
     def _ensure_schema(self) -> None:
-        """Create the lineage table if it doesn't exist."""
+        """Create the lineage table and indexes if they don't exist."""
         cursor = self._conn.cursor()
 
         cursor.execute("""
@@ -84,7 +84,10 @@ class PipelineDB:
         user_id: str | None = None,
     ) -> None:
         """
-        Save a lineage record.
+        Save a lineage record (upsert).
+
+        If a record with the same output_record_id already exists, all fields
+        are overwritten with the new values.
 
         Args:
             output_record_id: Unique ID referencing data in external storage (e.g., SciDuck)
@@ -141,8 +144,9 @@ class PipelineDB:
             lineage_hash: The hash of the computation to look up
 
         Returns:
-            List of matching records with output_record_id and output_type,
-            or None if no matches found
+            List of matching record dicts (with keys: output_record_id,
+            output_type, function_name, function_hash, inputs, constants,
+            user_id, created_at), or None if no matches found
         """
         cursor = self._conn.cursor()
 
@@ -225,6 +229,9 @@ class PipelineDB:
         Ephemeral entries track the computation graph for unsaved intermediate
         variables. The ephemeral_id should have an "ephemeral:" prefix.
 
+        This method is idempotent: if a record with the same ephemeral_id
+        already exists, it is left unchanged (no update is performed).
+
         Args:
             ephemeral_id: ID with "ephemeral:" prefix (e.g., "ephemeral:abc123")
             variable_type: Variable class name
@@ -278,7 +285,9 @@ class PipelineDB:
             self._conn = None
 
     def __enter__(self) -> "PipelineDB":
+        """Enter context manager."""
         return self
 
     def __exit__(self, exc_type, exc_val, exc_tb) -> None:
+        """Exit context manager, closing the database connection."""
         self.close()

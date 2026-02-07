@@ -12,11 +12,11 @@ Example:
     db.save_lineage(
         output_record_id="abc123",
         output_type="ProcessedData",
-        lineage_hash="def456",
         function_name="process_data",
         function_hash="ghi789",
         inputs=[{"name": "arg_0", "record_id": "xyz000", "type": "RawData"}],
         constants=[],
+        lineage_hash="def456",
     )
 
     # Look up by lineage hash (for cache hits)

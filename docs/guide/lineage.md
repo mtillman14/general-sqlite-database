@@ -21,7 +21,7 @@ print(result.data)  # The actual array
 ### Multiple Outputs
 
 ```python
-@thunk(unpack_outputs=True)
+@thunk(unpack_output=True)
 def split_data(data: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
     mid = len(data) // 2
     return data[:mid], data[mid:]
@@ -34,7 +34,7 @@ first_half, second_half = split_data(data)
 1. **Thunk wraps function** - Creates a `Thunk` object with function hash
 2. **Call creates PipelineThunk** - Captures all inputs
 3. **Execution returns ThunkOutput** - Wraps result with lineage reference
-4. **Save extracts lineage** - Stores provenance in database
+4. **Save extracts lineage** - Stores provenance in PipelineDB (SQLite)
 
 ```
 @thunk decorator
@@ -55,7 +55,7 @@ first_half, second_half = split_data(data)
 
 ## Automatic Lineage Capture
 
-When saving an `ThunkOutput`, lineage is captured automatically:
+When saving a `ThunkOutput`, lineage is captured automatically:
 
 ```python
 @thunk
@@ -63,11 +63,13 @@ def normalize(arr):
     return (arr - arr.mean()) / arr.std()
 
 raw = RawData.load(subject=1)
-normalized = normalize(raw.data)
+normalized = normalize(raw)  # Pass the variable, not .data
 
 # Lineage captured on save
 NormalizedData.save(normalized, subject=1, stage="normalized")
 ```
+
+**Important:** Pass the `BaseVariable` instance (not `.data`) to the thunk to preserve lineage tracking.
 
 ## Querying Provenance
 
@@ -82,56 +84,11 @@ print(provenance["inputs"])          # List of input descriptors
 print(provenance["constants"])       # List of constant values
 ```
 
-### Full Lineage Chain
-
-To see the complete computation history (not just immediate parent):
+### Check Lineage Exists
 
 ```python
-# Get nested dict with full lineage
-lineage = db.get_full_lineage(FinalResult, subject=1)
-print(lineage)
-# {
-#     "type": "FinalResult",
-#     "record_id": "abc123...",
-#     "function": "compute_stats",
-#     "function_hash": "...",
-#     "constants": [...],
-#     "inputs": [
-#         {
-#             "type": "NormalizedData",
-#             "record_id": "...",
-#             "function": "normalize",
-#             "inputs": [...]
-#         }
-#     ]
-# }
-
-# Get print-friendly version
-print(db.format_lineage(FinalResult, subject=1))
-```
-
-Output of `format_lineage()`:
-
-```
-└── FinalResult (record_id: abc123...)
-    ├── function: compute_stats [hash: def456...]
-    ├── constants: threshold=0.5
-    └── inputs:
-        └── NormalizedData (record_id: ghi789...)
-            ├── function: normalize [hash: jkl012...]
-            └── inputs:
-                └── RawData (record_id: mno345...)
-                    └── [source: manual]
-```
-
-### What Variables Derived From This?
-
-```python
-derived = db.get_derived_from(RawData, subject=1)
-
-for d in derived:
-    print(f"{d['type']} via {d['function']}")
-# Output: "NormalizedData via normalize"
+if db.has_lineage(record_id):
+    print("This variable was produced by a thunked function")
 ```
 
 ## Chained Pipelines
@@ -163,7 +120,7 @@ MyVar.save(result, subject=1, stage="final")
 For inspection without saving:
 
 ```python
-from scidb import extract_lineage, get_raw_value
+from scidb.lineage import extract_lineage, get_raw_value
 
 result = process(data)
 
@@ -217,25 +174,15 @@ thunked_butter = Thunk(butter)
 thunked_filtfilt = Thunk(filtfilt)
 thunked_welch = Thunk(welch)
 
-# Define variable types
+# Define variable types (native storage)
 class SignalData(BaseVariable):
     schema_version = 1
-    def to_db(self):
-        return pd.DataFrame({"value": self.data})
-    @classmethod
-    def from_db(cls, df):
-        return df["value"].values
 
 class PSDData(BaseVariable):
     schema_version = 1
-    def to_db(self):
-        return pd.DataFrame({"freq": self.data[0], "power": self.data[1]})
-    @classmethod
-    def from_db(cls, df):
-        return (df["freq"].values, df["power"].values)
 
 # Setup
-db = configure_database("experiment.db")
+db = configure_database("experiment.duckdb", ["subject", "session"], "pipeline.db")
 
 # Run pipeline with full lineage tracking
 raw_signal = SignalData.load(subject=1, session="baseline")
@@ -247,9 +194,6 @@ freqs, psd = thunked_welch(filtered, fs=1000)
 # Save with lineage
 SignalData.save(filtered, subject=1, session="filtered")
 PSDData.save((freqs, psd), subject=1, session="psd")
-
-# View full lineage
-print(db.format_lineage(PSDData, subject=1, session="psd"))
 ```
 
 ### Example: Machine Learning Pipeline
@@ -311,21 +255,21 @@ def preprocess(data):
     return data * 2
 
 result = preprocess(raw_data)
-Intermediate.save(result, db=db, subject=1, stage="preprocessed")
+Intermediate.save(result, subject=1, stage="preprocessed")
 ```
 
 ```python
 # step2.py (separate execution)
-loaded = Intermediate.load(db=db, subject=1, stage="preprocessed")
+loaded = Intermediate.load(subject=1, stage="preprocessed")
 
 @thunk
 def analyze(data):
-    # Receives the raw numpy array (loaded.data)
+    # Receives the raw numpy array (unwrapped from loaded)
     return data.mean()
 
 # Pass the loaded variable - lineage links to loaded.record_id
 result = analyze(loaded)
-FinalResult.save(result, db=db, subject=1, stage="analyzed")
+FinalResult.save(result, subject=1, stage="analyzed")
 
 # Lineage correctly shows: FinalResult <- analyze <- Intermediate
 ```
@@ -337,7 +281,7 @@ The key: pass the `BaseVariable` instance, not `loaded.data`. The thunk automati
 By default, thunks unwrap `BaseVariable` and `ThunkOutput` inputs to their raw data. Use `unwrap=False` to receive the wrapper objects for debugging:
 
 ```python
-@thunk
+@thunk(unwrap=False)
 def debug_process(var):
     # var is the BaseVariable, not raw data
     print(f"Input record_id: {var.record_id}")

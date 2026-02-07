@@ -17,6 +17,7 @@ sys.path.insert(0, str(_root / "thunk-lib" / "src"))
 sys.path.insert(0, str(_root / "path-gen" / "src"))
 sys.path.insert(0, str(_root / "pipelinedb-lib" / "src"))
 sys.path.insert(0, str(_root / "scirun-lib" / "src"))
+sys.path.insert(0, str(_root / "sciduck" / "src"))
 
 from scidb import BaseVariable, configure_database
 from scidb.database import _local

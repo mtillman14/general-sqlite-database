@@ -1,6 +1,6 @@
 # Thunk
 
-**Lazy evaluation and lineage tracking for Python data pipelines.**
+**Lineage tracking for Python data pipelines.**
 
 Thunk is a lightweight library inspired by Haskell's thunk concept, designed for building data processing pipelines with automatic provenance tracking.
 
@@ -38,9 +38,9 @@ print(result.pipeline_thunk.inputs)
 
 - **Zero Configuration**: Just add `@thunk` to your functions
 - **Automatic Lineage**: Full provenance graph captured automatically
-- **Pluggable Caching**: Bring your own cache backend
-- **Lightweight**: No heavy dependencies required
-- **Type Safe**: Full type hints and PEP 561 compliance
+- **Pluggable Caching**: Set a query backend on `Thunk.query` for cache lookups
+- **Lightweight**: Core dependency is only `canonicalhash`
+- **Type Safe**: Full type hints throughout
 
 ## Installation
 

@@ -1,6 +1,6 @@
 # Database
 
-The `DatabaseManager` handles all storage operations. SciDB uses SQLite with Parquet-serialized data for portability and long-term archival stability.
+The `DatabaseManager` handles all storage operations. SciDB uses DuckDB (via SciDuck) for data storage and SQLite (via PipelineDB) for lineage persistence.
 
 ## Configuration
 
@@ -10,10 +10,11 @@ The `DatabaseManager` handles all storage operations. SciDB uses SQLite with Par
 from scidb import configure_database, get_database
 
 # Configure once at startup
-# schema_keys defines which metadata keys identify dataset location
+# dataset_schema_keys defines which metadata keys identify dataset location
 db = configure_database(
-    "experiment.db",
-    schema_keys=["subject", "trial", "condition"]
+    "experiment.duckdb",
+    dataset_schema_keys=["subject", "trial", "condition"],
+    pipeline_db_path="pipeline.db",
 )
 
 # Access anywhere
@@ -22,9 +23,9 @@ db = get_database()
 
 ### Schema Keys
 
-The `schema_keys` parameter is **required** and defines which metadata keys identify the "location" in your dataset (e.g., subject, trial, sensor) versus computational variants at that location.
+The `dataset_schema_keys` parameter is **required** and defines which metadata keys identify the "location" in your dataset (e.g., subject, trial, sensor) versus computational variants at that location.
 
-- **Schema keys**: Identify the dataset location (used for folder structure)
+- **Schema keys**: Identify the dataset location (used for table queries)
 - **Version keys**: Everything else - distinguish computational variants at the same location
 
 ## Registration
@@ -49,15 +50,17 @@ Registration creates the table if it doesn't exist. Re-registering is safe (idem
 record_id = MyVariable.save(data, subject=1, trial=1, condition="A")
 ```
 
-### Idempotent Saves
+### Saves with Same Content
 
-Saving identical data+metadata returns the existing record_id without duplicating:
+Saving identical data+metadata produces the same deterministic record_id:
 
 ```python
 record_id1 = MyVar.save(data, subject=1)
 record_id2 = MyVar.save(data, subject=1)  # Same data+metadata
-assert record_id1 == record_id2  # No duplicate created
+assert record_id1 == record_id2  # Same record_id (deterministic)
 ```
+
+Note: Both saves insert rows into the database. The record_id is computed deterministically from the content hash and metadata, so it will be the same string.
 
 ## Load Operations
 
@@ -127,14 +130,6 @@ if provenance:
     print(f"Constants: {provenance['constants']}")
 ```
 
-### What Used This?
-
-```python
-derived = db.get_derived_from(MyVariable, subject=1, stage="raw")
-for d in derived:
-    print(f"{d['type']} via {d['function']}")
-```
-
 ### Check Lineage Exists
 
 ```python
@@ -146,37 +141,35 @@ if db.has_lineage(record_id):
 
 See [Caching Guide](caching.md) for details.
 
-```python
-# Get cache statistics
-stats = db.get_cache_stats()
-print(f"Cached computations: {stats['total_entries']}")
-
-# Invalidate cache
-db.invalidate_cache()  # All
-db.invalidate_cache(function_name="process")  # By function
-db.invalidate_cache(function_hash="abc...")  # By version
-```
+Caching is handled automatically through `Thunk.query`, which is set to the `DatabaseManager` instance during `configure_database()`. The `DatabaseManager.find_by_lineage()` method looks up previously computed results by lineage hash in PipelineDB (SQLite), then loads the data from SciDuck (DuckDB).
 
 ## Database Schema
 
-SciDB creates these internal tables:
+SciDB uses two databases:
 
-| Table | Purpose |
-|-------|---------|
-| `_registered_types` | Type registry |
-| `_version_log` | All saved versions |
-| `_lineage` | Provenance records |
-| `_computation_cache` | Cached computation results |
-| `{variable_table}` | One per registered type |
+**DuckDB (data storage via SciDuck):**
+
+| Table               | Purpose                     |
+|---------------------|-----------------------------|
+| `_registered_types` | Type registry               |
+| `_schema`           | Dataset schema entries      |
+| `_variables`        | Variable version metadata   |
+| `{VariableName}`    | One per registered type     |
+
+**SQLite (lineage storage via PipelineDB):**
+
+| Table     | Purpose            |
+|-----------|--------------------|
+| `lineage` | Provenance records |
 
 ## Storage Format
 
-Data is serialized using **Parquet** format, providing:
+Data is stored using **DuckDB native types** (via SciDuck), providing:
 
-- Long-term archival stability (not tied to Python versions)
-- Cross-language compatibility (R, Julia, Spark, etc.)
-- Schema preservation and efficient compression
-- Readable in 10+ years
+- Native DuckDB types for arrays (LIST), nested arrays (LIST[]), and JSON
+- Queryable data visible in DBeaver or any DuckDB-compatible viewer
+- Efficient columnar storage
+- Custom serialization via `to_db()`/`from_db()` for complex types
 
 ## Exceptions
 
@@ -186,3 +179,4 @@ Data is serialized using **Parquet** format, providing:
 | `NotFoundError` | No data matches the query |
 | `DatabaseNotConfiguredError` | `get_database()` called before `configure_database()` |
 | `ReservedMetadataKeyError` | Using reserved key in metadata |
+| `UnsavedIntermediateError` | Strict lineage mode with unsaved intermediates |

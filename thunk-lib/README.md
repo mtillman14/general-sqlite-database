@@ -1,16 +1,16 @@
 # Thunk
 
-**Lazy evaluation and lineage tracking for Python data pipelines.**
+**Lineage tracking for Python data pipelines.**
 
 Thunk is a lightweight library inspired by Haskell's thunk concept, designed for building data processing pipelines with automatic provenance tracking. It captures the full computational lineage of your results, enabling reproducibility and intelligent caching.
 
 ## Features
 
 - **Automatic Lineage Tracking**: Every computation captures its inputs and function, building a complete provenance graph
-- **Lazy Evaluation**: Results are wrapped in `ThunkOutput` objects that carry lineage information
-- **Pluggable Caching**: Configure custom cache backends to avoid redundant computations
-- **Zero Heavy Dependencies**: Core functionality works without numpy/pandas (optional integrations available)
-- **Type Safe**: Full type hints and PEP 561 compliance
+- **Input Classification**: Automatically distinguishes variable inputs from constants for accurate lineage
+- **Pluggable Caching**: Set a query backend on `Thunk.query` to enable cache lookups via lineage hashes
+- **Lightweight**: Core dependency is only `canonicalhash`
+- **Type Safe**: Full type hints throughout
 
 ## Installation
 
@@ -37,7 +37,7 @@ from thunk import thunk
 def process(data, factor):
     return data * factor
 
-# Call returns an ThunkOutput, not the raw result
+# Call returns a ThunkOutput, not the raw result
 result = process([1, 2, 3], 2)
 
 # Access the computed value
@@ -51,7 +51,7 @@ print(result.pipeline_thunk.thunk.fcn.__name__)  # 'process'
 ### Multi-Output Functions
 
 ```python
-@thunk(unwrap_outputs=True)
+@thunk(unpack_output=True)
 def split_data(data):
     mid = len(data) // 2
     return data[:mid], data[mid:]
@@ -85,7 +85,7 @@ print(scaled.data)  # [25.0, 50.0, 75.0, 100.0]
 ### Extracting Lineage
 
 ```python
-from thunk import extract_lineage, get_lineage_chain
+from thunk import extract_lineage, get_upstream_lineage
 
 @thunk
 def step1(x):
@@ -102,43 +102,41 @@ lineage = extract_lineage(result)
 print(lineage.function_name)  # 'step2'
 print(lineage.function_hash)  # SHA-256 of function bytecode
 
-# Get full lineage chain
-chain = get_lineage_chain(result)
+# Get full upstream lineage chain (returns list of dicts)
+chain = get_upstream_lineage(result)
 for record in chain:
-    print(f"{record.function_name}: {record.inputs}, {record.constants}")
+    print(f"{record['function_name']}: inputs={record['inputs']}, constants={record['constants']}")
 ```
 
-### Configuring Caching
+### Caching via Query Backend
+
+Thunk supports caching by setting a query backend on the `Thunk.query` class variable. The backend must implement a `find_by_lineage(pipeline_thunk)` method that returns cached results or `None`.
 
 ```python
-from thunk import configure_cache, CacheBackend
+from thunk import Thunk
 
-class MyCache:
-    def __init__(self):
-        self.store = {}
+class MyQueryBackend:
+    """Custom cache backend for thunk lookups."""
 
-    def get_cached(self, cache_key: str):
-        """Return list of (data, id) tuples or None."""
-        if cache_key in self.store:
-            return self.store[cache_key]
-        return None
+    def find_by_lineage(self, pipeline_thunk):
+        """Return list of cached values or None if not cached."""
+        cache_key = pipeline_thunk.compute_lineage_hash()
+        # Look up in your storage system...
+        return None  # or [cached_value1, cached_value2, ...]
 
-    def save(self, cache_key: str, results):
-        self.store[cache_key] = results
-
-cache = MyCache()
-configure_cache(cache)
+# Set the global query backend
+Thunk.query = MyQueryBackend()
 
 # Now repeated calls with same inputs will check the cache
 ```
 
 ## API Reference
 
-### `@thunk(unpack_outputs=False, unwrap=True)`
+### `@thunk(unpack_output=False, unwrap=True)`
 
 Decorator to convert a function into a Thunk.
 
-- `unpack_outputs`: Whether to unpack a tuple into its constituent elements (default: False)
+- `unpack_output`: Whether to unpack a tuple return into separate ThunkOutputs (default: False)
 - `unwrap`: If True, automatically unwrap `ThunkOutput` inputs to their raw data
 
 ### `ThunkOutput`
@@ -148,8 +146,8 @@ Wrapper around computed values that carries lineage.
 - `.data`: The actual computed value
 - `.pipeline_thunk`: The `PipelineThunk` that produced this
 - `.hash`: Unique hash based on computation lineage
-- `.was_cached`: True if loaded from cache
 - `.output_num`: Index for multi-output functions
+- `.is_complete`: True if the data has been computed
 
 ### `PipelineThunk`
 
@@ -158,7 +156,8 @@ Represents a specific function invocation with captured inputs.
 - `.thunk`: The parent `Thunk` (function wrapper)
 - `.inputs`: Dict of captured input values
 - `.outputs`: Tuple of `ThunkOutput` results
-- `.compute_cache_key()`: Generate cache key based on lineage
+- `.compute_lineage_hash()`: Generate lineage hash for cache key computation
+- `.is_complete`: True if all inputs are concrete values
 
 ### `LineageRecord`
 
@@ -168,35 +167,41 @@ Structured provenance information.
 - `.function_hash`: Hash of function bytecode
 - `.inputs`: List of input descriptors (variables)
 - `.constants`: List of constant values
+- `.to_dict()`: Convert to dict for serialization
+- `.from_dict(data)`: Create from dict
+
+### Input Classification
+
+- `InputKind`: Enum with values `VARIABLE`, `THUNK_OUTPUT`, `CONSTANT`
+- `ClassifiedInput`: Dataclass holding classified input info
+- `classify_input(name, value)`: Classify a single input
+- `is_trackable_variable(obj)`: Check if an object is a trackable variable
 
 ### Utility Functions
 
 - `extract_lineage(thunk_output)`: Get `LineageRecord` for an output
-- `get_lineage_chain(thunk_output)`: Get full lineage history
+- `get_upstream_lineage(thunk_output)`: Get full upstream lineage as list of dicts
+- `find_unsaved_variables(thunk_output)`: Find unsaved variables in upstream chain
 - `get_raw_value(data)`: Unwrap `ThunkOutput` or return as-is
-- `canonical_hash(obj)`: Deterministic hash for any Python object
-- `configure_cache(backend)`: Set global cache backend
+- `canonical_hash(obj)`: Deterministic hash for any Python object (re-exported from `canonicalhash`)
 
 ## Integration with SciDB
 
-Thunk is designed to work seamlessly with [SciDB](https://github.com/example/scidb), a scientific data versioning framework. When used together:
+Thunk is designed to work seamlessly with [SciDB](https://github.com/example/scidb), a scientific data versioning framework. When used together, SciDB provides a `QueryByMetadata` backend that enables automatic caching:
 
 ```python
-from scidb import configure_database, BaseVariable
-from thunk import thunk
+from scidb import BaseVariable
+from thunk import Thunk, thunk
 
-db = configure_database("experiment.db")
-
-class MyData(BaseVariable):
-    # ... implementation
+# SciDB sets up Thunk.query for cache lookups
+# Thunk.query = QueryByMetadata(...)
 
 @thunk
 def process(data):
     return data * 2
 
-# SciDB automatically registers as a cache backend
 result = process(loaded_data)
-MyData(result).save(db=db, experiment=1)  # Lineage is captured
+# Lineage is captured and can be stored alongside the data
 ```
 
 ## License

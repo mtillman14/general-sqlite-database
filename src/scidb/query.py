@@ -16,7 +16,7 @@ class QueryInterface:
     against the database tables.
 
     Example:
-        db = configure_database("experiment.duckdb")
+        db = configure_database("experiment.duckdb", ["subject", "session"], "pipeline.db")
         qi = QueryInterface(db)
 
         # Query a single variable type
@@ -126,7 +126,7 @@ def query(db: "DatabaseManager", sql: str) -> pd.DataFrame:
     Example:
         from scidb.query import query
 
-        db = configure_database("experiment.duckdb")
+        db = configure_database("experiment.duckdb", ["subject", "session"], "pipeline.db")
         df = query(db, "SELECT * FROM StepLength WHERE value > 0.5")
     """
     with QueryInterface(db) as qi:

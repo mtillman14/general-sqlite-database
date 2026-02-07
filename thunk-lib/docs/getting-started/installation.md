@@ -14,7 +14,7 @@ pip install thunk
 
 ## Optional Dependencies
 
-Thunk works without any dependencies, but provides enhanced support for scientific computing libraries:
+Thunk's core dependency is `canonicalhash`. It also provides enhanced support for scientific computing libraries as optional extras:
 
 ### NumPy Support
 

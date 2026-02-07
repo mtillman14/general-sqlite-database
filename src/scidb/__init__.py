@@ -5,14 +5,14 @@ A lightweight database framework for scientific computing that provides:
 - Type-safe serialization of numpy arrays, DataFrames, and custom types
 - Automatic content-based versioning
 - Flexible metadata-based addressing
-- Portable single-file DuckDB storage
+- DuckDB storage for data (via SciDuck) and SQLite for lineage (via PipelineDB)
 - Automatic lineage tracking via thunks
 
 Example:
     from scidb import configure_database, BaseVariable, thunk
     import numpy as np
 
-    # One-line setup (auto-registers types, enables caching)
+    # Setup (DuckDB for data, SQLite for lineage, auto-registers types)
     db = configure_database("experiment.duckdb", ["subject", "session"], "pipeline.db")
 
     class RawSignal(BaseVariable):
@@ -22,7 +22,7 @@ Example:
     def calibrate(signal, factor):
         return signal * factor
 
-    # Save/load (no db= parameter needed)
+    # Save/load
     RawSignal.save(np.array([1, 2, 3]), subject=1, session="A")
     raw = RawSignal.load(subject=1, session="A")
 
@@ -41,11 +41,11 @@ from .exceptions import (
     UnsavedIntermediateError,
 )
 
-# Re-export from scirun for backwards compatibility
-# The original foreach.py is kept for now but scirun is the canonical source
+# Re-export from scirun
 import sys
 from pathlib import Path
-sys.path.insert(0, str(Path(__file__).parent.parent.parent / "scirun-lib" / "src"))
+_project_root = Path(__file__).parent.parent.parent
+sys.path.insert(0, str(_project_root / "scirun-lib" / "src"))
 from scirun import Fixed, for_each
 
 from .thunk import ThunkOutput, Thunk, thunk

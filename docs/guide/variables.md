@@ -1,58 +1,74 @@
 # Variables
 
-Variables are the core data type in SciDB. Every piece of data you store is wrapped in a `BaseVariable` subclass that defines its serialization format.
+Variables are the core data type in SciDB. Every piece of data you store is wrapped in a `BaseVariable` subclass.
 
 ## Defining a Variable Type
 
-All variable types use `pd.DataFrame` as the intermediate storage format. Your `to_db()` method must return a DataFrame, and your `from_db()` method receives a DataFrame.
+For most data types (scalars, numpy arrays, lists, dicts), **no serialization methods are needed** — SciDuck handles them natively with proper DuckDB types:
 
 ```python
 from scidb import BaseVariable
-import pandas as pd
 
 class MyVariable(BaseVariable):
     schema_version = 1  # Required
+```
+
+### Optional: Custom Serialization
+
+Override `to_db()` and `from_db()` only when you need custom multi-column serialization (e.g., pandas DataFrames, domain-specific objects):
+
+```python
+import pandas as pd
+
+class CustomVariable(BaseVariable):
+    schema_version = 1
 
     def to_db(self) -> pd.DataFrame:
         """Convert self.data to a DataFrame for storage."""
-        # Must return a pd.DataFrame
         ...
 
     @classmethod
     def from_db(cls, df: pd.DataFrame) -> Any:
         """Convert DataFrame back to native type."""
-        # df is always a pd.DataFrame
         ...
 ```
 
 ### Required Components
 
-| Component | Purpose |
-|-----------|---------|
-| `schema_version` | Integer version for schema migrations |
-| `to_db()` | Instance method converting `self.data` to `pd.DataFrame` |
-| `from_db()` | Class method converting `pd.DataFrame` to native type |
+| Component        | Purpose                                                      |
+|------------------|--------------------------------------------------------------|
+| `schema_version` | Integer version for schema migrations                        |
+| `to_db()`        | *Optional.* Instance method converting `self.data` to `pd.DataFrame` |
+| `from_db()`      | *Optional.* Class method converting `pd.DataFrame` to native type    |
 
 ## Common Patterns
 
-### Scalar Values
+### Native Storage (No to_db/from_db Needed)
+
+These types are handled automatically by SciDuck:
 
 ```python
 class ScalarValue(BaseVariable):
     schema_version = 1
 
-    def to_db(self) -> pd.DataFrame:
-        return pd.DataFrame({"value": [self.data]})
+class ArrayValue(BaseVariable):
+    schema_version = 1
 
-    @classmethod
-    def from_db(cls, df: pd.DataFrame) -> float:
-        return df["value"].iloc[0]
+class DictValue(BaseVariable):
+    schema_version = 1
+
+# Usage
+ScalarValue.save(3.14, subject=1)
+ArrayValue.save(np.array([1, 2, 3]), subject=1)
+DictValue.save({"key": "value"}, subject=1)
 ```
 
-### 1D Arrays
+### Custom Serialization Examples
+
+#### 1D Arrays with Index
 
 ```python
-class ArrayValue(BaseVariable):
+class IndexedArray(BaseVariable):
     schema_version = 1
 
     def to_db(self) -> pd.DataFrame:
@@ -66,7 +82,7 @@ class ArrayValue(BaseVariable):
         return df.sort_values("index")["value"].values
 ```
 
-### 2D Arrays / Matrices
+#### 2D Arrays / Matrices
 
 ```python
 class MatrixValue(BaseVariable):
@@ -88,7 +104,7 @@ class MatrixValue(BaseVariable):
         return df["value"].values.reshape(rows, cols)
 ```
 
-### DataFrames
+#### DataFrames
 
 ```python
 class DataFrameValue(BaseVariable):
@@ -102,20 +118,6 @@ class DataFrameValue(BaseVariable):
         return df
 ```
 
-### Dictionaries
-
-```python
-class DictValue(BaseVariable):
-    schema_version = 1
-
-    def to_db(self) -> pd.DataFrame:
-        return pd.DataFrame([self.data])  # Single row
-
-    @classmethod
-    def from_db(cls, df: pd.DataFrame) -> dict:
-        return df.iloc[0].to_dict()
-```
-
 ## Specialized Types via Subclassing
 
 When one variable class can represent multiple logical data types, create subclasses to store each in separate tables:
@@ -123,25 +125,24 @@ When one variable class can represent multiple logical data types, create subcla
 ```python
 class TimeSeries(BaseVariable):
     schema_version = 1
-    # ... to_db/from_db implementation
 
 # Create specialized types - each gets its own table
 class Temperature(TimeSeries):
     """Temperature time series data."""
-    pass  # Table: temperature
+    pass  # Table: Temperature
 
 class Humidity(TimeSeries):
     """Humidity time series data."""
-    pass  # Table: humidity
+    pass  # Table: Humidity
 
 class Pressure(TimeSeries):
     """Pressure time series data."""
-    pass  # Table: pressure
+    pass  # Table: Pressure
 ```
 
 Each subclass:
-- Inherits `to_db()` and `from_db()` from the parent
-- Gets its own table named after the class (CamelCase → snake_case)
+- Inherits `to_db()` and `from_db()` from the parent (if defined)
+- Gets its own table named after the class (exact class name, e.g., `"Temperature"`)
 - Can define custom methods specific to that data type
 
 ## Instance Properties
@@ -154,9 +155,11 @@ record_id = MyVariable.save(data, subject=1)
 
 # Load returns a variable instance with populated properties
 var = MyVariable.load(subject=1)
-var.data      # The native data
+var.data          # The native data
 var.record_id     # Content hash (set after load)
-var.metadata  # Metadata dict (set after load)
+var.metadata      # Metadata dict (set after load)
+var.content_hash  # Hash of data content
+var.lineage_hash  # Lineage hash (None for raw data)
 ```
 
 ## Batch Operations: DataFrames with Multiple Records
@@ -175,14 +178,9 @@ When a DataFrame contains multiple independent data items (e.g., one row per sub
 
 class ScalarResult(BaseVariable):
     schema_version = 1
-    def to_db(self):
-        return pd.DataFrame({"value": [self.data]})
-    @classmethod
-    def from_db(cls, df):
-        return df["value"].iloc[0]
 
 # Save each row as a separate record
-record_ides = ScalarResult.save_from_dataframe(
+record_ids = ScalarResult.save_from_dataframe(
     df=results_df,
     data_column="Value",
     metadata_columns=["Subject", "Trial"],
@@ -228,11 +226,6 @@ The metadata keys you use in `save()` should reflect the natural structure of yo
 ```python
 class TrialResult(BaseVariable):
     schema_version = 1
-    def to_db(self):
-        return pd.DataFrame({"value": [self.data]})
-    @classmethod
-    def from_db(cls, df):
-        return df["value"].iloc[0]
 
 # Save results for each subject and trial
 subjects = [1, 2, 3]
@@ -263,7 +256,6 @@ for var in TrialResult.load_all(trial="baseline"):
 ```python
 class Recording(BaseVariable):
     schema_version = 1
-    # ... to_db/from_db
 
 sessions = ["morning", "afternoon", "evening"]
 days = ["day1", "day2", "day3"]
@@ -284,5 +276,8 @@ These keys cannot be used in metadata:
 - `id` - Reserved for database ID
 - `created_at` - Reserved for timestamp
 - `schema_version` - Reserved for schema version
+- `index` - Reserved for DataFrame index parameter
+- `loc` - Reserved for label-based indexing parameter
+- `iloc` - Reserved for integer-position indexing parameter
 
 Using these raises `ReservedMetadataKeyError`.

@@ -8,7 +8,6 @@ versioning, and reproducibility.
 import hashlib
 import json
 from typing import Any
-# import pickle
 
 
 def canonical_hash(obj: Any) -> str:
@@ -16,9 +15,13 @@ def canonical_hash(obj: Any) -> str:
     Generate a deterministic hash for arbitrary Python objects.
 
     Strategy:
-    1. For JSON-serializable primitives: use JSON (deterministic)
-    2. For numpy/pandas: use shape + dtype + raw bytes
-    3. For other objects: raise ValueError
+    1. For JSON-serializable primitives (None, bool, int, float, str): use JSON
+    2. For numpy ndarrays: use shape + dtype + raw bytes
+    3. For pandas DataFrames: use columns + index + array serialization
+    4. For pandas Series: use name + array serialization
+    5. For dicts: sort keys, recursively serialize
+    6. For lists/tuples: preserve order, recursively serialize
+    7. For other objects: raise ValueError
 
     Args:
         obj: Any Python object to hash
@@ -30,10 +33,13 @@ def canonical_hash(obj: Any) -> str:
         ValueError: If an unserializable object is provided
 
     Example:
-        >>> canonical_hash(42)
-        'a1d0c6e83f027327'
-        >>> canonical_hash([1, 2, 3])
-        'f1945cd6c19e56b3'
+        >>> h = canonical_hash(42)
+        >>> len(h) == 16 and all(c in '0123456789abcdef' for c in h)
+        True
+        >>> canonical_hash(42) == canonical_hash(42)  # Deterministic
+        True
+        >>> canonical_hash([1, 2, 3]) != canonical_hash([1, 2, 4])  # Content-sensitive
+        True
     """
     serialized = _serialize_for_hash(obj)
     return hashlib.sha256(serialized).hexdigest()[:16]
@@ -95,9 +101,8 @@ def _serialize_for_hash(obj: Any) -> bytes:
             + _serialize_for_hash(obj.to_numpy())
         )
 
-    # Fallback: pickle (less ideal but handles arbitrary objects)
+    # Unsupported type
     raise ValueError(f"Unserializable data type: {type(obj)}")
-    # return b"pickle:" + pickle.dumps(obj, protocol=4)
 
 
 def generate_record_id(
@@ -122,8 +127,9 @@ def generate_record_id(
         16-character hex string
 
     Example:
-        >>> generate_record_id("MyData", 1, "abc123", {"subject": 1})
-        'f8a3b2c1d4e5f6a7'
+        >>> rid = generate_record_id("MyData", 1, "abc123", {"subject": 1})
+        >>> len(rid) == 16 and all(c in '0123456789abcdef' for c in rid)
+        True
     """
     components = [
         f"class:{class_name}",

@@ -4,9 +4,9 @@ SciDB automatically caches computation results. When you save a variable produce
 
 ## How Caching Works
 
-1. **Save populates cache** - When saving an `ThunkOutput`, the cache is updated
-2. **Cache key** - Hash of function + input hashes
-3. **Automatic lookup** - Thunks check the cache before executing
+1. **Save populates cache** - When saving a `ThunkOutput`, lineage is stored in PipelineDB
+2. **Cache key** - Lineage hash: hash of function + input hashes
+3. **Automatic lookup** - Thunks check `Thunk.query` (the `DatabaseManager`) before executing
 
 ```
                     ┌─────────────────┐
@@ -39,7 +39,6 @@ MyVar.save(result, subject=1, stage="computed")
 
 # Second run: cache hit, no execution!
 result2 = expensive_computation(raw_data)  # No print, returns cached
-print(result2.was_cached)  # True
 print(result2.data)        # Same result, no recomputation
 ```
 
@@ -53,7 +52,7 @@ print(result2.data)        # Same result, no recomputation
 Multi-output functions are also cached automatically. All outputs must be saved before caching takes effect:
 
 ```python
-@thunk(unpack_outputs=True)
+@thunk(unpack_output=True)
 def split_data(data):
     print("Splitting...")  # Only prints on first run
     return data[:len(data)//2], data[len(data)//2:]
@@ -65,8 +64,6 @@ RightHalf.save(right, subject=1)
 
 # Second run: cache hit for both outputs!
 left2, right2 = split_data(raw_data)  # No print
-print(left2.was_cached)   # True
-print(right2.was_cached)  # True
 ```
 
 **Important:** If only some outputs are saved, no caching occurs:
@@ -78,38 +75,16 @@ LeftHalf.save(left, subject=1)  # Only save one output
 
 # Next run: cache miss (partial save)
 left2, right2 = split_data(raw_data)  # Executes again
-print(left2.was_cached)  # False
-```
-
-## Manual Cache Checking
-
-For more control, use `check_cache()` explicitly:
-
-```python
-from scidb import check_cache
-
-@thunk
-def process(data):
-    return data * 2
-
-result = process(input_data)
-cached = check_cache(result.pipeline_thunk, OutputVar, db=db)
-
-if cached:
-    print(f"Cache hit! record_id: {cached.cached_id}")
-else:
-    print("Cache miss, saving...")
-    OutputVar.save(result, db=db, subject=1)
 ```
 
 ## Cache Key Components
 
-The cache key is a SHA-256 hash of:
+The cache key (lineage hash) is a SHA-256 hash of:
 
 | Component            | Source                   |
 | -------------------- | ------------------------ |
 | Function hash        | Bytecode + constants     |
-| Input record_ides    | For saved variables      |
+| Input record_ids     | For saved variables      |
 | Input content hashes | For unsaved values       |
 | Output thunk hashes  | For chained computations |
 
@@ -118,61 +93,6 @@ This ensures cache hits only when:
 - Same function code
 - Same input data
 - Same input metadata
-
-## Cache Statistics
-
-```python
-stats = db.get_cache_stats()
-
-print(f"Total cached: {stats['total_entries']}")
-print(f"Functions: {stats['functions']}")
-for fn, count in stats['entries_by_function'].items():
-    print(f"  {fn}: {count} entries")
-```
-
-## Cache Invalidation
-
-Cache invalidation is primarily useful for:
-
-- **Space management**: Removing old entries you no longer need
-- **Testing**: Forcing recomputation during development
-- **Cleanup**: Removing entries from functions that no longer exist
-
-Note: If you fix a bug in a function, the function's bytecode hash changes automatically, so old cached results won't be hit. You don't need to manually invalidate.
-
-### Invalidate All
-
-```python
-deleted = db.invalidate_cache()
-print(f"Removed {deleted} cache entries")
-```
-
-### Invalidate by Function Name
-
-```python
-# Remove all cached results from a specific function
-deleted = db.invalidate_cache(function_name="process_signal")
-```
-
-### Invalidate by Function Hash
-
-Remove entries for a specific version of a function:
-
-```python
-deleted = db.invalidate_cache(function_hash="abc123...")
-```
-
-## ThunkOutput Cache Properties
-
-```python
-result = expensive_computation(data)
-cached = check_cache(result.pipeline_thunk, MyVar, db=db)
-
-if cached:
-    cached.was_cached     # True
-    cached.cached_id   # "abc123..."
-    cached.data           # The cached data
-```
 
 ## When Cache Misses Occur
 
@@ -183,8 +103,7 @@ Cache misses happen when:
 | First run           | No previous result exists |
 | Different inputs    | Input data changed        |
 | Function modified   | Bytecode hash changed     |
-| Different constants | e.g., `x * 2` vs `x * 3`  |
-| Cache invalidated   | Manual invalidation       |
+| Different constants | e.g., `x * 2` vs `x * 3` |
 
 ## Best Practices
 
@@ -192,30 +111,22 @@ Cache misses happen when:
 
 ```python
 result = expensive_computation(data)
-MyVar.save(result, db=db, subject=1)  # Populates cache
+MyVar.save(result, subject=1)  # Populates cache
 ```
 
-### 2. Check Cache Before Re-running
+### 2. Use Saved Variables as Inputs
 
-```python
-cached = check_cache(pipeline_thunk, MyVar, db=db)
-if cached:
-    return cached.data
-```
-
-### 3. Use Saved Variables as Inputs
-
-Variables with record_ides have stable cache keys:
+Variables with record_ids have stable cache keys:
 
 ```python
 # Good: loaded variable has record_id
 raw = RawData.load(subject=1)
-result = process(raw.data)
+result = process(raw)  # Pass variable, not .data
 
 # Less stable: unsaved data uses content hash
 result = process(np.array([1, 2, 3]))
 ```
 
-### 4. Cache Keys Are Content-Based
+### 3. Cache Keys Are Content-Based
 
 If you modify a function's code, the cache key changes automatically. You don't need to manually invalidate—the next run will simply compute fresh results.

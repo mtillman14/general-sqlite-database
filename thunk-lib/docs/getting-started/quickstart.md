@@ -67,7 +67,7 @@ print(b.pipeline_thunk.inputs['arg_0'])  # This is the ThunkOutput from add_one
 For functions returning multiple values:
 
 ```python
-@thunk(unwrap_outputs=True)
+@thunk(unpack_output=True)
 def split(data, pivot):
     return (
         [x for x in data if x < pivot],

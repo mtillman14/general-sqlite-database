@@ -4,12 +4,13 @@
 
 ### `BaseVariable`
 
-Abstract base class for storable data types.
+Base class for storable data types. For most data types (scalars, numpy arrays, lists, dicts), no methods need to be overridden — SciDuck handles serialization automatically. Override `to_db()` and `from_db()` only for custom multi-column serialization.
 
 ```python
 class MyVariable(BaseVariable):
     schema_version: int = 1  # Required class attribute
 
+    # Optional — only needed for custom serialization
     def to_db(self) -> pd.DataFrame:
         """Convert self.data to DataFrame."""
         ...
@@ -22,96 +23,95 @@ class MyVariable(BaseVariable):
 
 **Instance Attributes:**
 
-| Attribute   | Type           | Description                    |
-| ----------- | -------------- | ------------------------------ |
-| `data`      | `Any`          | The native data                |
-| `record_id` | `str \| None`  | Version hash (after save/load) |
-| `metadata`  | `dict \| None` | Metadata (after save/load)     |
+| Attribute      | Type           | Description                                            |
+| -------------- | -------------- | ------------------------------------------------------ |
+| `data`         | `Any`          | The native data                                        |
+| `record_id`    | `str \| None`  | Version hash (after save/load)                         |
+| `metadata`     | `dict \| None` | Metadata (after save/load)                             |
+| `content_hash` | `str \| None`  | Content hash computed from data                        |
+| `lineage_hash` | `str \| None`  | Lineage hash (None for raw data, set for thunk output) |
 
 **Class Methods:**
 
-| Method                                                                               | Description                                            |
-| ------------------------------------------------------------------------------------ | ------------------------------------------------------ |
-| `save(data, db=None, **metadata)`                                                    | Save data to database, returns record_id               |
-| `load(db=None, version="latest", **metadata)`                                        | Load single result (latest version at schema location) |
-| `load_all(db=None, as_df=False, include_record_id=False, **metadata)`                | Load all matching as generator or DataFrame            |
-| `list_versions(db=None, **metadata)`                                                 | List all versions at a schema location                 |
-| `save_from_dataframe(df, data_column, metadata_columns, db=None, **common_metadata)` | Save each row as separate record                       |
-| `table_name()`                                                                       | Get SQLite table name                                  |
+| Method                                                                     | Description                                            |
+| -------------------------------------------------------------------------- | ------------------------------------------------------ |
+| `save(data, index=None, **metadata)`                                       | Save data to database, returns record_id               |
+| `load(version="latest", loc=None, iloc=None, **metadata)`                  | Load single result (latest version at schema location) |
+| `load_all(as_df=False, include_record_id=False, **metadata)`               | Load all matching as generator or DataFrame            |
+| `list_versions(**metadata)`                                                | List all versions at a schema location                 |
+| `save_from_dataframe(df, data_column, metadata_columns, **common_metadata)`| Save each row as separate record                       |
+| `table_name()`                                                             | Get DuckDB table name (returns the class name)         |
 
 **Instance Methods:**
 
-| Method          | Description                     |
-| --------------- | ------------------------------- |
-| `to_csv(path)`  | Export data to CSV file         |
-| `get_preview()` | Get human-readable data summary |
+| Method         | Description             |
+| -------------- | ----------------------- |
+| `to_csv(path)` | Export data to CSV file |
 
 ---
 
 ### `DatabaseManager`
 
-Manages database connection and operations.
+Manages database connection and operations using DuckDB (via SciDuck) for data storage and SQLite (via PipelineDB) for lineage persistence.
 
 ```python
 db = DatabaseManager(
-    "path/to/db.sqlite",
-    schema_keys=["subject", "trial", "condition"]
+    "path/to/db.duckdb",
+    dataset_schema_keys=["subject", "trial", "condition"],
+    pipeline_db_path="pipeline.db",
 )
 ```
 
 **Constructor Parameters:**
 
-| Parameter      | Type          | Description                                                |
-| -------------- | ------------- | ---------------------------------------------------------- |
-| `db_path`      | `str \| Path` | Path to SQLite database file                               |
-| `schema_keys`  | `list[str]`   | **Required.** Metadata keys that identify dataset location |
-| `lineage_mode` | `str`         | `"strict"` (default) or `"ephemeral"`                      |
+| Parameter              | Type          | Description                                                      |
+| ---------------------- | ------------- | ---------------------------------------------------------------- |
+| `dataset_db_path`      | `str \| Path` | Path to DuckDB database file                                     |
+| `dataset_schema_keys`  | `list[str]`   | **Required.** Metadata keys that identify dataset location       |
+| `pipeline_db_path`     | `str \| Path` | **Required.** Path to SQLite database file for lineage storage   |
+| `lineage_mode`         | `str`         | `"strict"` (default) or `"ephemeral"`                            |
 
 **Methods:**
 
-| Method                                                                      | Description                                                      |
-| --------------------------------------------------------------------------- | ---------------------------------------------------------------- |
-| `register(variable_class)`                                                  | Register a variable type (optional, auto-registers on save/load) |
-| `save(variable, metadata, lineage=None)`                                    | Save variable (internal)                                         |
-| `load(variable_class, metadata, version="latest")`                          | Load single variable (latest at schema location)                 |
-| `load_all(variable_class, metadata)`                                        | Generator yielding all matching variables                        |
-| `list_versions(variable_class, **metadata)`                                 | List all versions at schema location                             |
-| `get_provenance(variable_class, version=None, **metadata)`                  | Get immediate lineage info                                       |
-| `get_full_lineage(variable_class, version=None, max_depth=100, **metadata)` | Get complete lineage chain                                       |
-| `format_lineage(variable_class, version=None, **metadata)`                  | Get print-friendly lineage                                       |
-| `get_derived_from(variable_class, version=None, **metadata)`                | Find derived variables                                           |
-| `has_lineage(record_id)`                                                    | Check if lineage exists                                          |
-| `export_to_csv(variable_class, path, **metadata)`                           | Export matching records to CSV                                   |
-| `preview_data(variable_class, **metadata)`                                  | Get formatted preview of records                                 |
-| `get_cached_computation(cache_key, variable_class)`                         | Look up cached result by key and type                            |
-| `get_cached_by_key(cache_key)`                                              | Look up cached result by key only (used for auto-caching)        |
-| `cache_computation(...)`                                                    | Store computation in cache                                       |
-| `invalidate_cache(function_name=None, function_hash=None)`                  | Clear cache entries                                              |
-| `get_cache_stats()`                                                         | Get cache statistics                                             |
-| `close()`                                                                   | Close connection                                                 |
+| Method                                                         | Description                                                      |
+| -------------------------------------------------------------- | ---------------------------------------------------------------- |
+| `register(variable_class)`                                     | Register a variable type (optional, auto-registers on save/load) |
+| `save(variable, metadata, lineage=None, lineage_hash=None)`    | Save variable (internal)                                         |
+| `save_variable(variable_class, data, index=None, **metadata)`  | Save data with input normalization and lineage extraction         |
+| `load(variable_class, metadata, version="latest")`             | Load single variable (latest at schema location)                 |
+| `load_all(variable_class, metadata)`                           | Generator yielding all matching variables                        |
+| `list_versions(variable_class, **metadata)`                    | List all versions at schema location                             |
+| `get_provenance(variable_class, version=None, **metadata)`     | Get immediate lineage info                                       |
+| `has_lineage(record_id)`                                       | Check if lineage exists                                          |
+| `find_by_lineage(pipeline_thunk)`                              | Find cached outputs by computation lineage                       |
+| `save_ephemeral_lineage(ephemeral_id, variable_type, lineage)` | Save ephemeral lineage for unsaved intermediates                 |
+| `export_to_csv(variable_class, path, **metadata)`              | Export matching records to CSV                                   |
+| `close()`                                                      | Close connections and reset Thunk.query                          |
 
 ---
 
 ## Configuration Functions
 
-### `configure_database(db_path, schema_keys, lineage_mode="strict")`
+### `configure_database(dataset_db_path, dataset_schema_keys, pipeline_db_path, lineage_mode="strict")`
 
 Configure the global database.
 
 ```python
 db = configure_database(
-    "experiment.db",
-    schema_keys=["subject", "trial", "condition"]
+    "experiment.duckdb",
+    dataset_schema_keys=["subject", "trial", "condition"],
+    pipeline_db_path="pipeline.db",
 )
 ```
 
 **Parameters:**
 
-| Parameter      | Type          | Description                                                |
-| -------------- | ------------- | ---------------------------------------------------------- |
-| `db_path`      | `str \| Path` | Path to SQLite database file                               |
-| `schema_keys`  | `list[str]`   | **Required.** Metadata keys that identify dataset location |
-| `lineage_mode` | `str`         | `"strict"` (default) or `"ephemeral"`                      |
+| Parameter              | Type          | Description                                                      |
+| ---------------------- | ------------- | ---------------------------------------------------------------- |
+| `dataset_db_path`      | `str \| Path` | Path to DuckDB database file                                     |
+| `dataset_schema_keys`  | `list[str]`   | **Required.** Metadata keys that identify dataset location       |
+| `pipeline_db_path`     | `str \| Path` | **Required.** Path to SQLite database file for lineage storage   |
+| `lineage_mode`         | `str`         | `"strict"` (default) or `"ephemeral"`                            |
 
 **Returns:** `DatabaseManager`
 
@@ -132,7 +132,7 @@ db = get_database()
 
 ## Thunk System
 
-### `@thunk(unpack_outputs=False, unwrap=True)`
+### `@thunk(unpack_output=False, unwrap=True)`
 
 Decorator for lineage-tracked functions with automatic caching.
 
@@ -147,27 +147,26 @@ result.data  # The actual result
 
 **Parameters:**
 
-| Parameter        | Default | Description                                                                                                                          |
-| ---------------- | ------- | ------------------------------------------------------------------------------------------------------------------------------------ |
-| `unpack_outputs` | `False` | If True, split a returned tuple into its constituent elements.                                                                       |
-| `unwrap`         | `True`  | If True, unwrap `BaseVariable` and `ThunkOutput` inputs to raw data. If False, pass wrapper objects directly (useful for debugging). |
+| Parameter       | Default | Description                                                                                                                          |
+| --------------- | ------- | ------------------------------------------------------------------------------------------------------------------------------------ |
+| `unpack_output` | `False` | If True, split a returned tuple into separate ThunkOutputs.                                                                          |
+| `unwrap`        | `True`  | If True, unwrap `BaseVariable` and `ThunkOutput` inputs to raw data. If False, pass wrapper objects directly (useful for debugging). |
 
 **Automatic caching:**
 
-Results are cached automatically. Once saved, subsequent calls with the same inputs skip execution:
+Results are cached automatically when `Thunk.query` is set (done by `configure_database()`). Once saved, subsequent calls with the same inputs skip execution:
 
 ```python
 result = process(data)
 MyVar.save(result, ...)  # Populates cache
 
 result2 = process(data)  # Cache hit! No execution
-result2.was_cached       # True
 ```
 
 For multi-output functions, all outputs must be saved before caching takes effect:
 
 ```python
-@thunk(unpack_outputs=True)
+@thunk(unpack_output=True)
 def split(data):
     return data[:5], data[5:]
 
@@ -183,13 +182,13 @@ left2, right2 = split(data)  # Cache hit for both!
 ```python
 # step1.py
 result = process(raw_data)
-Intermediate.save(result, db=db, subject=1)
+Intermediate.save(result, subject=1)
 
 # step2.py
-loaded = Intermediate.load(db=db, subject=1)
+loaded = Intermediate.load(subject=1)
 
 @thunk
-def analyze(data):  # Receives raw data (loaded.data)
+def analyze(data):  # Receives raw data (unwrapped from loaded)
     return data.mean()
 
 result = analyze(loaded)  # Pass the variable, lineage is captured
@@ -213,12 +212,12 @@ Wrapper for a function with lineage tracking.
 
 **Attributes:**
 
-| Attribute        | Type       | Description                        |
-| ---------------- | ---------- | ---------------------------------- |
-| `fcn`            | `Callable` | The wrapped function               |
-| `unpack_outputs` | `bool`     | Whether to unpack a returned tuple |
-| `unwrap`         | `bool`     | Whether to unwrap inputs           |
-| `hash`           | `str`      | SHA-256 of bytecode                |
+| Attribute       | Type       | Description                         |
+| --------------- | ---------- | ----------------------------------- |
+| `fcn`           | `Callable` | The wrapped function                |
+| `unpack_output` | `bool`     | Whether to unpack a returned tuple  |
+| `unwrap`        | `bool`     | Whether to unwrap inputs            |
+| `hash`          | `str`      | SHA-256 of bytecode + unpack_output |
 
 ---
 
@@ -237,9 +236,9 @@ A specific invocation with captured inputs.
 
 **Methods:**
 
-| Method                | Description               |
-| --------------------- | ------------------------- |
-| `compute_cache_key()` | Generate cache lookup key |
+| Method                   | Description                    |
+| ------------------------ | ------------------------------ |
+| `compute_lineage_hash()` | Generate lineage lookup hash   |
 
 ---
 
@@ -255,8 +254,6 @@ Wraps a function output with lineage.
 | `output_num`     | `int`           | Output index        |
 | `data`           | `Any`           | Computed result     |
 | `is_complete`    | `bool`          | Whether computed    |
-| `was_cached`     | `bool`          | From cache          |
-| `cached_id`      | `str \| None`   | Cached version hash |
 | `hash`           | `str`           | Lineage hash        |
 
 ---
@@ -265,9 +262,11 @@ Wraps a function output with lineage.
 
 ### `extract_lineage(thunk_output)`
 
-Extract lineage from an ThunkOutput.
+Extract lineage from a ThunkOutput. Available from `scidb.lineage`.
 
 ```python
+from scidb.lineage import extract_lineage
+
 lineage = extract_lineage(result)
 print(lineage.function_name)
 ```
@@ -278,26 +277,14 @@ print(lineage.function_name)
 
 ### `get_raw_value(data)`
 
-Unwrap ThunkOutput to raw value.
+Unwrap ThunkOutput to raw value. Available from `scidb.lineage`.
 
 ```python
+from scidb.lineage import get_raw_value
+
 raw = get_raw_value(thunk_output)  # Returns thunk_output.data
 raw = get_raw_value(plain_data)    # Returns plain_data unchanged
 ```
-
----
-
-### `check_cache(pipeline_thunk, variable_class, db=None)`
-
-Check if computation is cached.
-
-```python
-cached = check_cache(result.pipeline_thunk, MyVar, db=db)
-if cached:
-    print(cached.data)
-```
-
-**Returns:** `ThunkOutput | None`
 
 ---
 
@@ -318,13 +305,14 @@ Provenance data structure.
 
 ## Exceptions
 
-| Exception                    | Description                         |
-| ---------------------------- | ----------------------------------- |
-| `SciDBError`                 | Base exception                      |
-| `NotRegisteredError`         | Loading a type that was never saved |
-| `NotFoundError`              | No matching data                    |
-| `DatabaseNotConfiguredError` | Global DB not configured            |
-| `ReservedMetadataKeyError`   | Using reserved metadata key         |
+| Exception                    | Description                                  |
+| ---------------------------- | -------------------------------------------- |
+| `SciDBError`                 | Base exception                               |
+| `NotRegisteredError`         | Loading a type that was never saved          |
+| `NotFoundError`              | No matching data                             |
+| `DatabaseNotConfiguredError` | Global DB not configured                     |
+| `ReservedMetadataKeyError`   | Using reserved metadata key                  |
+| `UnsavedIntermediateError`   | Strict mode detected unsaved intermediates   |
 
 ---
 
@@ -336,3 +324,6 @@ Cannot be used in `save()` metadata:
 - `id`
 - `created_at`
 - `schema_version`
+- `index`
+- `loc`
+- `iloc`

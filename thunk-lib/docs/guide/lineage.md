@@ -56,19 +56,19 @@ for const in lineage.constants:
 # {'name': 'arg_1', 'value_hash': '...', 'value_repr': '100', 'value_type': 'int'}
 ```
 
-## Full Lineage Chain
+## Full Upstream Lineage
 
-To traverse the entire computation history:
+To traverse the entire computation history, use `get_upstream_lineage()`. This returns a list of dicts (one per upstream computation):
 
 ```python
-from thunk import get_lineage_chain
+from thunk import get_upstream_lineage
 
-chain = get_lineage_chain(scaled)
+chain = get_upstream_lineage(scaled)
 
 for record in chain:
-    print(f"{record.function_name}:")
-    print(f"  Inputs: {len(record.inputs)}")
-    print(f"  Constants: {len(record.constants)}")
+    print(f"{record['function_name']}:")
+    print(f"  Inputs: {len(record['inputs'])}")
+    print(f"  Constants: {len(record['constants'])}")
 
 # Output:
 # scale:
@@ -80,6 +80,18 @@ for record in chain:
 # load:
 #   Inputs: 0
 #   Constants: 1
+```
+
+## Finding Unsaved Variables
+
+Use `find_unsaved_variables()` to find any `BaseVariable` in the upstream chain that hasn't been saved (has no `record_id`). This is used by strict lineage mode to validate that all intermediates are saved:
+
+```python
+from thunk import find_unsaved_variables
+
+unsaved = find_unsaved_variables(result)
+for variable, path in unsaved:
+    print(f"Unsaved: {type(variable).__name__} at {path}")
 ```
 
 ## LineageRecord Structure
@@ -155,13 +167,15 @@ def verify_reproducibility(result1, result2):
 ### Audit Trail
 
 ```python
+from thunk import get_upstream_lineage
+
 def build_audit_trail(result):
     """Create human-readable audit trail."""
-    chain = get_lineage_chain(result)
+    chain = get_upstream_lineage(result)
     trail = []
     for i, record in enumerate(chain):
-        trail.append(f"Step {i+1}: {record.function_name}")
-        for const in record.constants:
+        trail.append(f"Step {i+1}: {record['function_name']}")
+        for const in record['constants']:
             trail.append(f"  - {const['name']}: {const['value_repr']}")
     return "\n".join(trail)
 ```
@@ -169,12 +183,14 @@ def build_audit_trail(result):
 ### Dependency Analysis
 
 ```python
+from thunk import get_upstream_lineage
+
 def find_all_sources(result):
     """Find all leaf nodes (original data sources)."""
-    chain = get_lineage_chain(result)
+    chain = get_upstream_lineage(result)
     sources = []
     for record in chain:
-        if not record.inputs:  # No thunk inputs = source
+        if not record['inputs']:  # No thunk inputs = source
             sources.append(record)
     return sources
 ```
