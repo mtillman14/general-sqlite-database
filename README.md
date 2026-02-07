@@ -125,14 +125,7 @@ import numpy as np
 import pandas as pd
 
 class RotationMatrix(BaseVariable):
-    schema_version = 1
-
-    def to_db(self) -> pd.DataFrame:
-        return pd.DataFrame({'value': self.data.flatten()})
-
-    @classmethod
-    def from_db(cls, df: pd.DataFrame) -> np.ndarray:
-        return df['value'].values.reshape(3, 3)
+    pass
 
 # Setup (creates both DuckDB for data and SQLite for lineage)
 db = configure_database("experiment.db", schema_keys=["subject", "trial"])
