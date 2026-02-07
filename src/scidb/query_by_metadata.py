@@ -17,8 +17,8 @@ class QueryByMetadata:
     """
     Metadata-driven query layer over SciDuck.
 
-    Uses SciDB metadata (lineage, relationships) to enable rich queries
-    against the barebones SciDuck data store.
+    Uses PipelineDB (SQLite) for lineage lookups and SciDuck (DuckDB)
+    for data retrieval. This bridges the two-database architecture.
 
     Example:
         from scidb.query_by_metadata import QueryByMetadata
@@ -34,7 +34,7 @@ class QueryByMetadata:
         Initialize the query layer.
 
         Args:
-            db: DatabaseManager instance (provides access to metadata and SciDuck)
+            db: DatabaseManager instance (provides access to PipelineDB and SciDuck)
         """
         self.db = db
 
@@ -43,7 +43,9 @@ class QueryByMetadata:
         Find output values by computation lineage.
 
         Given a PipelineThunk (function + inputs), finds any previously
-        computed outputs that match.
+        computed outputs that match by:
+        1. Querying PipelineDB (SQLite) for matching lineage_hash
+        2. Loading data from SciDuck (DuckDB) using the record_ids
 
         Args:
             pipeline_thunk: The computation to look up
@@ -53,27 +55,30 @@ class QueryByMetadata:
         """
         lineage_hash = pipeline_thunk.compute_lineage_hash()
 
-        rows = self.db._duck._fetchall(
-            """SELECT output_record_id, output_type
-               FROM _lineage
-               WHERE lineage_hash = ?""",
-            [lineage_hash],
-        )
-
-        if not rows:
+        # Query PipelineDB (SQLite) for matching lineage
+        records = self.db._pipeline_db.find_by_lineage_hash(lineage_hash)
+        if not records:
             return None
 
         results = []
-        for output_record_id, output_type in rows:
+        for record in records:
+            output_record_id = record["output_record_id"]
+            output_type = record["output_type"]
+
+            # Skip ephemeral entries (no data stored in SciDuck)
+            if output_record_id.startswith("ephemeral:"):
+                continue
+
             var_class = self._get_variable_class(output_type)
             if var_class is None:
                 return None
 
             try:
+                # Load data from SciDuck (DuckDB)
                 var = self.db.load(var_class, {}, version=output_record_id)
                 results.append(var.data)
             except (KeyError, NotFoundError):
-                # Record not found in database
+                # Record not found in SciDuck
                 return None
 
         return results if results else None

@@ -54,7 +54,14 @@ from .exceptions import (
     SciDBError,
     UnsavedIntermediateError,
 )
-from .foreach import Fixed, for_each
+
+# Re-export from scirun for backwards compatibility
+# The original foreach.py is kept for now but scirun is the canonical source
+import sys
+from pathlib import Path
+sys.path.insert(0, str(Path(__file__).parent.parent.parent / "scirun-lib" / "src"))
+from scirun import Fixed, for_each
+
 from .lineage import (
     LineageRecord,
     extract_lineage,

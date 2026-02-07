@@ -25,6 +25,10 @@ import sys
 sys.path.insert(0, str(Path(__file__).parent.parent))
 from sciduck.sciduck import SciDuck
 
+# Import PipelineDB for lineage storage
+sys.path.insert(0, str(Path(__file__).parent.parent.parent / "pipelinedb-lib" / "src"))
+from pipelinedb import PipelineDB
+
 
 # Global database instance (thread-local for safety)
 _local = threading.local()
@@ -47,6 +51,7 @@ def configure_database(
     db_path: str | Path,
     schema_keys: list[str],
     lineage_mode: str = "strict",
+    pipeline_db_path: str | Path | None = None,
 ) -> "DatabaseManager":
     """
     Configure the global database connection.
@@ -69,6 +74,9 @@ def configure_database(
               graph (function, inputs) without storing actual data for unsaved
               variables. Enables full provenance tracking with smaller database
               size, but cache hits won't work for ephemeral intermediates.
+        pipeline_db_path: Path to the SQLite database for lineage storage.
+            If not specified, uses the same directory as db_path with
+            .pipeline.db suffix.
 
     Returns:
         The DatabaseManager instance
@@ -76,7 +84,12 @@ def configure_database(
     Raises:
         ValueError: If lineage_mode is not "strict" or "ephemeral"
     """
-    _local.database = DatabaseManager(db_path, schema_keys=schema_keys, lineage_mode=lineage_mode)
+    _local.database = DatabaseManager(
+        db_path,
+        schema_keys=schema_keys,
+        lineage_mode=lineage_mode,
+        pipeline_db_path=pipeline_db_path,
+    )
     return _local.database
 
 
@@ -118,6 +131,7 @@ class DatabaseManager:
         db_path: str | Path,
         schema_keys: list[str],
         lineage_mode: str = "strict",
+        pipeline_db_path: str | Path | None = None,
     ):
         """
         Initialize database connection.
@@ -129,6 +143,8 @@ class DatabaseManager:
                 logical location of data. Any other metadata keys are treated as
                 version parameters.
             lineage_mode: How to handle intermediate variables ("strict" or "ephemeral")
+            pipeline_db_path: Path to SQLite database for lineage storage.
+                If not specified, uses same directory as db_path with .pipeline.db suffix.
 
         Raises:
             ValueError: If lineage_mode is not valid
@@ -144,53 +160,30 @@ class DatabaseManager:
         self.schema_keys = list(schema_keys)
         self._registered_types: dict[str, Type[BaseVariable]] = {}
 
-        # Initialize SciDuck backend
+        # Initialize SciDuck backend for data storage
         self._duck = SciDuck(self.db_path, dataset_schema=schema_keys)
 
-        # Create additional metadata tables for lineage tracking
+        # Initialize PipelineDB for lineage storage (SQLite)
+        if pipeline_db_path is None:
+            pipeline_db_path = self.db_path.with_suffix(".pipeline.db")
+        self._pipeline_db = PipelineDB(pipeline_db_path)
+
+        # Create metadata tables for type registration (in DuckDB)
         self._ensure_meta_tables()
 
     def _ensure_meta_tables(self):
-        """Create internal metadata tables for lineage tracking."""
-        # Registered types table
+        """Create internal metadata tables for type registration."""
+        # Registered types table (remains in DuckDB for data type discovery)
+        # Note: Only type_name is unique (PRIMARY KEY). table_name is not unique
+        # to avoid DuckDB's ON CONFLICT ambiguity with multiple unique constraints.
         self._duck._execute("""
             CREATE TABLE IF NOT EXISTS _registered_types (
                 type_name VARCHAR PRIMARY KEY,
-                table_name VARCHAR UNIQUE NOT NULL,
+                table_name VARCHAR NOT NULL,
                 schema_version INTEGER NOT NULL,
                 registered_at TIMESTAMP DEFAULT current_timestamp
             )
         """)
-
-        # Lineage tracking table
-        self._duck._execute("""
-            CREATE TABLE IF NOT EXISTS _lineage (
-                id INTEGER PRIMARY KEY,
-                output_record_id VARCHAR UNIQUE NOT NULL,
-                output_type VARCHAR NOT NULL,
-                lineage_hash VARCHAR,
-                function_name VARCHAR NOT NULL,
-                function_hash VARCHAR NOT NULL,
-                inputs JSON NOT NULL,
-                constants JSON NOT NULL,
-                user_id VARCHAR,
-                created_at TIMESTAMP DEFAULT current_timestamp
-            )
-        """)
-
-        # Index for efficient cache lookups by lineage_hash
-        try:
-            self._duck._execute(
-                "CREATE INDEX IF NOT EXISTS idx_lineage_hash ON _lineage(lineage_hash)"
-            )
-        except Exception:
-            pass
-
-        # Create sequence for lineage id
-        try:
-            self._duck._execute("CREATE SEQUENCE IF NOT EXISTS _lineage_id_seq START 1")
-        except Exception:
-            pass
 
     def _split_metadata(self, flat_metadata: dict) -> dict:
         """
@@ -214,6 +207,37 @@ class DatabaseManager:
         flat.update(nested_metadata.get("version", {}))
         return flat
 
+    def _save_dataframe(self, table_name: str, df: pd.DataFrame) -> None:
+        """Save a DataFrame directly to DuckDB, creating the table if needed."""
+        # Check if table exists
+        exists = self._duck._fetchall(
+            "SELECT 1 FROM information_schema.tables WHERE table_name = ?",
+            [table_name],
+        )
+
+        if not exists:
+            # Create table from DataFrame schema
+            self._duck._conn.execute(
+                f'CREATE TABLE "{table_name}" AS SELECT * FROM df WHERE 1=0'
+            )
+
+        # Insert data
+        self._duck._conn.execute(f'INSERT INTO "{table_name}" SELECT * FROM df')
+
+    def _load_dataframe(self, table_name: str, **filters) -> pd.DataFrame:
+        """Load a DataFrame from DuckDB with optional filters."""
+        if filters:
+            conditions = []
+            params = []
+            for key, value in filters.items():
+                conditions.append(f'"{key}" = ?')
+                params.append(value)
+            where_clause = " AND ".join(conditions)
+            query = f'SELECT * FROM "{table_name}" WHERE {where_clause}'
+            return self._duck._conn.execute(query, params).fetchdf()
+        else:
+            return self._duck._conn.execute(f'SELECT * FROM "{table_name}"').fetchdf()
+
     def register(self, variable_class: Type[BaseVariable]) -> None:
         """
         Register a variable type for storage.
@@ -225,24 +249,15 @@ class DatabaseManager:
         table_name = variable_class.table_name()
         schema_version = variable_class.schema_version
 
-        # Register in metadata table
-        try:
+        # Register in metadata table (skip if already registered)
+        existing = self._duck._fetchall(
+            "SELECT 1 FROM _registered_types WHERE type_name = ?",
+            [type_name],
+        )
+        if not existing:
             self._duck._execute(
                 """
                 INSERT INTO _registered_types (type_name, table_name, schema_version)
-                VALUES (?, ?, ?)
-                ON CONFLICT (type_name) DO UPDATE SET
-                    table_name = EXCLUDED.table_name,
-                    schema_version = EXCLUDED.schema_version,
-                    registered_at = current_timestamp
-                """,
-                [type_name, table_name, schema_version],
-            )
-        except Exception:
-            # Handle DuckDB syntax differences
-            self._duck._execute(
-                """
-                INSERT OR REPLACE INTO _registered_types (type_name, table_name, schema_version)
                 VALUES (?, ?, ?)
                 """,
                 [type_name, table_name, schema_version],
@@ -345,31 +360,12 @@ class DatabaseManager:
         df["_user_id"] = user_id
         df["_created_at"] = datetime.now().isoformat()
 
-        # Add schema keys as columns for SciDuck
-        schema_level = self.schema_keys[-1] if self.schema_keys else None
-        for key in self.schema_keys:
-            if key in nested_metadata["schema"]:
-                df[key] = nested_metadata["schema"][key]
+        # Add schema keys as columns
+        for key, value in nested_metadata.get("schema", {}).items():
+            df[key] = value
 
-        # Save via SciDuck
-        try:
-            self._duck.save(
-                table_name,
-                df,
-                schema_level=schema_level,
-                force=True,  # Always save (we handle dedup via record_id)
-            )
-        except Exception as e:
-            # If table doesn't exist or schema mismatch, create fresh
-            if "not found" in str(e).lower() or "mismatch" in str(e).lower():
-                self._duck.save(
-                    table_name,
-                    df,
-                    schema_level=schema_level,
-                    force=True,
-                )
-            else:
-                raise
+        # Save directly to DuckDB (bypass SciDuck's high-level API)
+        self._save_dataframe(table_name, df)
 
         # Save lineage if provided
         if lineage is not None:
@@ -385,61 +381,17 @@ class DatabaseManager:
         lineage_hash: str | None = None,
         user_id: str | None = None,
     ) -> None:
-        """Save lineage record for a variable."""
-        try:
-            new_id = self._duck._fetchall("SELECT nextval('_lineage_id_seq')")[0][0]
-        except Exception:
-            new_id = 0
-
-        try:
-            self._duck._execute(
-                """
-                INSERT INTO _lineage
-                (id, output_record_id, output_type, lineage_hash, function_name, function_hash,
-                 inputs, constants, user_id)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-                ON CONFLICT (output_record_id) DO UPDATE SET
-                    lineage_hash = EXCLUDED.lineage_hash,
-                    function_name = EXCLUDED.function_name,
-                    function_hash = EXCLUDED.function_hash,
-                    inputs = EXCLUDED.inputs,
-                    constants = EXCLUDED.constants,
-                    user_id = EXCLUDED.user_id,
-                    created_at = current_timestamp
-                """,
-                [
-                    new_id,
-                    output_record_id,
-                    output_type,
-                    lineage_hash,
-                    lineage.function_name,
-                    lineage.function_hash,
-                    json.dumps(lineage.inputs),
-                    json.dumps(lineage.constants),
-                    user_id,
-                ],
-            )
-        except Exception:
-            # Fallback for older DuckDB versions
-            self._duck._execute(
-                """
-                INSERT OR REPLACE INTO _lineage
-                (id, output_record_id, output_type, lineage_hash, function_name, function_hash,
-                 inputs, constants, user_id)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                [
-                    new_id,
-                    output_record_id,
-                    output_type,
-                    lineage_hash,
-                    lineage.function_name,
-                    lineage.function_hash,
-                    json.dumps(lineage.inputs),
-                    json.dumps(lineage.constants),
-                    user_id,
-                ],
-            )
+        """Save lineage record for a variable to PipelineDB (SQLite)."""
+        self._pipeline_db.save_lineage(
+            output_record_id=output_record_id,
+            output_type=output_type,
+            function_name=lineage.function_name,
+            function_hash=lineage.function_hash,
+            inputs=lineage.inputs,
+            constants=lineage.constants,
+            lineage_hash=lineage_hash,
+            user_id=user_id,
+        )
 
     def save_ephemeral_lineage(
         self,
@@ -449,15 +401,15 @@ class DatabaseManager:
         user_id: str | None = None,
     ) -> None:
         """Save an ephemeral lineage record for an unsaved intermediate variable."""
-        # Check if already exists
-        rows = self._duck._fetchall(
-            "SELECT 1 FROM _lineage WHERE output_record_id = ?",
-            [ephemeral_id],
+        self._pipeline_db.save_ephemeral(
+            ephemeral_id=ephemeral_id,
+            variable_type=variable_type,
+            function_name=lineage.function_name,
+            function_hash=lineage.function_hash,
+            inputs=lineage.inputs,
+            constants=lineage.constants,
+            user_id=user_id,
         )
-        if rows:
-            return
-
-        self._save_lineage(ephemeral_id, variable_type, lineage)
 
     def load(
         self,
@@ -482,37 +434,43 @@ class DatabaseManager:
         """
         table_name = self._ensure_registered(variable_class, auto_register=False)
 
-        # Build query
-        if version != "latest" and version is not None:
-            # Load by specific record_id
-            df = self._duck.load(table_name)
-            df = df[df["_record_id"] == version]
-            if len(df) == 0:
-                raise NotFoundError(f"No data found with record_id '{version}'")
-        else:
-            # Load by metadata
-            split = self._split_metadata(metadata)
-            schema_filter = split["schema"]
+        try:
+            # Build query
+            if version != "latest" and version is not None:
+                # Load by specific record_id
+                df = self._load_dataframe(table_name, _record_id=version)
+                if len(df) == 0:
+                    raise NotFoundError(f"No data found with record_id '{version}'")
+            else:
+                # Load by metadata
+                split = self._split_metadata(metadata)
+                schema_filter = split["schema"]
 
-            df = self._duck.load(table_name, **schema_filter)
+                df = self._load_dataframe(table_name, **schema_filter)
 
-            # Further filter by version keys if provided
-            version_filter = split["version"]
-            if version_filter:
-                for key, value in version_filter.items():
-                    # Filter on _metadata JSON column
-                    mask = df["_metadata"].apply(
-                        lambda m: json.loads(m).get("version", {}).get(key) == value
+                # Further filter by version keys if provided
+                version_filter = split["version"]
+                if version_filter:
+                    for key, value in version_filter.items():
+                        # Filter on _metadata JSON column
+                        mask = df["_metadata"].apply(
+                            lambda m: json.loads(m).get("version", {}).get(key) == value
+                        )
+                        df = df[mask]
+
+                if len(df) == 0:
+                    raise NotFoundError(
+                        f"No {variable_class.__name__} found matching metadata: {metadata}"
                     )
-                    df = df[mask]
 
-            if len(df) == 0:
+                # Get latest by created_at
+                df = df.sort_values("_created_at", ascending=False).head(1)
+        except Exception as e:
+            if "does not exist" in str(e).lower() or "not found" in str(e).lower():
                 raise NotFoundError(
                     f"No {variable_class.__name__} found matching metadata: {metadata}"
                 )
-
-            # Get latest by created_at
-            df = df.sort_values("_created_at", ascending=False).head(1)
+            raise
 
         return self._df_to_variable(variable_class, df, loc=loc, iloc=iloc)
 
@@ -581,8 +539,8 @@ class DatabaseManager:
         schema_filter = split["schema"]
 
         try:
-            df = self._duck.load(table_name, **schema_filter)
-        except KeyError:
+            df = self._load_dataframe(table_name, **schema_filter)
+        except Exception:
             return  # No data
 
         # Further filter by version keys if provided
@@ -620,8 +578,8 @@ class DatabaseManager:
         schema_filter = split["schema"]
 
         try:
-            df = self._duck.load(table_name, **schema_filter)
-        except KeyError:
+            df = self._load_dataframe(table_name, **schema_filter)
+        except Exception:
             return []
 
         results = []
@@ -657,30 +615,20 @@ class DatabaseManager:
             var = self.load(variable_class, metadata)
             record_id = var.record_id
 
-        rows = self._duck._fetchall(
-            """SELECT function_name, function_hash, inputs, constants
-               FROM _lineage WHERE output_record_id = ?""",
-            [record_id],
-        )
-
-        if not rows:
+        lineage = self._pipeline_db.get_lineage(record_id)
+        if not lineage:
             return None
 
-        row = rows[0]
         return {
-            "function_name": row[0],
-            "function_hash": row[1],
-            "inputs": json.loads(row[2]),
-            "constants": json.loads(row[3]),
+            "function_name": lineage["function_name"],
+            "function_hash": lineage["function_hash"],
+            "inputs": lineage["inputs"],
+            "constants": lineage["constants"],
         }
 
     def has_lineage(self, record_id: str) -> bool:
         """Check if a variable has lineage information."""
-        rows = self._duck._fetchall(
-            "SELECT 1 FROM _lineage WHERE output_record_id = ?",
-            [record_id],
-        )
-        return len(rows) > 0
+        return self._pipeline_db.has_lineage(record_id)
 
     # -------------------------------------------------------------------------
     # Export Methods
@@ -715,8 +663,9 @@ class DatabaseManager:
         return len(results)
 
     def close(self):
-        """Close the database connection."""
+        """Close the database connections."""
         self._duck.close()
+        self._pipeline_db.close()
 
     def __enter__(self):
         return self

@@ -8,9 +8,15 @@ import numpy as np
 import pandas as pd
 import pytest
 
-# Add src to path for imports
+# Add all local packages to path for imports
 import sys
-sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
+_root = Path(__file__).parent.parent
+sys.path.insert(0, str(_root / "src"))
+sys.path.insert(0, str(_root / "canonical-hash" / "src"))
+sys.path.insert(0, str(_root / "thunk-lib" / "src"))
+sys.path.insert(0, str(_root / "path-gen" / "src"))
+sys.path.insert(0, str(_root / "pipelinedb-lib" / "src"))
+sys.path.insert(0, str(_root / "scirun-lib" / "src"))
 
 from scidb import DatabaseManager, BaseVariable, configure_database
 from scidb.database import _local

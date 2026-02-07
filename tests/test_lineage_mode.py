@@ -369,9 +369,9 @@ class TestEphemeralMode:
         result2 = step2(intermediate)
         FinalResult.save(result2, subject=1, stage="final")
 
-        # Query the lineage table directly for ephemeral entries
-        cursor = ephemeral_db.connection.execute(
-            "SELECT output_record_id, output_type FROM _lineage WHERE output_record_id LIKE 'ephemeral:%'"
+        # Query the lineage table directly for ephemeral entries (now in PipelineDB/SQLite)
+        cursor = ephemeral_db._pipeline_db._conn.execute(
+            "SELECT output_record_id, output_type FROM lineage WHERE output_record_id LIKE 'ephemeral:%'"
         )
         ephemeral_entries = cursor.fetchall()
 
@@ -561,9 +561,9 @@ class TestEdgeCases:
         final2 = step2(intermediate)
         FinalResult.save(final2, subject=1, version=2)
 
-        # Count ephemeral entries
-        cursor = ephemeral_db.connection.execute(
-            "SELECT COUNT(*) FROM _lineage WHERE output_record_id LIKE 'ephemeral:%'"
+        # Count ephemeral entries (now in PipelineDB/SQLite)
+        cursor = ephemeral_db._pipeline_db._conn.execute(
+            "SELECT COUNT(*) FROM lineage WHERE output_record_id LIKE 'ephemeral:%'"
         )
         count = cursor.fetchone()[0]
 
