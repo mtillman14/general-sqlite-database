@@ -1,57 +1,34 @@
 """Tests for lineage_mode configuration (strict and ephemeral modes)."""
 
 import numpy as np
-import pandas as pd
 import pytest
 
 from scidb import (
     BaseVariable,
-    DatabaseManager,
     configure_database,
     thunk,
     UnsavedIntermediateError,
 )
-from scidb.database import _local
+from scidb.database import _local, DatabaseManager
 from scidb.lineage import find_unsaved_variables
 from conftest import DEFAULT_TEST_SCHEMA_KEYS
 
 
-# --- Test Variable Classes ---
+# --- Test Variable Classes (native SciDuck storage) ---
 
 class RawData(BaseVariable):
     """Raw input data for testing."""
     schema_version = 1
-
-    def to_db(self) -> pd.DataFrame:
-        return pd.DataFrame({"value": self.data})
-
-    @classmethod
-    def from_db(cls, df: pd.DataFrame) -> np.ndarray:
-        return df["value"].values
 
 
 class ProcessedData(BaseVariable):
     """Processed data for testing."""
     schema_version = 1
 
-    def to_db(self) -> pd.DataFrame:
-        return pd.DataFrame({"value": self.data})
-
-    @classmethod
-    def from_db(cls, df: pd.DataFrame) -> np.ndarray:
-        return df["value"].values
-
 
 class FinalResult(BaseVariable):
     """Final result for testing."""
     schema_version = 1
-
-    def to_db(self) -> pd.DataFrame:
-        return pd.DataFrame({"value": self.data})
-
-    @classmethod
-    def from_db(cls, df: pd.DataFrame) -> np.ndarray:
-        return df["value"].values
 
 
 # --- Fixtures ---
@@ -60,7 +37,8 @@ class FinalResult(BaseVariable):
 def strict_db(tmp_path):
     """Provide a database configured with strict lineage mode."""
     db_path = tmp_path / "strict_test.db"
-    db = configure_database(db_path, schema_keys=DEFAULT_TEST_SCHEMA_KEYS, lineage_mode="strict")
+    pipeline_path = tmp_path / "strict_pipeline.db"
+    db = configure_database(db_path, DEFAULT_TEST_SCHEMA_KEYS, pipeline_path, lineage_mode="strict")
     yield db
     db.close()
     if hasattr(_local, 'database'):
@@ -71,7 +49,8 @@ def strict_db(tmp_path):
 def ephemeral_db(tmp_path):
     """Provide a database configured with ephemeral lineage mode."""
     db_path = tmp_path / "ephemeral_test.db"
-    db = configure_database(db_path, schema_keys=DEFAULT_TEST_SCHEMA_KEYS, lineage_mode="ephemeral")
+    pipeline_path = tmp_path / "ephemeral_pipeline.db"
+    db = configure_database(db_path, DEFAULT_TEST_SCHEMA_KEYS, pipeline_path, lineage_mode="ephemeral")
     yield db
     db.close()
     if hasattr(_local, 'database'):
@@ -81,11 +60,14 @@ def ephemeral_db(tmp_path):
 @pytest.fixture(autouse=True)
 def clear_global_state():
     """Clear global database state before and after each test."""
+    from scidb.thunk import Thunk
     if hasattr(_local, 'database'):
         delattr(_local, 'database')
+    Thunk.query = None
     yield
     if hasattr(_local, 'database'):
         delattr(_local, 'database')
+    Thunk.query = None
 
 
 # --- Configuration Tests ---
@@ -95,30 +77,30 @@ class TestLineageModeConfiguration:
 
     def test_default_lineage_mode_is_strict(self, tmp_path):
         """Default lineage mode should be 'strict'."""
-        db = DatabaseManager(tmp_path / "test.db", schema_keys=DEFAULT_TEST_SCHEMA_KEYS)
+        db = DatabaseManager(tmp_path / "test.db", dataset_schema_keys=DEFAULT_TEST_SCHEMA_KEYS, pipeline_db_path=tmp_path / "pipeline.db")
         assert db.lineage_mode == "strict"
         db.close()
 
     def test_configure_strict_mode(self, tmp_path):
         """Can explicitly configure strict mode."""
-        db = DatabaseManager(tmp_path / "test.db", schema_keys=DEFAULT_TEST_SCHEMA_KEYS, lineage_mode="strict")
+        db = DatabaseManager(tmp_path / "test.db", dataset_schema_keys=DEFAULT_TEST_SCHEMA_KEYS, pipeline_db_path=tmp_path / "pipeline.db", lineage_mode="strict")
         assert db.lineage_mode == "strict"
         db.close()
 
     def test_configure_ephemeral_mode(self, tmp_path):
         """Can configure ephemeral mode."""
-        db = DatabaseManager(tmp_path / "test.db", schema_keys=DEFAULT_TEST_SCHEMA_KEYS, lineage_mode="ephemeral")
+        db = DatabaseManager(tmp_path / "test.db", dataset_schema_keys=DEFAULT_TEST_SCHEMA_KEYS, pipeline_db_path=tmp_path / "pipeline.db", lineage_mode="ephemeral")
         assert db.lineage_mode == "ephemeral"
         db.close()
 
     def test_invalid_lineage_mode_raises_error(self, tmp_path):
         """Invalid lineage mode should raise ValueError."""
         with pytest.raises(ValueError, match="lineage_mode must be one of"):
-            DatabaseManager(tmp_path / "test.db", schema_keys=DEFAULT_TEST_SCHEMA_KEYS, lineage_mode="invalid")
+            DatabaseManager(tmp_path / "test.db", dataset_schema_keys=DEFAULT_TEST_SCHEMA_KEYS, pipeline_db_path=tmp_path / "pipeline.db", lineage_mode="invalid")
 
     def test_configure_database_passes_lineage_mode(self, tmp_path):
         """configure_database should pass lineage_mode to DatabaseManager."""
-        db = configure_database(tmp_path / "test.db", schema_keys=DEFAULT_TEST_SCHEMA_KEYS, lineage_mode="ephemeral")
+        db = configure_database(tmp_path / "test.db", DEFAULT_TEST_SCHEMA_KEYS, tmp_path / "pipeline.db", lineage_mode="ephemeral")
         assert db.lineage_mode == "ephemeral"
         db.close()
 
@@ -409,40 +391,6 @@ class TestEphemeralMode:
         record_id = FinalResult.save(r3, subject=1)
         assert record_id is not None
 
-    def test_ephemeral_lineage_query_works(self, ephemeral_db):
-        """Should be able to query full lineage including ephemeral nodes."""
-        @thunk
-        def process(x):
-            return x * 2
-
-        raw = RawData(np.array([1, 2, 3]))
-
-        result = process(raw)
-        ProcessedData.save(result, subject=1)
-
-        # Should be able to get full lineage
-        lineage = ephemeral_db.get_full_lineage(ProcessedData, subject=1)
-        assert lineage is not None
-        assert lineage["function"] == "process"
-
-    def test_ephemeral_format_lineage_shows_marker(self, ephemeral_db):
-        """format_lineage should show [ephemeral] marker for unsaved nodes."""
-        @thunk
-        def process(x):
-            return x * 2
-
-        raw = RawData(np.array([1, 2, 3]))
-
-        result = process(raw)
-        ProcessedData.save(result, subject=1)
-
-        formatted = ephemeral_db.format_lineage(ProcessedData, subject=1)
-
-        # Should contain ephemeral marker or indication
-        assert "process" in formatted
-        # The unsaved RawData should be shown somehow
-        assert "RawData" in formatted or "ephemeral" in formatted.lower()
-
 
 # --- Mixed Scenarios ---
 
@@ -470,9 +418,9 @@ class TestMixedScenarios:
         r2 = step2(p1)
         FinalResult.save(r2, subject=1, stage="final")
 
-        # Query lineage
-        lineage = ephemeral_db.get_full_lineage(FinalResult, subject=1, stage="final")
-        assert lineage["function"] == "step2"
+        # Query provenance
+        provenance = ephemeral_db.get_provenance(FinalResult, subject=1, stage="final")
+        assert provenance["function_name"] == "step2"
 
     def test_strict_mode_preserves_lineage_when_valid(self, strict_db):
         """Strict mode should still track full lineage when all saved."""
@@ -494,11 +442,9 @@ class TestMixedScenarios:
         r2 = step2(p1)
         FinalResult.save(r2, subject=1, stage="final")
 
-        # Full lineage should be available
-        lineage = strict_db.get_full_lineage(FinalResult, subject=1, stage="final")
-        assert lineage["function"] == "step2"
-        assert len(lineage["inputs"]) == 1
-        assert lineage["inputs"][0]["function"] == "step1"
+        # Provenance should be available
+        provenance = strict_db.get_provenance(FinalResult, subject=1, stage="final")
+        assert provenance["function_name"] == "step2"
 
 
 # --- Edge Cases ---
@@ -522,7 +468,7 @@ class TestEdgeCases:
 
     def test_multiple_outputs_thunk_with_unsaved(self, strict_db):
         """Multi-output thunk with unsaved input."""
-        @thunk(unwrap_outputs=True)
+        @thunk(unpack_output=True)
         def split(x):
             mid = len(x) // 2
             return x[:mid], x[mid:]

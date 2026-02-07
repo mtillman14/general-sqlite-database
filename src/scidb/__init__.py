@@ -11,41 +11,27 @@ A lightweight database framework for scientific computing that provides:
 Example:
     from scidb import configure_database, BaseVariable, thunk
     import numpy as np
-    import pandas as pd
 
-    class RotationMatrix(BaseVariable):
+    # One-line setup (auto-registers types, enables caching)
+    db = configure_database("experiment.duckdb", ["subject", "session"], "pipeline.db")
+
+    class RawSignal(BaseVariable):
         schema_version = 1
 
-        def to_db(self) -> pd.DataFrame:
-            return pd.DataFrame({'value': self.data.flatten()})
-
-        @classmethod
-        def from_db(cls, df: pd.DataFrame) -> np.ndarray:
-            return df['value'].values.reshape(3, 3)
-
-    # Setup
-    db = configure_database("experiment.db")
-    db.register(RotationMatrix)
-
-    # Save
-    record_id = RotationMatrix.save(np.eye(3), subject=1, trial=1)
-
-    # Load
-    loaded = RotationMatrix.load(subject=1, trial=1)
-
-    # With lineage tracking
     @thunk
-    def process(data):
-        return data * 2
+    def calibrate(signal, factor):
+        return signal * factor
 
-    result = process(loaded)  # Returns ThunkOutput with lineage
-    RotationMatrix.save(result, subject=1, trial=1, stage="processed")
+    # Save/load (no db= parameter needed)
+    RawSignal.save(np.array([1, 2, 3]), subject=1, session="A")
+    raw = RawSignal.load(subject=1, session="A")
 
-    # Query provenance
-    provenance = db.get_provenance(RotationMatrix, subject=1, trial=1, stage="processed")
+    # Thunk caching works automatically
+    result = calibrate(raw, 2.5)
+    CalibratedSignal.save(result, subject=1, session="A")
 """
 
-from .database import DatabaseManager, configure_database, get_database, get_user_id
+from .database import configure_database, get_database, get_user_id
 from .exceptions import (
     DatabaseNotConfiguredError,
     NotFoundError,
@@ -62,43 +48,24 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent.parent / "scirun-lib" / "src"))
 from scirun import Fixed, for_each
 
-from .lineage import (
-    LineageRecord,
-    extract_lineage,
-    find_unsaved_variables,
-    get_raw_value,
-    get_upstream_lineage,
-)
-from .paths import PathGenerator
-from .thunk import ThunkOutput, PipelineThunk, Thunk, thunk
+from .thunk import ThunkOutput, Thunk, thunk
 from .variable import BaseVariable
 
 __version__ = "0.1.0"
 
 __all__ = [
     # Core classes
-    "DatabaseManager",
     "BaseVariable",
     # Configuration
     "configure_database",
     "get_database",
-    "get_user_id",
-    # Path utilities
-    "PathGenerator",
     # Batch execution
     "for_each",
     "Fixed",
     # Thunk system
     "thunk",
     "Thunk",
-    "PipelineThunk",
     "ThunkOutput",
-    # Lineage & Caching
-    "LineageRecord",
-    "extract_lineage",
-    "find_unsaved_variables",
-    "get_raw_value",
-    "get_upstream_lineage",
     # Exceptions
     "SciDBError",
     "NotRegisteredError",

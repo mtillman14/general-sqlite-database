@@ -3,6 +3,7 @@
 import json
 import os
 import threading
+import warnings
 from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Type, Any
@@ -23,7 +24,7 @@ from .variable import BaseVariable
 # Import SciDuck - adjust path as needed
 import sys
 sys.path.insert(0, str(Path(__file__).parent.parent))
-from sciduck.sciduck import SciDuck
+from sciduck.sciduck import SciDuck, _infer_duckdb_type, _python_to_storage, _storage_to_python
 
 # Import PipelineDB for lineage storage
 sys.path.insert(0, str(Path(__file__).parent.parent.parent / "pipelinedb-lib" / "src"))
@@ -48,24 +49,25 @@ def get_user_id() -> str | None:
 
 
 def configure_database(
-    db_path: str | Path,
-    schema_keys: list[str],
+    dataset_db_path: str | Path,
+    dataset_schema_keys: list[str],
+    pipeline_db_path: str | Path,
     lineage_mode: str = "strict",
-    pipeline_db_path: str | Path | None = None,
 ) -> "DatabaseManager":
     """
     Configure the global database connection.
 
-    Also registers the database as a cache backend for the thunk library,
-    enabling automatic computation caching.
+    Single-call setup that creates the database, auto-registers all known
+    BaseVariable subclasses, and enables thunk caching.
 
     Args:
-        db_path: Path to the DuckDB database file
-        schema_keys: List of metadata keys that define the dataset schema
+        dataset_db_path: Path to the DuckDB database file
+        dataset_schema_keys: List of metadata keys that define the dataset schema
             (e.g., ["subject", "visit", "channel"]). These keys identify the
             logical location of data and are used for the folder hierarchy.
             Any metadata keys not in this list are treated as version parameters
             that distinguish different computational versions of the same data.
+        pipeline_db_path: Path to the SQLite database for lineage storage.
         lineage_mode: How to handle intermediate variables in lineage tracking.
             - "strict" (default): All upstream BaseVariables must be saved
               before saving downstream results. Raises UnsavedIntermediateError
@@ -74,9 +76,6 @@ def configure_database(
               graph (function, inputs) without storing actual data for unsaved
               variables. Enables full provenance tracking with smaller database
               size, but cache hits won't work for ephemeral intermediates.
-        pipeline_db_path: Path to the SQLite database for lineage storage.
-            If not specified, uses the same directory as db_path with
-            .pipeline.db suffix.
 
     Returns:
         The DatabaseManager instance
@@ -84,13 +83,19 @@ def configure_database(
     Raises:
         ValueError: If lineage_mode is not "strict" or "ephemeral"
     """
-    _local.database = DatabaseManager(
-        db_path,
-        schema_keys=schema_keys,
-        lineage_mode=lineage_mode,
+    from .thunk import Thunk
+
+    db = DatabaseManager(
+        dataset_db_path,
+        dataset_schema_keys=dataset_schema_keys,
         pipeline_db_path=pipeline_db_path,
+        lineage_mode=lineage_mode,
     )
-    return _local.database
+    for cls in BaseVariable._all_subclasses.values():
+        db.register(cls)
+    Thunk.query = db
+    _local.database = db
+    return db
 
 
 def get_database() -> "DatabaseManager":
@@ -116,35 +121,32 @@ class DatabaseManager:
     Manages database connection and variable storage using SciDuck backend.
 
     Example:
-        db = DatabaseManager("experiment.duckdb")
-        db.register(RotationMatrix)
+        db = configure_database("experiment.duckdb", ["subject", "session"], "pipeline.db")
 
-        record_id = RotationMatrix.save(np.eye(3), db=db, subject=1, trial=1)
-
-        loaded = RotationMatrix.load(db=db, subject=1, trial=1)
+        RawSignal.save(np.eye(3), subject=1, trial=1)
+        loaded = RawSignal.load(subject=1, trial=1)
     """
 
     VALID_LINEAGE_MODES = ("strict", "ephemeral")
 
     def __init__(
         self,
-        db_path: str | Path,
-        schema_keys: list[str],
+        dataset_db_path: str | Path,
+        dataset_schema_keys: list[str],
+        pipeline_db_path: str | Path,
         lineage_mode: str = "strict",
-        pipeline_db_path: str | Path | None = None,
     ):
         """
         Initialize database connection.
 
         Args:
-            db_path: Path to DuckDB database file (created if doesn't exist)
-            schema_keys: List of metadata keys that define the dataset schema
+            dataset_db_path: Path to DuckDB database file (created if doesn't exist)
+            dataset_schema_keys: List of metadata keys that define the dataset schema
                 (e.g., ["subject", "visit", "channel"]). These keys identify the
                 logical location of data. Any other metadata keys are treated as
                 version parameters.
-            lineage_mode: How to handle intermediate variables ("strict" or "ephemeral")
             pipeline_db_path: Path to SQLite database for lineage storage.
-                If not specified, uses same directory as db_path with .pipeline.db suffix.
+            lineage_mode: How to handle intermediate variables ("strict" or "ephemeral")
 
         Raises:
             ValueError: If lineage_mode is not valid
@@ -155,17 +157,15 @@ class DatabaseManager:
                 f"got '{lineage_mode}'"
             )
 
-        self.db_path = Path(db_path)
+        self.dataset_db_path = Path(dataset_db_path)
         self.lineage_mode = lineage_mode
-        self.schema_keys = list(schema_keys)
+        self.dataset_schema_keys = list(dataset_schema_keys)
         self._registered_types: dict[str, Type[BaseVariable]] = {}
 
         # Initialize SciDuck backend for data storage
-        self._duck = SciDuck(self.db_path, dataset_schema=schema_keys)
+        self._duck = SciDuck(self.dataset_db_path, dataset_schema=dataset_schema_keys)
 
         # Initialize PipelineDB for lineage storage (SQLite)
-        if pipeline_db_path is None:
-            pipeline_db_path = self.db_path.with_suffix(".pipeline.db")
         self._pipeline_db = PipelineDB(pipeline_db_path)
 
         # Create metadata tables for type registration (in DuckDB)
@@ -194,7 +194,7 @@ class DatabaseManager:
         schema = {}
         version = {}
         for key, value in flat_metadata.items():
-            if key in self.schema_keys:
+            if key in self.dataset_schema_keys:
                 schema[key] = value
             else:
                 version[key] = value
@@ -237,6 +237,80 @@ class DatabaseManager:
             return self._duck._conn.execute(query, params).fetchdf()
         else:
             return self._duck._conn.execute(f'SELECT * FROM "{table_name}"').fetchdf()
+
+    @staticmethod
+    def _has_custom_serialization(variable_class: type) -> bool:
+        """Check if a BaseVariable subclass overrides to_db or from_db."""
+        return "to_db" in variable_class.__dict__ or "from_db" in variable_class.__dict__
+
+    def _ensure_native_table(self, table_name: str, ddb_type: str) -> None:
+        """Create a table for native (SciDuck) storage if it doesn't exist."""
+        exists = self._duck._fetchall(
+            "SELECT 1 FROM information_schema.tables WHERE table_name = ?",
+            [table_name],
+        )
+        if exists:
+            return
+
+        schema_cols = ", ".join(
+            f'"{k}" VARCHAR' for k in self.dataset_schema_keys
+        )
+
+        self._duck._execute(f'''
+            CREATE TABLE "{table_name}" (
+                "value" {ddb_type},
+                "_dtype_meta" VARCHAR,
+                "_record_id" VARCHAR,
+                "_content_hash" VARCHAR,
+                "_lineage_hash" VARCHAR,
+                "_schema_version" INTEGER,
+                "_metadata" VARCHAR,
+                "_user_id" VARCHAR,
+                "_created_at" VARCHAR,
+                {schema_cols}
+            )
+        ''')
+
+    def _save_native_row(
+        self,
+        table_name: str,
+        data: Any,
+        record_id: str,
+        content_hash: str,
+        lineage_hash: str | None,
+        schema_version: int,
+        nested_metadata: dict,
+        user_id: str | None,
+    ) -> None:
+        """Save a single row using SciDuck's native type conversion."""
+        ddb_type, col_meta = _infer_duckdb_type(data)
+        storage_value = _python_to_storage(data, col_meta)
+        dtype_meta_json = json.dumps(col_meta)
+        metadata_json = json.dumps(nested_metadata, sort_keys=True)
+        created_at = datetime.now().isoformat()
+
+        self._ensure_native_table(table_name, ddb_type)
+
+        col_names = [
+            "value", "_dtype_meta", "_record_id", "_content_hash", "_lineage_hash",
+            "_schema_version", "_metadata", "_user_id", "_created_at",
+        ]
+        values: list[Any] = [
+            storage_value, dtype_meta_json, record_id, content_hash, lineage_hash,
+            schema_version, metadata_json, user_id, created_at,
+        ]
+
+        for key, value in nested_metadata.get("schema", {}).items():
+            col_names.append(key)
+            values.append(value)
+
+        col_str = ", ".join(f'"{c}"' for c in col_names)
+        placeholders = ", ".join(["?"] * len(col_names))
+
+        self._duck._execute(
+            f'INSERT INTO "{table_name}" ({col_str}) VALUES ({placeholders})',
+            values,
+        )
 
     def register(self, variable_class: Type[BaseVariable]) -> None:
         """
@@ -299,6 +373,90 @@ class DatabaseManager:
         self._registered_types[type_name] = variable_class
         return rows[0][0]
 
+    def save_variable(
+        self,
+        variable_class: Type[BaseVariable],
+        data: Any,
+        index: Any = None,
+        **metadata,
+    ) -> str:
+        """
+        Save data as a variable, handling input normalization and lineage.
+
+        Accepts ThunkOutput (from thunked computation), an existing BaseVariable
+        instance, or raw data. Lineage is automatically extracted and stored
+        when applicable.
+
+        Args:
+            variable_class: The BaseVariable subclass to save as
+            data: The data to save (ThunkOutput, BaseVariable, or raw data)
+            index: Optional index to set on the DataFrame
+            **metadata: Addressing metadata (e.g., subject=1, trial=1)
+
+        Returns:
+            The record_id of the saved data
+        """
+        from .thunk import ThunkOutput
+        from .lineage import extract_lineage, find_unsaved_variables, get_raw_value
+        from .exceptions import UnsavedIntermediateError
+
+        # Normalize input: extract raw data and lineage info based on input type
+        lineage = None
+        lineage_hash = None
+        raw_data = None
+
+        if isinstance(data, ThunkOutput):
+            # Data from a thunk computation
+            unsaved = find_unsaved_variables(data)
+
+            if self.lineage_mode == "strict" and unsaved:
+                var_descriptions = []
+                for var, path in unsaved:
+                    var_type = type(var).__name__
+                    var_descriptions.append(f"  - {var_type} (path: {path})")
+                vars_str = "\n".join(var_descriptions)
+                raise UnsavedIntermediateError(
+                    f"Strict lineage mode requires all intermediate variables to be saved.\n"
+                    f"Found {len(unsaved)} unsaved variable(s) in the computation chain:\n"
+                    f"{vars_str}\n\n"
+                    f"Either save these variables first, or use lineage_mode='ephemeral' "
+                    f"in configure_database() to allow unsaved intermediates."
+                )
+
+            elif self.lineage_mode == "ephemeral" and unsaved:
+                user_id = get_user_id()
+                for var, path in unsaved:
+                    inner_data = getattr(var, "data", None)
+                    if isinstance(inner_data, ThunkOutput):
+                        ephemeral_id = f"ephemeral:{inner_data.hash[:32]}"
+                        var_type = type(var).__name__
+                        intermediate_lineage = extract_lineage(inner_data)
+                        self.save_ephemeral_lineage(
+                            ephemeral_id=ephemeral_id,
+                            variable_type=var_type,
+                            lineage=intermediate_lineage,
+                            user_id=user_id,
+                        )
+
+            lineage = extract_lineage(data)
+            lineage_hash = data.pipeline_thunk.compute_lineage_hash()
+            raw_data = get_raw_value(data)
+
+        elif isinstance(data, BaseVariable):
+            raw_data = data.data
+            lineage_hash = data._lineage_hash
+
+        else:
+            raw_data = data
+
+        instance = variable_class(raw_data)
+        record_id = self.save(instance, metadata, lineage=lineage, lineage_hash=lineage_hash, index=index)
+        instance._record_id = record_id
+        instance._metadata = metadata
+        instance._lineage_hash = lineage_hash
+
+        return record_id
+
     def save(
         self,
         variable: BaseVariable,
@@ -327,18 +485,15 @@ class DatabaseManager:
         # Split metadata
         nested_metadata = self._split_metadata(metadata)
 
-        # Convert to DataFrame
-        df = variable.to_db()
-
-        # Apply index if provided
-        if index is not None:
-            index_list = list(index) if not isinstance(index, list) else index
-            if len(index_list) != len(df):
-                raise ValueError(
-                    f"Index length ({len(index_list)}) does not match "
-                    f"DataFrame row count ({len(df)})"
-                )
-            df.index = index
+        # Warn if no metadata keys match the schema
+        if metadata and not nested_metadata.get("schema"):
+            warnings.warn(
+                f"None of the metadata keys {list(metadata.keys())} match the "
+                f"configured dataset_schema_keys {self.dataset_schema_keys}. "
+                f"All keys will be treated as version parameters.",
+                UserWarning,
+                stacklevel=2,
+            )
 
         # Compute content hash
         content_hash = canonical_hash(variable.data)
@@ -351,21 +506,37 @@ class DatabaseManager:
             metadata=nested_metadata,
         )
 
-        # Store metadata as JSON in the data
-        df["_record_id"] = record_id
-        df["_content_hash"] = content_hash
-        df["_lineage_hash"] = lineage_hash
-        df["_schema_version"] = variable.schema_version
-        df["_metadata"] = json.dumps(nested_metadata, sort_keys=True)
-        df["_user_id"] = user_id
-        df["_created_at"] = datetime.now().isoformat()
+        if self._has_custom_serialization(type(variable)):
+            # Custom serialization: user provides to_db() → DataFrame
+            df = variable.to_db()
 
-        # Add schema keys as columns
-        for key, value in nested_metadata.get("schema", {}).items():
-            df[key] = value
+            if index is not None:
+                index_list = list(index) if not isinstance(index, list) else index
+                if len(index_list) != len(df):
+                    raise ValueError(
+                        f"Index length ({len(index_list)}) does not match "
+                        f"DataFrame row count ({len(df)})"
+                    )
+                df.index = index
 
-        # Save directly to DuckDB (bypass SciDuck's high-level API)
-        self._save_dataframe(table_name, df)
+            df["_record_id"] = record_id
+            df["_content_hash"] = content_hash
+            df["_lineage_hash"] = lineage_hash
+            df["_schema_version"] = variable.schema_version
+            df["_metadata"] = json.dumps(nested_metadata, sort_keys=True)
+            df["_user_id"] = user_id
+            df["_created_at"] = datetime.now().isoformat()
+
+            for key, value in nested_metadata.get("schema", {}).items():
+                df[key] = value
+
+            self._save_dataframe(table_name, df)
+        else:
+            # Native storage: SciDuck handles type conversion
+            self._save_native_row(
+                table_name, variable.data, record_id, content_hash,
+                lineage_hash, variable.schema_version, nested_metadata, user_id,
+            )
 
         # Save lineage if provided
         if lineage is not None:
@@ -432,7 +603,7 @@ class DatabaseManager:
         Returns:
             The matching variable instance
         """
-        table_name = self._ensure_registered(variable_class, auto_register=False)
+        table_name = self._ensure_registered(variable_class, auto_register=True)
 
         try:
             # Build query
@@ -490,25 +661,37 @@ class DatabaseManager:
         nested_metadata = json.loads(metadata_json)
         flat_metadata = self._flatten_metadata(nested_metadata)
 
-        # Remove internal columns for from_db
-        internal_cols = [
-            "_record_id", "_content_hash", "_lineage_hash",
-            "_schema_version", "_metadata", "_user_id", "_created_at"
-        ] + self.schema_keys
-        data_df = df.drop(columns=[c for c in internal_cols if c in df.columns], errors="ignore")
+        # Determine deserialization path from stored data
+        use_native = (
+            "_dtype_meta" in df.columns
+            and df["_dtype_meta"].iloc[0] is not None
+            and pd.notna(df["_dtype_meta"].iloc[0])
+        )
 
-        # Apply index selection
-        if loc is not None:
-            if not isinstance(loc, (list, range, slice)):
-                loc = [loc]
-            data_df = data_df.loc[loc]
-        elif iloc is not None:
-            if not isinstance(iloc, (list, range, slice)):
-                iloc = [iloc]
-            data_df = data_df.iloc[iloc]
+        if use_native:
+            # Native path: SciDuck handles type restoration
+            col_meta = json.loads(df["_dtype_meta"].iloc[0])
+            raw_value = df["value"].iloc[0]
+            data = _storage_to_python(raw_value, col_meta)
+        else:
+            # Custom path: use from_db()
+            internal_cols = [
+                "_record_id", "_content_hash", "_lineage_hash",
+                "_schema_version", "_metadata", "_user_id", "_created_at",
+                "_dtype_meta",
+            ] + self.dataset_schema_keys
+            data_df = df.drop(columns=[c for c in internal_cols if c in df.columns], errors="ignore")
 
-        # Convert back to native data
-        data = variable_class.from_db(data_df)
+            if loc is not None:
+                if not isinstance(loc, (list, range, slice)):
+                    loc = [loc]
+                data_df = data_df.loc[loc]
+            elif iloc is not None:
+                if not isinstance(iloc, (list, range, slice)):
+                    iloc = [iloc]
+                data_df = data_df.iloc[iloc]
+
+            data = variable_class.from_db(data_df)
 
         instance = variable_class(data)
         instance._record_id = record_id
@@ -533,7 +716,7 @@ class DatabaseManager:
         Yields:
             BaseVariable instances matching the metadata
         """
-        table_name = self._ensure_registered(variable_class, auto_register=False)
+        table_name = self._ensure_registered(variable_class, auto_register=True)
 
         split = self._split_metadata(metadata)
         schema_filter = split["schema"]
@@ -572,7 +755,7 @@ class DatabaseManager:
         Returns:
             List of dicts with record_id, schema, version, created_at
         """
-        table_name = self._ensure_registered(variable_class, auto_register=False)
+        table_name = self._ensure_registered(variable_class, auto_register=True)
 
         split = self._split_metadata(metadata)
         schema_filter = split["schema"]
@@ -662,8 +845,63 @@ class DatabaseManager:
 
         return len(results)
 
+    def find_by_lineage(self, pipeline_thunk) -> list | None:
+        """
+        Find output values by computation lineage.
+
+        Given a PipelineThunk (function + inputs), finds any previously
+        computed outputs that match by:
+        1. Querying PipelineDB (SQLite) for matching lineage_hash
+        2. Loading data from SciDuck (DuckDB) using the record_ids
+
+        Args:
+            pipeline_thunk: The computation to look up
+
+        Returns:
+            List of output values if found, None otherwise
+        """
+        lineage_hash = pipeline_thunk.compute_lineage_hash()
+
+        # Query PipelineDB (SQLite) for matching lineage
+        records = self._pipeline_db.find_by_lineage_hash(lineage_hash)
+        if not records:
+            return None
+
+        results = []
+        for record in records:
+            output_record_id = record["output_record_id"]
+            output_type = record["output_type"]
+
+            # Skip ephemeral entries (no data stored in SciDuck)
+            if output_record_id.startswith("ephemeral:"):
+                continue
+
+            var_class = self._get_variable_class(output_type)
+            if var_class is None:
+                return None
+
+            try:
+                # Load data from SciDuck (DuckDB)
+                var = self.load(var_class, {}, version=output_record_id)
+                results.append(var.data)
+            except (KeyError, NotFoundError):
+                # Record not found in SciDuck
+                return None
+
+        return results if results else None
+
+    def _get_variable_class(self, type_name: str):
+        """Get a variable class by name."""
+        if type_name in self._registered_types:
+            return self._registered_types[type_name]
+
+        return BaseVariable.get_subclass_by_name(type_name)
+
     def close(self):
-        """Close the database connections."""
+        """Close the database connections and reset Thunk.query if it points to self."""
+        from .thunk import Thunk
+        if getattr(Thunk, "query", None) is self:
+            Thunk.query = None
         self._duck.close()
         self._pipeline_db.close()
 

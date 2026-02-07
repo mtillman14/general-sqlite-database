@@ -21,13 +21,9 @@ from thunk import (
     thunk,
 )
 
-# Re-export query layer from scidb
-from .query_by_metadata import QueryByMetadata
-
 __all__ = [
     "Thunk",
     "PipelineThunk",
     "ThunkOutput",
     "thunk",
-    "QueryByMetadata",
 ]

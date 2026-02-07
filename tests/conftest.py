@@ -18,8 +18,9 @@ sys.path.insert(0, str(_root / "path-gen" / "src"))
 sys.path.insert(0, str(_root / "pipelinedb-lib" / "src"))
 sys.path.insert(0, str(_root / "scirun-lib" / "src"))
 
-from scidb import DatabaseManager, BaseVariable, configure_database
+from scidb import BaseVariable, configure_database
 from scidb.database import _local
+from scidb.thunk import Thunk
 
 
 # Default schema keys for testing - covers common test metadata patterns
@@ -37,17 +38,21 @@ def temp_db_path(tmp_path):
 
 
 @pytest.fixture
-def db(temp_db_path):
-    """Provide a fresh DatabaseManager instance."""
-    db = DatabaseManager(temp_db_path, schema_keys=DEFAULT_TEST_SCHEMA_KEYS)
+def db(tmp_path):
+    """Provide a fresh configured database instance."""
+    db_path = tmp_path / "test_db.duckdb"
+    pipeline_path = tmp_path / "test_pipeline.db"
+    db = configure_database(db_path, DEFAULT_TEST_SCHEMA_KEYS, pipeline_path)
     yield db
     db.close()
 
 
 @pytest.fixture
-def configured_db(temp_db_path):
+def configured_db(tmp_path):
     """Provide a configured global database."""
-    db = configure_database(temp_db_path, schema_keys=DEFAULT_TEST_SCHEMA_KEYS)
+    db_path = tmp_path / "test_db.duckdb"
+    pipeline_path = tmp_path / "test_pipeline.db"
+    db = configure_database(db_path, DEFAULT_TEST_SCHEMA_KEYS, pipeline_path)
     yield db
     db.close()
     # Clear the global state
@@ -60,67 +65,34 @@ def clear_global_db():
     """Clear global database state before each test."""
     if hasattr(_local, 'database'):
         delattr(_local, 'database')
+    Thunk.query = None
     yield
     if hasattr(_local, 'database'):
         delattr(_local, 'database')
+    Thunk.query = None
 
 
 # --- Sample Variable Classes for Testing ---
+# ScalarValue, ArrayValue, MatrixValue use native SciDuck storage (no to_db/from_db).
+# DataFrameValue uses custom serialization to test that path too.
 
 class ScalarValue(BaseVariable):
-    """Simple scalar value for testing."""
+    """Simple scalar value — uses native SciDuck storage."""
     schema_version = 1
-
-    def to_db(self) -> pd.DataFrame:
-        return pd.DataFrame({"value": [self.data]})
-
-    @classmethod
-    def from_db(cls, df: pd.DataFrame):
-        return df["value"].iloc[0]
 
 
 class ArrayValue(BaseVariable):
-    """1D numpy array for testing."""
+    """1D numpy array — uses native SciDuck storage."""
     schema_version = 1
-
-    def to_db(self) -> pd.DataFrame:
-        return pd.DataFrame({
-            "values": [self.data.tobytes()],
-            "shape": [str(self.data.shape)],
-            "dtype": [str(self.data.dtype)],
-        })
-
-    @classmethod
-    def from_db(cls, df: pd.DataFrame) -> np.ndarray:
-        row = df.iloc[0]
-        shape = eval(row["shape"])
-        dtype = np.dtype(row["dtype"])
-        arr = np.frombuffer(row["values"], dtype=dtype)
-        return arr.reshape(shape)
 
 
 class MatrixValue(BaseVariable):
-    """2D numpy array for testing."""
+    """2D numpy array — uses native SciDuck storage."""
     schema_version = 2  # Different schema version for testing
-
-    def to_db(self) -> pd.DataFrame:
-        return pd.DataFrame({
-            "values": [self.data.tobytes()],
-            "shape": [str(self.data.shape)],
-            "dtype": [str(self.data.dtype)],
-        })
-
-    @classmethod
-    def from_db(cls, df: pd.DataFrame) -> np.ndarray:
-        row = df.iloc[0]
-        shape = eval(row["shape"])
-        dtype = np.dtype(row["dtype"])
-        arr = np.frombuffer(row["values"], dtype=dtype)
-        return arr.reshape(shape)
 
 
 class DataFrameValue(BaseVariable):
-    """Pandas DataFrame for testing."""
+    """Pandas DataFrame — uses custom serialization (to_db/from_db)."""
     schema_version = 1
 
     def to_db(self) -> pd.DataFrame:

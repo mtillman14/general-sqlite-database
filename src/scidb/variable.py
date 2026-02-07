@@ -1,27 +1,36 @@
 """Base class for database-storable variables."""
 
-from typing import TYPE_CHECKING, Any, Self
+from typing import Any, Self
 
 import pandas as pd
-
-if TYPE_CHECKING:
-    from .database import DatabaseManager
 
 
 class BaseVariable:
     """
     Base class for all database-storable variable types.
 
-    Example:
+    For most data types (scalars, numpy arrays, lists, dicts), no methods
+    need to be overridden — SciDuck handles serialization automatically.
+
+    Override to_db() and from_db() only for types that need custom
+    serialization (e.g., pandas DataFrames, domain-specific objects).
+
+    Example (minimal — native SciDuck storage):
+        class StepLength(BaseVariable):
+            schema_version = 1
+
+        StepLength.save(np.array([0.65, 0.72, 0.68]), subject=1, session="A")
+        loaded = StepLength.load(subject=1, session="A")
+
+    Example (custom serialization):
         class RotationMatrix(BaseVariable):
             schema_version = 1
 
             def to_db(self) -> pd.DataFrame:
-                data = self.data
                 return pd.DataFrame({
                     'row': [0, 0, 0, 1, 1, 1, 2, 2, 2],
                     'col': [0, 1, 2, 0, 1, 2, 0, 1, 2],
-                    'value': data.flatten().tolist()
+                    'value': self.data.flatten().tolist()
                 })
 
             @classmethod
@@ -100,15 +109,16 @@ class BaseVariable:
         """
         Convert native data to a DataFrame for storage.
 
-        Override this method to customize serialization. The default
-        implementation stores the data directly (works for scalars,
-        arrays, lists, dicts via type inference in the storage layer).
+        You do NOT need to override this for common types (scalars, numpy
+        arrays, lists, dicts). SciDuck handles those natively with proper
+        DuckDB types (DOUBLE[], JSON, etc.). Only override when you need
+        custom multi-column serialization (e.g., pandas DataFrames).
+
+        If you override to_db(), you must also override from_db().
 
         Returns:
             pd.DataFrame: Tabular representation of the data
         """
-        # Default: wrap data in a single-column DataFrame
-        # The storage layer handles type inference
         return pd.DataFrame({"value": [self.data]})
 
     @classmethod
@@ -116,8 +126,8 @@ class BaseVariable:
         """
         Convert a DataFrame back to the native data type.
 
-        Override this method to customize deserialization. The default
-        implementation extracts the 'value' column.
+        Only override this if you also override to_db(). For common types,
+        SciDuck's native type restoration is used automatically.
 
         Args:
             df: The DataFrame retrieved from storage
@@ -125,7 +135,6 @@ class BaseVariable:
         Returns:
             The native Python object
         """
-        # Default: extract from single-column DataFrame
         if len(df) == 1:
             return df["value"].iloc[0]
         return df["value"].tolist()
@@ -146,7 +155,6 @@ class BaseVariable:
     def save(
         cls,
         data: Any,
-        db: "DatabaseManager | None" = None,
         index: Any | None = None,
         **metadata,
     ) -> str:
@@ -162,7 +170,6 @@ class BaseVariable:
                 - ThunkOutput: result from a @thunk decorated function
                 - BaseVariable: an existing variable instance
                 - Any other type: raw data (numpy array, etc.)
-            db: Optional explicit database. If None, uses global database.
             index: Optional index for the DataFrame. Sets df.index after to_db()
                 is called. Useful for storing lists/arrays with semantic indexing.
                 Must match the length of the DataFrame rows.
@@ -193,10 +200,7 @@ class BaseVariable:
             var = CleanData.load(subject=1, trial=1)
             record_id = CleanData.save(var, subject=1, trial=2)
         """
-        from .database import get_database, get_user_id
-        from .exceptions import ReservedMetadataKeyError, UnsavedIntermediateError
-        from .thunk import ThunkOutput
-        from .lineage import extract_lineage, find_unsaved_variables, get_raw_value
+        from .exceptions import ReservedMetadataKeyError
 
         # Validate metadata keys
         reserved_used = set(metadata.keys()) & cls._reserved_keys
@@ -205,85 +209,12 @@ class BaseVariable:
                 f"Cannot use reserved metadata keys: {reserved_used}"
             )
 
-        db = db or get_database()
-
-        # Normalize input: extract raw data and lineage info based on input type
-        lineage = None
-        lineage_hash = None
-        thunk_output = None
-        raw_data = None
-
-        if isinstance(data, ThunkOutput):
-            # Data from a thunk computation
-            thunk_output = data
-
-            # Check for unsaved intermediates based on lineage mode
-            unsaved = find_unsaved_variables(thunk_output)
-
-            if db.lineage_mode == "strict" and unsaved:
-                # Strict mode: raise error for unsaved intermediates
-                var_descriptions = []
-                for var, path in unsaved:
-                    var_type = type(var).__name__
-                    var_descriptions.append(f"  - {var_type} (path: {path})")
-                vars_str = "\n".join(var_descriptions)
-                raise UnsavedIntermediateError(
-                    f"Strict lineage mode requires all intermediate variables to be saved.\n"
-                    f"Found {len(unsaved)} unsaved variable(s) in the computation chain:\n"
-                    f"{vars_str}\n\n"
-                    f"Either save these variables first, or use lineage_mode='ephemeral' "
-                    f"in configure_database() to allow unsaved intermediates."
-                )
-
-            elif db.lineage_mode == "ephemeral" and unsaved:
-                # Ephemeral mode: save lineage for unsaved intermediates without data
-                user_id = get_user_id()
-                for var, path in unsaved:
-                    inner_data = getattr(var, "data", None)
-                    if isinstance(inner_data, ThunkOutput):
-                        # Generate ephemeral ID from the ThunkOutput's hash
-                        ephemeral_id = f"ephemeral:{inner_data.hash[:32]}"
-                        var_type = type(var).__name__
-
-                        # Extract lineage for this intermediate computation
-                        intermediate_lineage = extract_lineage(inner_data)
-
-                        # Save ephemeral lineage record
-                        db.save_ephemeral_lineage(
-                            ephemeral_id=ephemeral_id,
-                            variable_type=var_type,
-                            lineage=intermediate_lineage,
-                            user_id=user_id,
-                        )
-
-            lineage = extract_lineage(thunk_output)
-            lineage_hash = thunk_output.pipeline_thunk.compute_lineage_hash()
-            raw_data = get_raw_value(thunk_output)
-
-        elif isinstance(data, BaseVariable):
-            # Existing variable instance - extract its data and lineage
-            raw_data = data.data
-            lineage_hash = data._lineage_hash  # Preserve lineage if it had one
-
-        else:
-            # Raw data (numpy array, etc.)
-            raw_data = data
-
-        # Create instance with the raw data
-        instance = cls(raw_data)
-
-        # Save to database (lineage is stored via _save_lineage)
-        record_id = db.save(instance, metadata, lineage=lineage, lineage_hash=lineage_hash, index=index)
-        instance._record_id = record_id
-        instance._metadata = metadata
-        instance._lineage_hash = lineage_hash
-
-        return record_id
+        from .database import get_database
+        return get_database().save_variable(cls, data, index=index, **metadata)
 
     @classmethod
     def load(
         cls,
-        db: "DatabaseManager | None" = None,
         version: str = "latest",
         loc: Any | None = None,
         iloc: Any | None = None,
@@ -293,13 +224,12 @@ class BaseVariable:
         Load a single variable from the database.
 
         Metadata keys are split into schema keys (dataset identity) and version
-        keys (computational identity) based on the configured schema_keys.
+        keys (computational identity) based on the configured dataset_schema_keys.
 
         - If only schema keys are provided: returns the latest version at that location
         - If version keys are also provided: returns the exact matching version
 
         Args:
-            db: Optional explicit database. If None, uses global database.
             version: "latest" for most recent, or specific record_id
             loc: Optional label-based index selection (like pandas df.loc[]).
                 Supports single values, lists, ranges, or slices.
@@ -334,13 +264,11 @@ class BaseVariable:
         if loc is not None and iloc is not None:
             raise ValueError("Cannot specify both 'loc' and 'iloc'. Use one or the other.")
 
-        db = db or get_database()
-        return db.load(cls, metadata, version=version, loc=loc, iloc=iloc)
+        return get_database().load(cls, metadata, version=version, loc=loc, iloc=iloc)
 
     @classmethod
     def load_all(
         cls,
-        db: "DatabaseManager | None" = None,
         as_df: bool = False,
         include_record_id: bool = False,
         **metadata,
@@ -352,7 +280,6 @@ class BaseVariable:
         Use as_df=True to load all records into a pandas DataFrame.
 
         Args:
-            db: Optional explicit database. If None, uses global database.
             as_df: If True, return a DataFrame instead of a generator.
                    The DataFrame has columns for each metadata key plus 'data'.
             include_record_id: If True and as_df=True, include record_id column.
@@ -379,7 +306,7 @@ class BaseVariable:
         from .database import get_database
         from .exceptions import NotFoundError
 
-        db = db or get_database()
+        db = get_database()
 
         if not as_df:
             # Return generator via helper to avoid making this function a generator
@@ -404,14 +331,13 @@ class BaseVariable:
             return pd.DataFrame(rows)
 
     @classmethod
-    def _load_all_generator(cls, db: "DatabaseManager", metadata: dict):
+    def _load_all_generator(cls, db, metadata: dict):
         """Helper generator for load_all() to avoid making load_all a generator."""
         yield from db.load_all(cls, metadata)
 
     @classmethod
     def list_versions(
         cls,
-        db: "DatabaseManager | None" = None,
         **metadata,
     ) -> list[dict]:
         """
@@ -422,7 +348,6 @@ class BaseVariable:
         computational variants exist for a given dataset location.
 
         Args:
-            db: Optional explicit database. If None, uses global database.
             **metadata: Schema metadata to match
 
         Returns:
@@ -439,8 +364,7 @@ class BaseVariable:
         """
         from .database import get_database
 
-        db = db or get_database()
-        return db.list_versions(cls, **metadata)
+        return get_database().list_versions(cls, **metadata)
 
     @classmethod
     def save_from_dataframe(
@@ -448,7 +372,6 @@ class BaseVariable:
         df: pd.DataFrame,
         data_column: str,
         metadata_columns: list[str],
-        db: "DatabaseManager | None" = None,
         **common_metadata,
     ) -> list[str]:
         """
@@ -461,7 +384,6 @@ class BaseVariable:
             df: DataFrame where each row is a separate data item
             data_column: Column name containing the data to store
             metadata_columns: Column names to use as metadata for each row
-            db: Optional explicit database. If None, uses global database.
             **common_metadata: Additional metadata applied to all rows
 
         Returns:
@@ -481,9 +403,6 @@ class BaseVariable:
                 experiment="exp1"  # Applied to all rows
             )
         """
-        from .database import get_database
-
-        db = db or get_database()
         record_ides = []
 
         for _, row in df.iterrows():
@@ -502,7 +421,7 @@ class BaseVariable:
 
             # Extract data and save
             data = row[data_column]
-            record_id = cls.save(data, db=db, **full_metadata)
+            record_id = cls.save(data, **full_metadata)
             record_ides.append(record_id)
 
         return record_ides

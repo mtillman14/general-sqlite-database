@@ -6,8 +6,8 @@ import pytest
 
 from scidb import (
     BaseVariable,
-    DatabaseManager,
     NotFoundError,
+    configure_database,
 )
 
 from conftest import DEFAULT_TEST_SCHEMA_KEYS
@@ -17,14 +17,12 @@ class TestEndToEndScalarWorkflow:
 
     def test_save_and_load_single_scalar(self, db, scalar_class):
         """Save a scalar and load it back."""
-        db.register(scalar_class)
-
         # Save
         original_value = 42
-        record_id = scalar_class.save(original_value, db=db, subject=1, trial=1)
+        record_id = scalar_class.save(original_value, subject=1, trial=1)
 
         # Load
-        loaded = scalar_class.load(db=db, subject=1, trial=1)
+        loaded = scalar_class.load(subject=1, trial=1)
 
         # Verify
         assert loaded.data == original_value
@@ -33,29 +31,25 @@ class TestEndToEndScalarWorkflow:
 
     def test_multiple_subjects_and_trials(self, db, scalar_class):
         """Save and load data for multiple subjects and trials."""
-        db.register(scalar_class)
-
         # Save data for 3 subjects, 2 trials each
         expected_data = {}
         for subject in range(1, 4):
             for trial in range(1, 3):
                 value = subject * 10 + trial
-                scalar_class.save(value, db=db, subject=subject, trial=trial)
+                scalar_class.save(value, subject=subject, trial=trial)
                 expected_data[(subject, trial)] = value
 
         # Load and verify each
         for (subject, trial), expected_value in expected_data.items():
-            loaded = scalar_class.load(db=db, subject=subject, trial=trial)
+            loaded = scalar_class.load(subject=subject, trial=trial)
             assert loaded.data == expected_value
 
     def test_version_history(self, db, scalar_class):
         """Test that version history is maintained."""
-        db.register(scalar_class)
-
         # Save multiple versions with different data
-        record_id1 = scalar_class.save(100, db=db, subject=1, trial=1)
-        record_id2 = scalar_class.save(200, db=db, subject=1, trial=1)
-        record_id3 = scalar_class.save(300, db=db, subject=1, trial=1)
+        record_id1 = scalar_class.save(100, subject=1, trial=1)
+        record_id2 = scalar_class.save(200, subject=1, trial=1)
+        record_id3 = scalar_class.save(300, subject=1, trial=1)
 
         # All record_ides should be different
         assert len({record_id1, record_id2, record_id3}) == 3
@@ -65,7 +59,7 @@ class TestEndToEndScalarWorkflow:
         assert len(versions) == 3
 
         # Should be able to load specific version
-        loaded = scalar_class.load(db=db, version=record_id2)
+        loaded = scalar_class.load(version=record_id2)
         assert loaded.data == 200
 
 
@@ -74,43 +68,35 @@ class TestEndToEndArrayWorkflow:
 
     def test_save_and_load_1d_array(self, db, array_class):
         """Save and load a 1D array."""
-        db.register(array_class)
-
         original = np.array([1.0, 2.0, 3.0, 4.0, 5.0])
-        array_class.save(original, db=db, subject=1, measurement="signal")
+        array_class.save(original, subject=1, measurement="signal")
 
-        loaded = array_class.load(db=db, subject=1, measurement="signal")
+        loaded = array_class.load(subject=1, measurement="signal")
         np.testing.assert_array_equal(loaded.data, original)
 
     def test_save_and_load_2d_array(self, db, matrix_class):
         """Save and load a 2D array."""
-        db.register(matrix_class)
-
         original = np.array([[1, 2, 3], [4, 5, 6], [7, 8, 9]])
-        matrix_class.save(original, db=db, subject=1, type="rotation")
+        matrix_class.save(original, subject=1, type="rotation")
 
-        loaded = matrix_class.load(db=db, subject=1, type="rotation")
+        loaded = matrix_class.load(subject=1, type="rotation")
         np.testing.assert_array_equal(loaded.data, original)
 
     def test_save_and_load_large_array(self, db, array_class):
         """Save and load a larger array."""
-        db.register(array_class)
-
         original = np.random.rand(10000)
-        array_class.save(original, db=db, subject=1, type="timeseries")
+        array_class.save(original, subject=1, type="timeseries")
 
-        loaded = array_class.load(db=db, subject=1, type="timeseries")
+        loaded = array_class.load(subject=1, type="timeseries")
         np.testing.assert_array_almost_equal(loaded.data, original)
 
     def test_preserve_dtype(self, db, array_class):
         """Test that array dtype is preserved."""
-        db.register(array_class)
-
         for dtype in [np.int32, np.int64, np.float32, np.float64]:
             original = np.array([1, 2, 3], dtype=dtype)
-            array_class.save(original, db=db, subject=1, dtype=str(dtype))
+            array_class.save(original, subject=1, dtype=str(dtype))
 
-            loaded = array_class.load(db=db, subject=1, dtype=str(dtype))
+            loaded = array_class.load(subject=1, dtype=str(dtype))
             assert loaded.data.dtype == dtype
 
 
@@ -119,30 +105,26 @@ class TestEndToEndDataFrameWorkflow:
 
     def test_save_and_load_dataframe(self, db, dataframe_class):
         """Save and load a DataFrame."""
-        db.register(dataframe_class)
-
         original = pd.DataFrame({
             "time": [0.0, 0.1, 0.2, 0.3],
             "x": [1.0, 2.0, 3.0, 4.0],
             "y": [5.0, 6.0, 7.0, 8.0],
         })
-        dataframe_class.save(original, db=db, subject=1, trial=1)
+        dataframe_class.save(original, subject=1, trial=1)
 
-        loaded = dataframe_class.load(db=db, subject=1, trial=1)
+        loaded = dataframe_class.load(subject=1, trial=1)
         pd.testing.assert_frame_equal(loaded.data, original)
 
     def test_preserve_column_types(self, db, dataframe_class):
         """Test that column types are preserved."""
-        db.register(dataframe_class)
-
         original = pd.DataFrame({
             "int_col": pd.array([1, 2, 3], dtype="int64"),
             "float_col": pd.array([1.1, 2.2, 3.3], dtype="float64"),
             "str_col": ["a", "b", "c"],
         })
-        dataframe_class.save(original, db=db, subject=1)
+        dataframe_class.save(original, subject=1)
 
-        loaded = dataframe_class.load(db=db, subject=1)
+        loaded = dataframe_class.load(subject=1)
         for col in original.columns:
             assert loaded.data[col].dtype == original[col].dtype
 
@@ -152,11 +134,9 @@ class TestIdempotentSaves:
 
     def test_same_data_same_metadata_same_record_id(self, db, scalar_class):
         """Saving identical data+metadata should return same record_id."""
-        db.register(scalar_class)
-
-        record_id1 = scalar_class.save(42, db=db, subject=1, trial=1)
-        record_id2 = scalar_class.save(42, db=db, subject=1, trial=1)
-        record_id3 = scalar_class.save(42, db=db, subject=1, trial=1)
+        record_id1 = scalar_class.save(42, subject=1, trial=1)
+        record_id2 = scalar_class.save(42, subject=1, trial=1)
+        record_id3 = scalar_class.save(42, subject=1, trial=1)
 
         assert record_id1 == record_id2 == record_id3
 
@@ -166,13 +146,11 @@ class TestIdempotentSaves:
 
     def test_same_array_data_same_record_id(self, db, array_class):
         """Saving identical array data should return same record_id."""
-        db.register(array_class)
-
         arr1 = np.array([1.0, 2.0, 3.0])
         arr2 = np.array([1.0, 2.0, 3.0])
 
-        record_id1 = array_class.save(arr1, db=db, subject=1)
-        record_id2 = array_class.save(arr2, db=db, subject=1)
+        record_id1 = array_class.save(arr1, subject=1)
+        record_id2 = array_class.save(arr2, subject=1)
 
         assert record_id1 == record_id2
 
@@ -184,19 +162,15 @@ class TestMultipleVariableTypes:
         self, db, scalar_class, array_class, matrix_class
     ):
         """Register and use multiple variable types."""
-        db.register(scalar_class)
-        db.register(array_class)
-        db.register(matrix_class)
-
         # Save different types
-        scalar_class.save(42, db=db, subject=1, type="scalar")
-        array_class.save(np.array([1, 2, 3]), db=db, subject=1, type="array")
-        matrix_class.save(np.eye(3), db=db, subject=1, type="matrix")
+        scalar_class.save(42, subject=1, type="scalar")
+        array_class.save(np.array([1, 2, 3]), subject=1, type="array")
+        matrix_class.save(np.eye(3), subject=1, type="matrix")
 
         # Load each type
-        scalar = scalar_class.load(db=db, subject=1, type="scalar")
-        array = array_class.load(db=db, subject=1, type="array")
-        matrix = matrix_class.load(db=db, subject=1, type="matrix")
+        scalar = scalar_class.load(subject=1, type="scalar")
+        array = array_class.load(subject=1, type="array")
+        matrix = matrix_class.load(subject=1, type="matrix")
 
         assert scalar.data == 42
         np.testing.assert_array_equal(array.data, [1, 2, 3])
@@ -204,16 +178,13 @@ class TestMultipleVariableTypes:
 
     def test_same_metadata_different_types(self, db, scalar_class, array_class):
         """Same metadata can be used for different types."""
-        db.register(scalar_class)
-        db.register(array_class)
-
         # Save with same metadata but different types
-        scalar_class.save(42, db=db, subject=1, trial=1)
-        array_class.save(np.array([1, 2, 3]), db=db, subject=1, trial=1)
+        scalar_class.save(42, subject=1, trial=1)
+        array_class.save(np.array([1, 2, 3]), subject=1, trial=1)
 
         # Load each type specifically
-        scalar = scalar_class.load(db=db, subject=1, trial=1)
-        array = array_class.load(db=db, subject=1, trial=1)
+        scalar = scalar_class.load(subject=1, trial=1)
+        array = array_class.load(subject=1, trial=1)
 
         assert scalar.data == 42
         np.testing.assert_array_equal(array.data, [1, 2, 3])
@@ -222,42 +193,42 @@ class TestMultipleVariableTypes:
 class TestDatabasePersistence:
     """Test that data persists across database reconnections."""
 
-    def test_data_persists_after_reconnect(self, temp_db_path, scalar_class):
+    def test_data_persists_after_reconnect(self, tmp_path, scalar_class):
         """Data should persist after closing and reopening database."""
+        db_path = tmp_path / "persist_test.duckdb"
+        pipeline_path = tmp_path / "persist_pipeline.db"
+
         # First connection - save data
-        db1 = DatabaseManager(temp_db_path, schema_keys=DEFAULT_TEST_SCHEMA_KEYS)
-        db1.register(scalar_class)
-        record_id = scalar_class.save(42, db=db1, subject=1, trial=1)
+        db1 = configure_database(db_path, DEFAULT_TEST_SCHEMA_KEYS, pipeline_path)
+        record_id = scalar_class.save(42, subject=1, trial=1)
         db1.close()
 
         # Second connection - load data
-        db2 = DatabaseManager(temp_db_path, schema_keys=DEFAULT_TEST_SCHEMA_KEYS)
-        db2.register(scalar_class)
-        loaded = scalar_class.load(db=db2, subject=1, trial=1)
+        db2 = configure_database(db_path, DEFAULT_TEST_SCHEMA_KEYS, pipeline_path)
+        loaded = scalar_class.load(subject=1, trial=1)
         db2.close()
 
         assert loaded.data == 42
         assert loaded.record_id == record_id
 
     def test_multiple_types_persist(
-        self, temp_db_path, scalar_class, array_class
+        self, tmp_path, scalar_class, array_class
     ):
         """Multiple types should persist after reconnect."""
+        db_path = tmp_path / "persist_test.duckdb"
+        pipeline_path = tmp_path / "persist_pipeline.db"
+
         # First connection
-        db1 = DatabaseManager(temp_db_path, schema_keys=DEFAULT_TEST_SCHEMA_KEYS)
-        db1.register(scalar_class)
-        db1.register(array_class)
-        scalar_class.save(42, db=db1, subject=1)
-        array_class.save(np.array([1, 2, 3]), db=db1, subject=1)
+        db1 = configure_database(db_path, DEFAULT_TEST_SCHEMA_KEYS, pipeline_path)
+        scalar_class.save(42, subject=1)
+        array_class.save(np.array([1, 2, 3]), subject=1)
         db1.close()
 
         # Second connection
-        db2 = DatabaseManager(temp_db_path, schema_keys=DEFAULT_TEST_SCHEMA_KEYS)
-        db2.register(scalar_class)
-        db2.register(array_class)
+        db2 = configure_database(db_path, DEFAULT_TEST_SCHEMA_KEYS, pipeline_path)
 
-        scalar = scalar_class.load(db=db2, subject=1)
-        array = array_class.load(db=db2, subject=1)
+        scalar = scalar_class.load(subject=1)
+        array = array_class.load(subject=1)
         db2.close()
 
         assert scalar.data == 42
@@ -269,20 +240,16 @@ class TestErrorHandling:
 
     def test_load_nonexistent_raises_not_found(self, db, scalar_class):
         """Loading nonexistent data should raise NotFoundError."""
-        db.register(scalar_class)
         with pytest.raises(NotFoundError):
-            scalar_class.load(db=db, subject=999, trial=999)
+            scalar_class.load(subject=999, trial=999)
 
     def test_load_wrong_type_returns_empty(self, db, scalar_class, array_class):
         """Loading with wrong type should not find data from other type."""
-        db.register(scalar_class)
-        db.register(array_class)
-
-        scalar_class.save(42, db=db, subject=1, trial=1)
+        scalar_class.save(42, subject=1, trial=1)
 
         # Try to load as array - should not find it
         with pytest.raises(NotFoundError):
-            array_class.load(db=db, subject=1, trial=1)
+            array_class.load(subject=1, trial=1)
 
 
 class TestCustomVariableType:
@@ -304,14 +271,12 @@ class TestCustomVariableType:
                 row = df.iloc[0]
                 return (row["x"], row["y"], row["z"])
 
-        db.register(Point3D)
-
         # Save a point
         original = (1.0, 2.0, 3.0)
-        Point3D.save(original, db=db, name="origin")
+        Point3D.save(original, name="origin")
 
         # Load it back
-        loaded = Point3D.load(db=db, name="origin")
+        loaded = Point3D.load(name="origin")
         assert loaded.data == original
 
     def test_variable_with_nested_data(self, db):
@@ -330,15 +295,13 @@ class TestCustomVariableType:
                 import json
                 return json.loads(df["config_json"].iloc[0])
 
-        db.register(Config)
-
         original = {
             "learning_rate": 0.001,
             "layers": [64, 128, 64],
             "activation": "relu",
             "nested": {"a": 1, "b": 2},
         }
-        Config.save(original, db=db, experiment="test")
+        Config.save(original, experiment="test")
 
-        loaded = Config.load(db=db, experiment="test")
+        loaded = Config.load(experiment="test")
         assert loaded.data == original
