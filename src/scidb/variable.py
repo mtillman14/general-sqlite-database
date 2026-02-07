@@ -10,11 +10,7 @@ if TYPE_CHECKING:
 
 class BaseVariable:
     """
-    Abstract base class for all database-storable variable types.
-
-    Subclasses must implement:
-    - to_db(): Convert native data to DataFrame
-    - from_db(): Convert DataFrame back to native data
+    Base class for all database-storable variable types.
 
     Example:
         class RotationMatrix(BaseVariable):
@@ -34,7 +30,7 @@ class BaseVariable:
                 return values.reshape(3, 3)
     """
 
-    schema_version: int = 1
+    schema_version: int = 1 # Default schema version. Change whenever the structure of a variable changes.
 
     # Reserved metadata keys that users cannot use
     _reserved_keys = frozenset(
@@ -261,7 +257,7 @@ class BaseVariable:
                         )
 
             lineage = extract_lineage(thunk_output)
-            lineage_hash = thunk_output.pipeline_thunk.compute_cache_key()
+            lineage_hash = thunk_output.pipeline_thunk.compute_lineage_hash()
             raw_data = get_raw_value(thunk_output)
 
         elif isinstance(data, BaseVariable):
@@ -276,22 +272,11 @@ class BaseVariable:
         # Create instance with the raw data
         instance = cls(raw_data)
 
-        # Save to database
+        # Save to database (lineage is stored via _save_lineage)
         record_id = db.save(instance, metadata, lineage=lineage, lineage_hash=lineage_hash, index=index)
         instance._record_id = record_id
         instance._metadata = metadata
-
-        # Populate computation cache if this came from a thunk
-        if thunk_output is not None:
-            cache_key = lineage_hash
-            db.cache_computation(
-                cache_key=cache_key,
-                function_name=thunk_output.pipeline_thunk.thunk.fcn.__name__,
-                function_hash=thunk_output.pipeline_thunk.thunk.hash,
-                output_type=cls.__name__,
-                output_record_id=record_id,
-                output_num=thunk_output.output_num,
-            )
+        instance._lineage_hash = lineage_hash
 
         return record_id
 

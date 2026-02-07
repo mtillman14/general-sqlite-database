@@ -47,7 +47,10 @@ class Thunk:
         unwrap: Whether to unwrap special input types to raw data
         hash: SHA-256 hash of function bytecode + unpack_output
         pipeline_thunks: All PipelineThunks created from this Thunk
+        query: Optional QueryByMetadata for metadata-driven queries
     """
+
+    query: Any = None
 
     def __init__(self, fcn: Callable, unpack_output: bool = False, unwrap: bool = True):
         """
@@ -97,13 +100,22 @@ class Thunk:
         """
         pipeline_thunk = PipelineThunk(self, *args, **kwargs)
 
-        # Check for existing equivalent PipelineThunk in the tuple of PipelineThunks
-        for existing in self.pipeline_thunks:
-            if pipeline_thunk._matches(existing):
-                pipeline_thunk = existing
-                break
-        else:
-            self.pipeline_thunks = (*self.pipeline_thunks, pipeline_thunk)
+        # Check for cached results
+        if Thunk.query is not None:
+            try:
+                cached = Thunk.query.find_by_lineage(pipeline_thunk)
+                if cached is not None:
+                    # Wrap cached values in ThunkOutput
+                    outputs = tuple(
+                        ThunkOutput(pipeline_thunk, i, True, val)
+                        for i, val in enumerate(cached)
+                    )
+                    pipeline_thunk.outputs = outputs
+                    if len(outputs) == 1:
+                        return outputs[0]
+                    return outputs
+            except Exception:
+                pass  # Not in database, proceed with execution
 
         return pipeline_thunk(*args, **kwargs)
 
@@ -216,8 +228,6 @@ class PipelineThunk:
 
         if len(outputs) == 1:
             return outputs[0]
-        if self.thunk.unpack_output:
-            return *outputs
         return outputs
 
     def _deep_unwrap(self, value: Any) -> Any:

@@ -5,7 +5,7 @@ import os
 import threading
 from datetime import datetime
 from pathlib import Path
-from typing import TYPE_CHECKING, Type
+from typing import TYPE_CHECKING, Type, Any
 
 import pandas as pd
 
@@ -151,7 +151,7 @@ class DatabaseManager:
         self._ensure_meta_tables()
 
     def _ensure_meta_tables(self):
-        """Create internal metadata tables for lineage and caching."""
+        """Create internal metadata tables for lineage tracking."""
         # Registered types table
         self._duck._execute("""
             CREATE TABLE IF NOT EXISTS _registered_types (
@@ -168,6 +168,7 @@ class DatabaseManager:
                 id INTEGER PRIMARY KEY,
                 output_record_id VARCHAR UNIQUE NOT NULL,
                 output_type VARCHAR NOT NULL,
+                lineage_hash VARCHAR,
                 function_name VARCHAR NOT NULL,
                 function_hash VARCHAR NOT NULL,
                 inputs JSON NOT NULL,
@@ -177,30 +178,17 @@ class DatabaseManager:
             )
         """)
 
-        # Create sequence for lineage id
+        # Index for efficient cache lookups by lineage_hash
         try:
-            self._duck._execute("CREATE SEQUENCE IF NOT EXISTS _lineage_id_seq START 1")
+            self._duck._execute(
+                "CREATE INDEX IF NOT EXISTS idx_lineage_hash ON _lineage(lineage_hash)"
+            )
         except Exception:
             pass
 
-        # Computation cache table
-        self._duck._execute("""
-            CREATE TABLE IF NOT EXISTS _computation_cache (
-                id INTEGER PRIMARY KEY,
-                cache_key VARCHAR NOT NULL,
-                output_num INTEGER NOT NULL DEFAULT 0,
-                function_name VARCHAR NOT NULL,
-                function_hash VARCHAR NOT NULL,
-                output_type VARCHAR NOT NULL,
-                output_record_id VARCHAR NOT NULL,
-                created_at TIMESTAMP DEFAULT current_timestamp,
-                UNIQUE(cache_key, output_num)
-            )
-        """)
-
-        # Create sequence for cache id
+        # Create sequence for lineage id
         try:
-            self._duck._execute("CREATE SEQUENCE IF NOT EXISTS _cache_id_seq START 1")
+            self._duck._execute("CREATE SEQUENCE IF NOT EXISTS _lineage_id_seq START 1")
         except Exception:
             pass
 
@@ -302,7 +290,7 @@ class DatabaseManager:
         metadata: dict,
         lineage: "LineageRecord | None" = None,
         lineage_hash: str | None = None,
-        index: any = None,
+        index: Any = None,
     ) -> str:
         """
         Save a variable to the database.
@@ -385,7 +373,7 @@ class DatabaseManager:
 
         # Save lineage if provided
         if lineage is not None:
-            self._save_lineage(record_id, type_name, lineage, user_id)
+            self._save_lineage(record_id, type_name, lineage, lineage_hash, user_id)
 
         return record_id
 
@@ -394,6 +382,7 @@ class DatabaseManager:
         output_record_id: str,
         output_type: str,
         lineage: "LineageRecord",
+        lineage_hash: str | None = None,
         user_id: str | None = None,
     ) -> None:
         """Save lineage record for a variable."""
@@ -406,10 +395,11 @@ class DatabaseManager:
             self._duck._execute(
                 """
                 INSERT INTO _lineage
-                (id, output_record_id, output_type, function_name, function_hash,
+                (id, output_record_id, output_type, lineage_hash, function_name, function_hash,
                  inputs, constants, user_id)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT (output_record_id) DO UPDATE SET
+                    lineage_hash = EXCLUDED.lineage_hash,
                     function_name = EXCLUDED.function_name,
                     function_hash = EXCLUDED.function_hash,
                     inputs = EXCLUDED.inputs,
@@ -421,6 +411,7 @@ class DatabaseManager:
                     new_id,
                     output_record_id,
                     output_type,
+                    lineage_hash,
                     lineage.function_name,
                     lineage.function_hash,
                     json.dumps(lineage.inputs),
@@ -433,14 +424,15 @@ class DatabaseManager:
             self._duck._execute(
                 """
                 INSERT OR REPLACE INTO _lineage
-                (id, output_record_id, output_type, function_name, function_hash,
+                (id, output_record_id, output_type, lineage_hash, function_name, function_hash,
                  inputs, constants, user_id)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 [
                     new_id,
                     output_record_id,
                     output_type,
+                    lineage_hash,
                     lineage.function_name,
                     lineage.function_hash,
                     json.dumps(lineage.inputs),
@@ -465,15 +457,15 @@ class DatabaseManager:
         if rows:
             return
 
-        self._save_lineage(ephemeral_id, variable_type, lineage, user_id)
+        self._save_lineage(ephemeral_id, variable_type, lineage)
 
     def load(
         self,
         variable_class: Type[BaseVariable],
         metadata: dict,
         version: str = "latest",
-        loc: any = None,
-        iloc: any = None,
+        loc: Any = None,
+        iloc: Any = None,
     ) -> BaseVariable:
         """
         Load a single variable matching the given metadata.
@@ -528,8 +520,8 @@ class DatabaseManager:
         self,
         variable_class: Type[BaseVariable],
         df: pd.DataFrame,
-        loc: any = None,
-        iloc: any = None,
+        loc: Any = None,
+        iloc: Any = None,
     ) -> BaseVariable:
         """Convert a DataFrame row to a variable instance."""
         # Extract metadata columns
@@ -689,134 +681,6 @@ class DatabaseManager:
             [record_id],
         )
         return len(rows) > 0
-
-    # -------------------------------------------------------------------------
-    # Computation Cache Methods
-    # -------------------------------------------------------------------------
-
-    def get_cached_by_key(self, cache_key: str) -> list[tuple] | None:
-        """
-        Look up cached result by cache key.
-
-        Returns:
-            List of (data, record_id) tuples ordered by output_num,
-            or None if not found.
-        """
-        rows = self._duck._fetchall(
-            """SELECT output_num, output_type, output_record_id FROM _computation_cache
-               WHERE cache_key = ?
-               ORDER BY output_num""",
-            [cache_key],
-        )
-
-        if not rows:
-            return None
-
-        # Verify output_nums are contiguous starting from 0
-        output_nums = [row[0] for row in rows]
-        expected_nums = list(range(len(rows)))
-        if output_nums != expected_nums:
-            return None
-
-        results = []
-        for row in rows:
-            output_type = row[1]
-            output_record_id = row[2]
-
-            var_class = self._registered_types.get(output_type)
-            if var_class is None:
-                var_class = BaseVariable.get_subclass_by_name(output_type)
-                if var_class is None:
-                    return None
-                self.register(var_class)
-
-            try:
-                var = self.load(var_class, {}, version=output_record_id)
-                results.append((var.data, output_record_id))
-            except Exception:
-                return None
-
-        return results
-
-    def cache_computation(
-        self,
-        cache_key: str,
-        function_name: str,
-        function_hash: str,
-        output_type: str,
-        output_record_id: str,
-        output_num: int = 0,
-    ) -> None:
-        """Store a computation result in the cache."""
-        try:
-            new_id = self._duck._fetchall("SELECT nextval('_cache_id_seq')")[0][0]
-        except Exception:
-            new_id = 0
-
-        try:
-            self._duck._execute(
-                """
-                INSERT INTO _computation_cache
-                (id, cache_key, output_num, function_name, function_hash, output_type, output_record_id)
-                VALUES (?, ?, ?, ?, ?, ?, ?)
-                ON CONFLICT (cache_key, output_num) DO UPDATE SET
-                    function_name = EXCLUDED.function_name,
-                    function_hash = EXCLUDED.function_hash,
-                    output_type = EXCLUDED.output_type,
-                    output_record_id = EXCLUDED.output_record_id,
-                    created_at = current_timestamp
-                """,
-                [new_id, cache_key, output_num, function_name, function_hash, output_type, output_record_id],
-            )
-        except Exception:
-            self._duck._execute(
-                """
-                INSERT OR REPLACE INTO _computation_cache
-                (id, cache_key, output_num, function_name, function_hash, output_type, output_record_id)
-                VALUES (?, ?, ?, ?, ?, ?, ?)
-                """,
-                [new_id, cache_key, output_num, function_name, function_hash, output_type, output_record_id],
-            )
-
-    def invalidate_cache(
-        self,
-        function_name: str | None = None,
-        function_hash: str | None = None,
-    ) -> int:
-        """Invalidate cached computations."""
-        if function_hash:
-            self._duck._execute(
-                "DELETE FROM _computation_cache WHERE function_hash = ?",
-                [function_hash],
-            )
-        elif function_name:
-            self._duck._execute(
-                "DELETE FROM _computation_cache WHERE function_name = ?",
-                [function_name],
-            )
-        else:
-            self._duck._execute("DELETE FROM _computation_cache")
-        return 0  # DuckDB doesn't easily return rowcount
-
-    def get_cache_stats(self) -> dict:
-        """Get statistics about the computation cache."""
-        rows = self._duck._fetchall(
-            "SELECT COUNT(*) as total FROM _computation_cache"
-        )
-        total = rows[0][0] if rows else 0
-
-        rows = self._duck._fetchall(
-            """SELECT function_name, COUNT(*) as count
-               FROM _computation_cache
-               GROUP BY function_name"""
-        )
-        by_function = {row[0]: row[1] for row in rows}
-
-        return {
-            "total_entries": total,
-            "functions": len(by_function),
-            "entries_by_function": by_function,
-        }
 
     # -------------------------------------------------------------------------
     # Export Methods

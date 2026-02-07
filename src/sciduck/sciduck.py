@@ -685,7 +685,7 @@ class SciDuck:
         self,
         name: str,
         version_id: Optional[int] = None,
-        raw: bool = False,
+        raw: bool = True,
         **schema_keys,
     ) -> Union[pd.DataFrame, Any]:
         """
@@ -859,8 +859,8 @@ class SciDuck:
             variable_names = [variable_names]
         for vn in variable_names:
             self._execute(
-                "INSERT OR IGNORE INTO _variable_groups (group_name, variable_name) "
-                "VALUES (?, ?)",
+                "INSERT INTO _variable_groups (group_name, variable_name) "
+                "VALUES (?, ?) ON CONFLICT DO NOTHING",
                 [group_name, vn],
             )
 

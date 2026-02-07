@@ -57,10 +57,10 @@ from .exceptions import (
 from .foreach import Fixed, for_each
 from .lineage import (
     LineageRecord,
-    check_cache,
     extract_lineage,
     find_unsaved_variables,
     get_raw_value,
+    get_upstream_lineage,
 )
 from .paths import PathGenerator
 from .thunk import ThunkOutput, PipelineThunk, Thunk, thunk
@@ -91,7 +91,7 @@ __all__ = [
     "extract_lineage",
     "find_unsaved_variables",
     "get_raw_value",
-    "check_cache",
+    "get_upstream_lineage",
     # Exceptions
     "SciDBError",
     "NotRegisteredError",

@@ -13,23 +13,21 @@ Example:
     print(result.pipeline_thunk.inputs)  # Captured inputs for lineage
 """
 
-# Re-export everything from the thunk library
+# Re-export from thunk library
 from thunk import (
-    CacheBackend,
     ThunkOutput,
     PipelineThunk,
     Thunk,
-    configure_cache,
-    get_cache_backend,
     thunk,
 )
+
+# Re-export query layer from scidb
+from .query_by_metadata import QueryByMetadata
 
 __all__ = [
     "Thunk",
     "PipelineThunk",
     "ThunkOutput",
     "thunk",
-    "CacheBackend",
-    "configure_cache",
-    "get_cache_backend",
+    "QueryByMetadata",
 ]
