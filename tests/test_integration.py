@@ -141,7 +141,7 @@ class TestIdempotentSaves:
         assert record_id1 == record_id2 == record_id3
 
         # Should only have one unique record_id in database
-        rows = db._duck._fetchall("SELECT DISTINCT _record_id FROM scalar_value")
+        rows = db._duck._fetchall('SELECT DISTINCT _record_id FROM "ScalarValue"')
         assert len(rows) == 1
 
     def test_same_array_data_same_record_id(self, db, array_class):

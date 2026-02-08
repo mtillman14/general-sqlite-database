@@ -217,12 +217,12 @@ class DatabaseManager:
 
         if not exists:
             # Create table from DataFrame schema
-            self._duck._conn.execute(
+            self._duck.con.execute(
                 f'CREATE TABLE "{table_name}" AS SELECT * FROM df WHERE 1=0'
             )
 
         # Insert data
-        self._duck._conn.execute(f'INSERT INTO "{table_name}" SELECT * FROM df')
+        self._duck.con.execute(f'INSERT INTO "{table_name}" SELECT * FROM df')
 
     def _load_dataframe(self, table_name: str, **filters) -> pd.DataFrame:
         """Load a DataFrame from DuckDB with optional filters."""
@@ -234,9 +234,9 @@ class DatabaseManager:
                 params.append(value)
             where_clause = " AND ".join(conditions)
             query = f'SELECT * FROM "{table_name}" WHERE {where_clause}'
-            return self._duck._conn.execute(query, params).fetchdf()
+            return self._duck.con.execute(query, params).fetchdf()
         else:
-            return self._duck._conn.execute(f'SELECT * FROM "{table_name}"').fetchdf()
+            return self._duck.con.execute(f'SELECT * FROM "{table_name}"').fetchdf()
 
     @staticmethod
     def _has_custom_serialization(variable_class: type) -> bool:
@@ -425,6 +425,7 @@ class DatabaseManager:
 
             elif self.lineage_mode == "ephemeral" and unsaved:
                 user_id = get_user_id()
+                schema_keys = self._split_metadata(metadata).get("schema")
                 for var, path in unsaved:
                     inner_data = getattr(var, "data", None)
                     if isinstance(inner_data, ThunkOutput):
@@ -436,6 +437,7 @@ class DatabaseManager:
                             variable_type=var_type,
                             lineage=intermediate_lineage,
                             user_id=user_id,
+                            schema_keys=schema_keys,
                         )
 
             lineage = extract_lineage(data)
@@ -540,7 +542,11 @@ class DatabaseManager:
 
         # Save lineage if provided
         if lineage is not None:
-            self._save_lineage(record_id, type_name, lineage, lineage_hash, user_id)
+            self._save_lineage(
+                record_id, type_name, lineage, lineage_hash, user_id,
+                schema_keys=nested_metadata.get("schema"),
+                output_content_hash=content_hash,
+            )
 
         return record_id
 
@@ -551,6 +557,8 @@ class DatabaseManager:
         lineage: "LineageRecord",
         lineage_hash: str | None = None,
         user_id: str | None = None,
+        schema_keys: dict | None = None,
+        output_content_hash: str | None = None,
     ) -> None:
         """Save lineage record for a variable to PipelineDB (SQLite)."""
         self._pipeline_db.save_lineage(
@@ -562,6 +570,8 @@ class DatabaseManager:
             constants=lineage.constants,
             lineage_hash=lineage_hash,
             user_id=user_id,
+            schema_keys=schema_keys,
+            output_content_hash=output_content_hash,
         )
 
     def save_ephemeral_lineage(
@@ -570,6 +580,7 @@ class DatabaseManager:
         variable_type: str,
         lineage: "LineageRecord",
         user_id: str | None = None,
+        schema_keys: dict | None = None,
     ) -> None:
         """Save an ephemeral lineage record for an unsaved intermediate variable."""
         self._pipeline_db.save_ephemeral(
@@ -580,6 +591,7 @@ class DatabaseManager:
             inputs=lineage.inputs,
             constants=lineage.constants,
             user_id=user_id,
+            schema_keys=schema_keys,
         )
 
     def load(
@@ -808,6 +820,32 @@ class DatabaseManager:
             "inputs": lineage["inputs"],
             "constants": lineage["constants"],
         }
+
+    def get_provenance_by_schema(self, **schema_keys) -> list[dict]:
+        """
+        Get all provenance records at a schema location (schema-aware view).
+
+        Args:
+            **schema_keys: Schema key filters (e.g., subject="S01", session="1")
+
+        Returns:
+            List of lineage record dicts matching the schema keys
+        """
+        return self._pipeline_db.find_by_schema(**schema_keys)
+
+    def get_pipeline_structure(self) -> list[dict]:
+        """
+        Get the abstract pipeline structure (schema-blind view).
+
+        Returns unique (function_name, function_hash, output_type, input_types)
+        combinations, describing how variable types flow through functions
+        without reference to specific data instances or schema locations.
+
+        Returns:
+            List of dicts with keys: function_name, function_hash, output_type,
+            input_types (list of type names)
+        """
+        return self._pipeline_db.get_pipeline_structure()
 
     def has_lineage(self, record_id: str) -> bool:
         """Check if a variable has lineage information."""

@@ -38,6 +38,7 @@ class ClassifiedInput:
     # For SAVED_VARIABLE
     record_id: str | None = None
     metadata: dict | None = None
+    content_hash: str | None = None
 
     # For CONSTANT
     value_repr: str | None = None
@@ -53,13 +54,16 @@ class ClassifiedInput:
                 "output_num": self.output_num,
             }
         elif self.kind == InputKind.SAVED_VARIABLE:
-            return {
+            d = {
                 "name": self.name,
                 "source_type": "variable",
                 "type": self.type_name,
                 "record_id": self.record_id,
                 "metadata": self.metadata,
             }
+            if self.content_hash is not None:
+                d["content_hash"] = self.content_hash
+            return d
         elif self.kind == InputKind.UNSAVED_THUNK:
             return {
                 "name": self.name,
@@ -150,6 +154,7 @@ def classify_input(name: str, value: Any) -> ClassifiedInput:
         if record_id is not None:
             # Saved variable - use lineage_hash for caching
             lineage_hash = getattr(value, "_lineage_hash", None) or getattr(value, "lineage_hash", None)
+            content_hash = getattr(value, "_content_hash", None) or getattr(value, "content_hash", None)
             return ClassifiedInput(
                 kind=InputKind.SAVED_VARIABLE,
                 name=name,
@@ -157,6 +162,7 @@ def classify_input(name: str, value: Any) -> ClassifiedInput:
                 type_name=type_name,
                 record_id=record_id,
                 metadata=metadata,
+                content_hash=content_hash,
             )
 
         # Unsaved variable - check if it wraps an ThunkOutput

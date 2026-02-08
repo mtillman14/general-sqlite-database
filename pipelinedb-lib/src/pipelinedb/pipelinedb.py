@@ -14,12 +14,15 @@ class PipelineDB:
     Stores computation lineage (provenance) separately from data storage.
     Uses record_id references to link to data in external storage (e.g., SciDuck).
 
-    Lineage is stored as **global computational provenance**: each record maps
-    an output record_id to the function and inputs that produced it. The lineage
-    table does NOT store dataset schema keys (e.g., subject, session). To resolve
-    schema-scoped provenance (e.g., "what happened at subject=1, session=1"),
-    callers must first look up the record_id from the data storage layer, then
-    query lineage by that record_id.
+    Supports two levels of provenance:
+
+    **Schema-aware (instance provenance):** Each lineage record includes schema
+    keys (e.g., subject, session) and content hashes, enabling queries like
+    "what inputs at subject=1, session=1 produced this output?"
+
+    **Schema-blind (pipeline structure):** Derived from schema-aware records by
+    grouping on (function_name, output_type, input_types). Answers "how is the
+    pipeline generally structured?" without reference to specific data instances.
 
     Example:
         db = PipelineDB("pipeline.db")
@@ -32,10 +35,18 @@ class PipelineDB:
             inputs=[{"name": "arg_0", "record_id": "xyz000", "type": "RawData"}],
             constants=[],
             lineage_hash="def456",
+            schema_keys={"subject": "S01", "session": "1"},
+            output_content_hash="contenthash123",
         )
 
-        # Cache lookup (global, not scoped to schema keys)
-        records = db.find_by_lineage_hash("def456")
+        # Schema-aware: find by schema location
+        records = db.find_by_schema(subject="S01")
+
+        # Schema-blind: get pipeline structure
+        structure = db.get_pipeline_structure()
+
+        # Cache lookup (optionally scoped to schema keys)
+        records = db.find_by_lineage_hash("def456", schema_keys={"subject": "S01"})
     """
 
     def __init__(self, db_path: str | Path):
@@ -65,9 +76,15 @@ class PipelineDB:
                 inputs TEXT NOT NULL,
                 constants TEXT NOT NULL,
                 user_id TEXT,
+                schema_keys TEXT,
+                output_content_hash TEXT,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         """)
+
+        # Add columns if upgrading from older schema
+        self._add_column_if_missing(cursor, "schema_keys", "TEXT")
+        self._add_column_if_missing(cursor, "output_content_hash", "TEXT")
 
         # Create indexes for efficient lookups
         cursor.execute(
@@ -79,6 +96,16 @@ class PipelineDB:
 
         self._conn.commit()
 
+    @staticmethod
+    def _add_column_if_missing(cursor, column_name: str, column_type: str) -> None:
+        """Add a column to the lineage table if it doesn't already exist."""
+        cursor.execute("PRAGMA table_info(lineage)")
+        existing = {row[1] for row in cursor.fetchall()}
+        if column_name not in existing:
+            cursor.execute(
+                f"ALTER TABLE lineage ADD COLUMN {column_name} {column_type}"
+            )
+
     def save_lineage(
         self,
         output_record_id: str,
@@ -89,6 +116,8 @@ class PipelineDB:
         constants: list[dict[str, Any]],
         lineage_hash: str | None = None,
         user_id: str | None = None,
+        schema_keys: dict[str, Any] | None = None,
+        output_content_hash: str | None = None,
     ) -> None:
         """
         Save a lineage record (upsert).
@@ -106,6 +135,8 @@ class PipelineDB:
             constants: List of constant values used in the computation
             lineage_hash: Pre-computed hash of the full lineage (for cache lookups)
             user_id: Optional user ID for attribution
+            schema_keys: Optional dict of schema keys (e.g., {"subject": "S01", "session": "1"})
+            output_content_hash: Optional content hash of the output data
         """
         cursor = self._conn.cursor()
 
@@ -113,8 +144,8 @@ class PipelineDB:
             """
             INSERT INTO lineage
             (output_record_id, output_type, lineage_hash, function_name, function_hash,
-             inputs, constants, user_id, created_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+             inputs, constants, user_id, schema_keys, output_content_hash, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT (output_record_id) DO UPDATE SET
                 output_type = excluded.output_type,
                 lineage_hash = excluded.lineage_hash,
@@ -123,6 +154,8 @@ class PipelineDB:
                 inputs = excluded.inputs,
                 constants = excluded.constants,
                 user_id = excluded.user_id,
+                schema_keys = excluded.schema_keys,
+                output_content_hash = excluded.output_content_hash,
                 created_at = excluded.created_at
             """,
             [
@@ -134,13 +167,19 @@ class PipelineDB:
                 json.dumps(inputs, sort_keys=True),
                 json.dumps(constants, sort_keys=True),
                 user_id,
+                json.dumps(schema_keys, sort_keys=True) if schema_keys else None,
+                output_content_hash,
                 datetime.now().isoformat(),
             ],
         )
 
         self._conn.commit()
 
-    def find_by_lineage_hash(self, lineage_hash: str) -> list[dict[str, Any]] | None:
+    def find_by_lineage_hash(
+        self,
+        lineage_hash: str,
+        schema_keys: dict[str, Any] | None = None,
+    ) -> list[dict[str, Any]] | None:
         """
         Find outputs by lineage hash.
 
@@ -149,40 +188,32 @@ class PipelineDB:
 
         Args:
             lineage_hash: The hash of the computation to look up
+            schema_keys: Optional schema keys to scope the search
 
         Returns:
-            List of matching record dicts (with keys: output_record_id,
-            output_type, function_name, function_hash, inputs, constants,
-            user_id, created_at), or None if no matches found
+            List of matching record dicts, or None if no matches found
         """
         cursor = self._conn.cursor()
 
-        cursor.execute(
-            """SELECT output_record_id, output_type, function_name, function_hash,
-                      inputs, constants, user_id, created_at
-               FROM lineage
-               WHERE lineage_hash = ?""",
-            [lineage_hash],
-        )
+        sql = """SELECT output_record_id, output_type, function_name, function_hash,
+                        inputs, constants, user_id, schema_keys, output_content_hash,
+                        created_at
+                 FROM lineage
+                 WHERE lineage_hash = ?"""
+        params: list[Any] = [lineage_hash]
+
+        if schema_keys:
+            for key, value in schema_keys.items():
+                sql += f" AND json_extract(schema_keys, '$.{key}') = ?"
+                params.append(str(value))
+
+        cursor.execute(sql, params)
 
         rows = cursor.fetchall()
         if not rows:
             return None
 
-        results = []
-        for row in rows:
-            results.append({
-                "output_record_id": row["output_record_id"],
-                "output_type": row["output_type"],
-                "function_name": row["function_name"],
-                "function_hash": row["function_hash"],
-                "inputs": json.loads(row["inputs"]),
-                "constants": json.loads(row["constants"]),
-                "user_id": row["user_id"],
-                "created_at": row["created_at"],
-            })
-
-        return results
+        return [self._row_to_dict(row) for row in rows]
 
     def get_lineage(self, output_record_id: str) -> dict[str, Any] | None:
         """
@@ -198,7 +229,8 @@ class PipelineDB:
 
         cursor.execute(
             """SELECT output_record_id, output_type, lineage_hash, function_name,
-                      function_hash, inputs, constants, user_id, created_at
+                      function_hash, inputs, constants, user_id, schema_keys,
+                      output_content_hash, created_at
                FROM lineage
                WHERE output_record_id = ?""",
             [output_record_id],
@@ -208,17 +240,86 @@ class PipelineDB:
         if not row:
             return None
 
-        return {
-            "output_record_id": row["output_record_id"],
-            "output_type": row["output_type"],
-            "lineage_hash": row["lineage_hash"],
-            "function_name": row["function_name"],
-            "function_hash": row["function_hash"],
-            "inputs": json.loads(row["inputs"]),
-            "constants": json.loads(row["constants"]),
-            "user_id": row["user_id"],
-            "created_at": row["created_at"],
-        }
+        result = self._row_to_dict(row)
+        result["lineage_hash"] = row["lineage_hash"]
+        return result
+
+    def find_by_schema(self, **schema_keys) -> list[dict[str, Any]]:
+        """
+        Find all lineage records matching the given schema keys.
+
+        This enables schema-aware provenance queries like "show me all
+        computations for subject=S01, session=1".
+
+        Args:
+            **schema_keys: Schema key filters (e.g., subject="S01", session="1")
+
+        Returns:
+            List of matching lineage record dicts (may be empty)
+        """
+        cursor = self._conn.cursor()
+
+        sql = """SELECT output_record_id, output_type, lineage_hash, function_name,
+                        function_hash, inputs, constants, user_id, schema_keys,
+                        output_content_hash, created_at
+                 FROM lineage
+                 WHERE schema_keys IS NOT NULL"""
+        params: list[Any] = []
+
+        for key, value in schema_keys.items():
+            sql += f" AND json_extract(schema_keys, '$.{key}') = ?"
+            params.append(str(value))
+
+        sql += " ORDER BY created_at DESC"
+        cursor.execute(sql, params)
+
+        rows = cursor.fetchall()
+        results = []
+        for row in rows:
+            result = self._row_to_dict(row)
+            result["lineage_hash"] = row["lineage_hash"]
+            results.append(result)
+        return results
+
+    def get_pipeline_structure(self) -> list[dict[str, Any]]:
+        """
+        Get the abstract pipeline structure (schema-blind view).
+
+        Returns unique (function_name, function_hash, output_type, input_types)
+        combinations, describing how variable types flow through functions
+        without reference to specific data instances or schema locations.
+
+        Returns:
+            List of dicts with keys: function_name, function_hash, output_type,
+            input_types (list of type names)
+        """
+        cursor = self._conn.cursor()
+
+        cursor.execute(
+            """SELECT DISTINCT function_name, function_hash, output_type, inputs
+               FROM lineage
+               ORDER BY function_name"""
+        )
+
+        seen = set()
+        structure = []
+        for row in cursor.fetchall():
+            inputs_data = json.loads(row["inputs"])
+            input_types = tuple(
+                sorted(inp.get("type", inp.get("value_type", "constant"))
+                       for inp in inputs_data)
+            )
+            key = (row["function_name"], row["function_hash"], row["output_type"], input_types)
+            if key not in seen:
+                seen.add(key)
+                structure.append({
+                    "function_name": row["function_name"],
+                    "function_hash": row["function_hash"],
+                    "output_type": row["output_type"],
+                    "input_types": list(input_types),
+                })
+
+        return structure
 
     def save_ephemeral(
         self,
@@ -229,6 +330,7 @@ class PipelineDB:
         inputs: list[dict[str, Any]],
         constants: list[dict[str, Any]],
         user_id: str | None = None,
+        schema_keys: dict[str, Any] | None = None,
     ) -> None:
         """
         Save ephemeral lineage (no data stored in external storage).
@@ -247,6 +349,7 @@ class PipelineDB:
             inputs: List of input specifications
             constants: List of constant values
             user_id: Optional user ID
+            schema_keys: Optional dict of schema keys
         """
         # Check if already exists
         cursor = self._conn.cursor()
@@ -266,6 +369,7 @@ class PipelineDB:
             constants=constants,
             lineage_hash=None,  # Ephemeral entries don't need lineage hash
             user_id=user_id,
+            schema_keys=schema_keys,
         )
 
     def has_lineage(self, output_record_id: str) -> bool:
@@ -284,6 +388,22 @@ class PipelineDB:
             [output_record_id],
         )
         return cursor.fetchone() is not None
+
+    def _row_to_dict(self, row: sqlite3.Row) -> dict[str, Any]:
+        """Convert a sqlite3.Row to a lineage dict."""
+        schema_keys_raw = row["schema_keys"]
+        return {
+            "output_record_id": row["output_record_id"],
+            "output_type": row["output_type"],
+            "function_name": row["function_name"],
+            "function_hash": row["function_hash"],
+            "inputs": json.loads(row["inputs"]),
+            "constants": json.loads(row["constants"]),
+            "user_id": row["user_id"],
+            "schema_keys": json.loads(schema_keys_raw) if schema_keys_raw else None,
+            "output_content_hash": row["output_content_hash"],
+            "created_at": row["created_at"],
+        }
 
     def close(self) -> None:
         """Close the database connection."""
