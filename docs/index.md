@@ -28,7 +28,7 @@ import numpy as np
 
 # Define a variable type (native storage - no to_db/from_db needed)
 class TimeSeries(BaseVariable):
-    schema_version = 1
+    pass
 
 # Setup (DuckDB for data, SQLite for lineage)
 db = configure_database("experiment.duckdb", ["subject", "session"], "pipeline.db")
@@ -66,5 +66,6 @@ print(provenance["function_name"])  # "normalize"
 ## Documentation
 
 - [Quickstart](quickstart.md) - Get up and running in 5 minutes
+- [VO2 Max Walkthrough](guide/walkthrough.md) - Step-by-step example with design philosophy
 - [User Guide](guide/variables.md) - Detailed documentation
 - [API Reference](api.md) - Complete API documentation

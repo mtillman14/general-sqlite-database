@@ -73,7 +73,7 @@ from scidb import configure_database, BaseVariable
 import numpy as np
 
 class Measurement(BaseVariable):
-    schema_version = 1
+    pass
 
 # Setup
 db = configure_database(

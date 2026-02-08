@@ -152,3 +152,23 @@ for_each(
     session=["A", "B", "C"],
 )
 ```
+
+## Network Layer: scidb-net
+
+Client-server HTTP layer for remote database access. Wraps `DatabaseManager` behind a FastAPI server and provides a drop-in HTTP client (`RemoteDatabaseManager`) so existing code works transparently over the network.
+
+User-facing API:
+
+```python
+# Server
+from scidbnet import create_app
+app = create_app("experiment.duckdb", ["subject", "session"], "pipeline.db")
+
+# Client — one-line replacement for configure_database()
+from scidbnet import configure_remote_database
+configure_remote_database("http://server:8000")
+
+# All existing code works unchanged
+RawData.save(data, subject=1, session="A")
+loaded = RawData.load(subject=1, session="A")
+```

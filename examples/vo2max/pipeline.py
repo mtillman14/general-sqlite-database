@@ -219,19 +219,19 @@ if __name__ == "__main__":
     #   - Enables thunk caching (sets Thunk.query to the DatabaseManager)
     # -------------------------------------------------------------------------
 
-    project_folder = Path("/home/mtillman/mnt/rto/LabMembers/MTillman/GitRepos/general-sqlite-database/examples/vo2max")
+    project_folder = Path(__file__).parent
 
     data_dir = project_folder / "data"
-    db_dir = Path("/home/mtillman/datasets/vo2max-example")
+    db_dir = project_folder
 
-    data_filename = "data.duckdb"
-    pipeline_filename = "pipeline.db"
+    data_filename = "vo2max_data.duckdb"
+    pipeline_filename = "vo2max_lineage.db"
 
     # Clean up previous runs for a fresh demo
-    for f in db_dir.glob(f"{data_filename}.*"):
+    for f in db_dir.glob(f"{data_filename}*"):
         f.unlink()
-    for f in db_dir.glob(f"{pipeline_filename}.*"):
-        f.unlink()
+    if (db_dir / pipeline_filename).exists():
+        (db_dir / pipeline_filename).unlink()
 
     db = configure_database(
         dataset_db_path=db_dir / data_filename,

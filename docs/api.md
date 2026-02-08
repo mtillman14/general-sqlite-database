@@ -8,7 +8,7 @@ Base class for storable data types. For most data types (scalars, numpy arrays, 
 
 ```python
 class MyVariable(BaseVariable):
-    schema_version: int = 1  # Required class attribute
+    # schema_version defaults to 1 — only set explicitly for schema migrations
 
     # Optional — only needed for custom serialization
     def to_db(self) -> pd.DataFrame:

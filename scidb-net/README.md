@@ -58,11 +58,11 @@ from scidb.variable import BaseVariable
 
 class RawSignal(BaseVariable):
     """Raw EEG signal, stored as a numpy array."""
-    schema_version = 1
+    pass
 
 class ProcessedSignal(BaseVariable):
     """Band-pass filtered signal."""
-    schema_version = 1
+    pass
 ```
 
 Install this package on both machines:
@@ -146,9 +146,9 @@ signal = RawSignal.load(subject=1, session="A")
 print(signal.data.shape)  # (1000,)
 
 # Thunk caching also works remotely
-from scidb.thunk import Thunk
+from scidb import thunk
 
-@Thunk
+@thunk
 def bandpass_filter(raw):
     # ... filtering logic ...
     return filtered
