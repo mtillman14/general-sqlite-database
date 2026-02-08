@@ -14,6 +14,13 @@ class PipelineDB:
     Stores computation lineage (provenance) separately from data storage.
     Uses record_id references to link to data in external storage (e.g., SciDuck).
 
+    Lineage is stored as **global computational provenance**: each record maps
+    an output record_id to the function and inputs that produced it. The lineage
+    table does NOT store dataset schema keys (e.g., subject, session). To resolve
+    schema-scoped provenance (e.g., "what happened at subject=1, session=1"),
+    callers must first look up the record_id from the data storage layer, then
+    query lineage by that record_id.
+
     Example:
         db = PipelineDB("pipeline.db")
 
@@ -27,7 +34,7 @@ class PipelineDB:
             lineage_hash="def456",
         )
 
-        # Cache lookup
+        # Cache lookup (global, not scoped to schema keys)
         records = db.find_by_lineage_hash("def456")
     """
 

@@ -71,6 +71,51 @@ NormalizedData.save(normalized, subject=1, stage="normalized")
 
 **Important:** Pass the `BaseVariable` instance (not `.data`) to the thunk to preserve lineage tracking.
 
+## How Lineage Is Stored
+
+Lineage is stored in a separate SQLite database (PipelineDB) as **global computational
+provenance**. Each lineage record maps an output `record_id` to the function and inputs
+that produced it. The lineage table has this structure:
+
+| Column | Description |
+|---|---|
+| `output_record_id` | The `record_id` of the saved output |
+| `output_type` | Variable class name (e.g., `"NormalizedData"`) |
+| `lineage_hash` | Hash of the full computation (function + inputs), used for cache lookups |
+| `function_name` | Name of the function that produced the output |
+| `function_hash` | SHA-256 hash of the function's bytecode |
+| `inputs` | JSON list of input descriptors (see below) |
+| `constants` | JSON list of constant value descriptors |
+
+### Lineage is not schema-aware
+
+The lineage table tracks relationships between `record_id` values. It does **not** have
+schema key columns (e.g., `subject`, `session`). This means:
+
+- Lineage records are **global** — they are not scoped to any particular schema location.
+- You cannot directly query "show me all computations for subject=1" from the lineage
+  table alone.
+- To answer schema-scoped provenance questions (e.g., "what inputs at subject=1, session=1
+  produced this output?"), you need to:
+  1. Look up the output's `record_id` by schema keys in the data table (DuckDB)
+  2. Query the lineage table by that `record_id` (PipelineDB)
+  3. For each input `record_id` in the lineage record, look up its schema location
+     in the data table (DuckDB)
+
+The input descriptors for saved variables do include a `metadata` field with the
+original schema keys, but this is stored as an opaque JSON blob inside the `inputs`
+column — it is not indexed or directly queryable.
+
+```
+Global provenance (what lineage stores):
+    record abc123 ──[normalize()]──> record def456
+
+Schema-scoped provenance (requires joining data + lineage tables):
+    RawData(subject=1, session=1, record=abc123)
+        ──[normalize(), hash=a1b2c3]──>
+    NormalizedData(subject=1, session=1, record=def456)
+```
+
 ## Querying Provenance
 
 ### What Produced This Variable?
@@ -83,6 +128,12 @@ print(provenance["function_hash"])   # SHA-256 of function bytecode
 print(provenance["inputs"])          # List of input descriptors
 print(provenance["constants"])       # List of constant values
 ```
+
+Note: `get_provenance()` handles the data-table-to-lineage-table join for you.
+It first looks up the `record_id` matching the given metadata, then queries the
+lineage table. The returned `inputs` list contains `record_id` references to
+upstream variables, but not their schema locations — use `db.load()` with the
+input `record_id` to resolve where each input lives in the dataset.
 
 ### Check Lineage Exists
 
