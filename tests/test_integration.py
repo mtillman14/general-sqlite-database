@@ -235,6 +235,75 @@ class TestDatabasePersistence:
         np.testing.assert_array_equal(array.data, [1, 2, 3])
 
 
+class TestCacheHitAfterReload:
+    """Test that reloaded variables produce cache hits."""
+
+    def test_reload_and_rerun_hits_cache(self, db, scalar_class, array_class):
+        """Saving a thunk result, reloading it, and re-running the same
+        thunk with the reloaded input should hit the cache."""
+        from scidb import thunk
+
+        call_count = 0
+
+        @thunk
+        def double(x):
+            nonlocal call_count
+            call_count += 1
+            return x * 2
+
+        # Save raw data and load it back
+        array_class.save(np.array([1, 2, 3]), subject=1)
+        loaded = array_class.load(subject=1)
+
+        # Run the thunk and save the result
+        result1 = double(loaded)
+        scalar_class.save(result1, subject=1, trial=1)
+        assert call_count == 1
+
+        # Reload the input and re-run the same thunk
+        reloaded = array_class.load(subject=1)
+        result2 = double(reloaded)
+
+        # Function should NOT have been called again — cache hit
+        assert call_count == 1
+        np.testing.assert_array_equal(result2.data, result1.data)
+
+    def test_chained_reload_hits_cache(self, db, scalar_class, array_class):
+        """Multi-step pipeline: save intermediates, reload, re-run → cache hits."""
+        from scidb import thunk
+
+        sum_call_count = 0
+
+        @thunk
+        def add_one(x):
+            return x + 1
+
+        @thunk
+        def sum_all(x):
+            nonlocal sum_call_count
+            sum_call_count += 1
+            return float(np.sum(x))
+
+        # Run full pipeline
+        array_class.save(np.array([10, 20, 30]), subject=1)
+        loaded = array_class.load(subject=1)
+
+        step1 = add_one(loaded)
+        array_class.save(step1, subject=1, stage="incremented")
+
+        step2 = sum_all(step1)
+        scalar_class.save(step2, subject=1, stage="total")
+        assert sum_call_count == 1
+
+        # Reload intermediate and re-run second step
+        reloaded_step1 = array_class.load(subject=1, stage="incremented")
+        step2_again = sum_all(reloaded_step1)
+
+        # Function should NOT have been called again — cache hit
+        assert sum_call_count == 1
+        assert step2_again.data == step2.data
+
+
 class TestErrorHandling:
     """Test error handling in various scenarios."""
 

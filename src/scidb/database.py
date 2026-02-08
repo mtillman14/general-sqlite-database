@@ -403,6 +403,7 @@ class DatabaseManager:
         # Normalize input: extract raw data and lineage info based on input type
         lineage = None
         lineage_hash = None
+        pipeline_lineage_hash = None
         raw_data = None
 
         if isinstance(data, ThunkOutput):
@@ -441,7 +442,8 @@ class DatabaseManager:
                         )
 
             lineage = extract_lineage(data)
-            lineage_hash = data.pipeline_thunk.compute_lineage_hash()
+            lineage_hash = data.hash
+            pipeline_lineage_hash = data.pipeline_thunk.compute_lineage_hash()
             raw_data = get_raw_value(data)
 
         elif isinstance(data, BaseVariable):
@@ -452,7 +454,10 @@ class DatabaseManager:
             raw_data = data
 
         instance = variable_class(raw_data)
-        record_id = self.save(instance, metadata, lineage=lineage, lineage_hash=lineage_hash, index=index)
+        record_id = self.save(
+            instance, metadata, lineage=lineage, lineage_hash=lineage_hash,
+            pipeline_lineage_hash=pipeline_lineage_hash, index=index,
+        )
         instance._record_id = record_id
         instance._metadata = metadata
         instance._lineage_hash = lineage_hash
@@ -465,6 +470,7 @@ class DatabaseManager:
         metadata: dict,
         lineage: "LineageRecord | None" = None,
         lineage_hash: str | None = None,
+        pipeline_lineage_hash: str | None = None,
         index: Any = None,
     ) -> str:
         """
@@ -474,7 +480,10 @@ class DatabaseManager:
             variable: The variable instance to save
             metadata: Addressing metadata (flat dict)
             lineage: Optional lineage record if data came from a thunk
-            lineage_hash: Optional pre-computed lineage hash
+            lineage_hash: Optional pre-computed lineage hash (stored in DuckDB
+                for input classification when this variable is reused later)
+            pipeline_lineage_hash: Optional lineage hash for PipelineDB cache
+                lookup. If None, falls back to lineage_hash.
             index: Optional index to set on the DataFrame
 
         Returns:
@@ -542,8 +551,9 @@ class DatabaseManager:
 
         # Save lineage if provided
         if lineage is not None:
+            effective_plh = pipeline_lineage_hash if pipeline_lineage_hash is not None else lineage_hash
             self._save_lineage(
-                record_id, type_name, lineage, lineage_hash, user_id,
+                record_id, type_name, lineage, effective_plh, user_id,
                 schema_keys=nested_metadata.get("schema"),
                 output_content_hash=content_hash,
             )

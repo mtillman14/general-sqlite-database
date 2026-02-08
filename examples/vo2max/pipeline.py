@@ -219,24 +219,29 @@ if __name__ == "__main__":
     #   - Enables thunk caching (sets Thunk.query to the DatabaseManager)
     # -------------------------------------------------------------------------
 
-    data_dir = Path(__file__).parent / "data"
-    db_dir = Path(__file__).parent
+    project_folder = Path("/home/mtillman/mnt/rto/LabMembers/MTillman/GitRepos/general-sqlite-database/examples/vo2max")
+
+    data_dir = project_folder / "data"
+    db_dir = Path("/home/mtillman/datasets/vo2max-example")
+
+    data_filename = "data.duckdb"
+    pipeline_filename = "pipeline.db"
 
     # Clean up previous runs for a fresh demo
-    for f in db_dir.glob("vo2max_data.*"):
+    for f in db_dir.glob(f"{data_filename}.*"):
         f.unlink()
-    for f in db_dir.glob("vo2max_lineage.*"):
+    for f in db_dir.glob(f"{pipeline_filename}.*"):
         f.unlink()
 
     db = configure_database(
-        dataset_db_path=db_dir / "vo2max_data.duckdb",
+        dataset_db_path=db_dir / data_filename,
         dataset_schema_keys=["subject"],
-        pipeline_db_path=db_dir / "vo2max_lineage.db",
+        pipeline_db_path=db_dir / pipeline_filename,
     )
 
     print("Database configured.")
-    print(f"  Data storage (DuckDB): {db_dir / 'vo2max_data.duckdb'}")
-    print(f"  Lineage storage (SQLite): {db_dir / 'vo2max_lineage.db'}")
+    print(f"  Data storage (DuckDB): {db_dir / data_filename}")
+    print(f"  Lineage storage (SQLite): {db_dir / pipeline_filename}")
     print(f"  Schema keys: {db.dataset_schema_keys}")
     print()
 
