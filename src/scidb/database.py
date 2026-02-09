@@ -407,6 +407,24 @@ class DatabaseManager:
         raw_data = None
 
         if isinstance(data, ThunkOutput):
+            # Lineage-only save for side-effect functions (generates_file=True)
+            if data.pipeline_thunk.thunk.generates_file:
+                lineage = extract_lineage(data)
+                pipeline_lineage_hash = data.pipeline_thunk.compute_lineage_hash()
+                generated_id = f"generated:{pipeline_lineage_hash[:32]}"
+                user_id = get_user_id()
+                nested_metadata = self._split_metadata(metadata)
+                self._save_lineage(
+                    output_record_id=generated_id,
+                    output_type=variable_class.__name__,
+                    lineage=lineage,
+                    lineage_hash=pipeline_lineage_hash,
+                    user_id=user_id,
+                    schema_keys=nested_metadata.get("schema"),
+                    output_content_hash=None,
+                )
+                return generated_id
+
             # Data from a thunk computation
             unsaved = find_unsaved_variables(data)
 
@@ -916,12 +934,18 @@ class DatabaseManager:
             return None
 
         results = []
+        has_generated = False
         for record in records:
             output_record_id = record["output_record_id"]
             output_type = record["output_type"]
 
             # Skip ephemeral entries (no data stored in SciDuck)
             if output_record_id.startswith("ephemeral:"):
+                continue
+
+            # Track generated entries (lineage-only, no data stored)
+            if output_record_id.startswith("generated:"):
+                has_generated = True
                 continue
 
             var_class = self._get_variable_class(output_type)
@@ -936,7 +960,11 @@ class DatabaseManager:
                 # Record not found in SciDuck
                 return None
 
-        return results if results else None
+        if results:
+            return results
+        if has_generated:
+            return [None]
+        return None
 
     def _get_variable_class(self, type_name: str):
         """Get a variable class by name."""

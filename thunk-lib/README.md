@@ -132,12 +132,16 @@ Thunk.query = MyQueryBackend()
 
 ## API Reference
 
-### `@thunk(unpack_output=False, unwrap=True)`
+### `@thunk(unpack_output=False, unwrap=True, generates_file=False)`
 
 Decorator to convert a function into a Thunk.
 
 - `unpack_output`: Whether to unpack a tuple return into separate ThunkOutputs (default: False)
 - `unwrap`: If True, automatically unwrap `ThunkOutput` inputs to their raw data
+- `generates_file`: If True, marks the function as producing files as side effects
+  (plots, reports, exported CSVs) rather than returning data. When the result is
+  saved, only lineage is stored — no data goes into DuckDB. On re-run with the
+  same inputs, the function is skipped (cache hit with `data=None`).
 
 ### `ThunkOutput`
 

@@ -52,7 +52,7 @@ class Thunk:
 
     query: Any = None
 
-    def __init__(self, fcn: Callable, unpack_output: bool = False, unwrap: bool = True):
+    def __init__(self, fcn: Callable, unpack_output: bool = False, unwrap: bool = True, generates_file: bool = False):
         """
         Initialize a Thunk wrapper of a function.
 
@@ -64,10 +64,13 @@ class Thunk:
             unwrap: If True (default), unwrap ThunkOutput inputs to their raw
                    data before calling the function. If False, pass the wrapper
                    objects directly (useful for debugging/inspection).
+            generates_file: If True, this function produces side-effect files
+                           rather than returning data. Not included in hash.
         """
         self.fcn = fcn
         self.unpack_output = unpack_output
         self.unwrap = unwrap
+        self.generates_file = generates_file
         self.pipeline_thunks: tuple[PipelineThunk, ...] = ()
 
         # Hash function bytecode + constants for reproducibility
@@ -387,6 +390,7 @@ def thunk(
     *,
     unpack_output: bool = False,
     unwrap: bool = True,
+    generates_file: bool = False,
 ) -> Callable[[Callable], Thunk] | Thunk:
     """
     Decorator to convert a function into a Thunk for lineage tracking.
@@ -425,13 +429,16 @@ def thunk(
         unwrap: If True (default), unwrap ThunkOutput and variable inputs
                to their raw data (.data). If False, pass the wrapper
                objects directly for inspection/debugging.
+        generates_file: If True, this function produces side-effect files
+                       rather than returning data. Enables lineage-only
+                       save and cache-hit behavior without storing data.
 
     Returns:
         A Thunk wrapping the function, or a decorator that creates one
     """
 
     def decorator(fcn: Callable) -> Thunk:
-        t = Thunk(fcn, unpack_output, unwrap)
+        t = Thunk(fcn, unpack_output, unwrap, generates_file)
         return wraps(fcn)(t)
 
     if func is not None:
