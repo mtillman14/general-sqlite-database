@@ -12,6 +12,7 @@ def for_each(
     outputs: list[type],
     dry_run: bool = False,
     save: bool = True,
+    pass_metadata: bool | None = None,
     **metadata_iterables: list[Any],
 ) -> None:
     """
@@ -32,6 +33,9 @@ def for_each(
                  actually executing
         save: If True (default), save each function run's output.
               If False, do not save any outputs.
+        pass_metadata: If True, pass metadata values as keyword arguments
+                      to the function. If None (default), auto-detect based
+                      on fn's generates_file attribute.
         **metadata_iterables: Iterables of metadata values to combine
 
     Example:
@@ -63,6 +67,7 @@ def for_each(
         total *= len(v)
 
     fn_name = getattr(fn, "__name__", repr(fn))
+    should_pass_metadata = pass_metadata if pass_metadata is not None else getattr(fn, 'generates_file', False)
 
     if dry_run:
         print(f"[dry-run] for_each({fn_name})")
@@ -79,7 +84,7 @@ def for_each(
         metadata_str = ", ".join(f"{k}={v}" for k, v in metadata.items())
 
         if dry_run:
-            _print_dry_run_iteration(inputs, outputs, metadata)
+            _print_dry_run_iteration(inputs, outputs, metadata, should_pass_metadata)
             completed += 1
             continue
 
@@ -110,7 +115,10 @@ def for_each(
         print(f"[run] {metadata_str}: {fn_name}({', '.join(loaded_inputs.keys())})")
 
         try:
-            result = fn(**loaded_inputs)
+            if should_pass_metadata:
+                result = fn(**loaded_inputs, **metadata)
+            else:
+                result = fn(**loaded_inputs)
         except Exception as e:
             print(f"[skip] {metadata_str}: {fn_name} raised: {e}")
             skipped += 1
@@ -155,6 +163,7 @@ def _print_dry_run_iteration(
     inputs: dict[str, type | Fixed],
     outputs: list[type],
     metadata: dict[str, Any],
+    pass_metadata: bool = False,
 ) -> None:
     """Print what would happen for one iteration in dry-run mode."""
     metadata_str = ", ".join(f"{k}={v}" for k, v in metadata.items())
@@ -170,6 +179,9 @@ def _print_dry_run_iteration(
 
         load_str = ", ".join(f"{k}={v}" for k, v in load_metadata.items())
         print(f"  load {param_name} = {var_type.__name__}.load({load_str})")
+
+    if pass_metadata:
+        print(f"  pass metadata: {metadata_str}")
 
     for output_type in outputs:
         print(f"  save {output_type.__name__}.save(..., {metadata_str})")

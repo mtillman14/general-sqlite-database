@@ -16,6 +16,7 @@ def process(data):
 
 - **`unpack_output`** (default: False): Whether to unpack a returned tuple into separate ThunkOutputs.
 - **`unwrap`** (default: True): Whether to unwrap `ThunkOutput` inputs automatically
+- **`generates_file`** (default: False): Whether this function produces files as side effects rather than returning data (see [Side-Effect Functions](#side-effect-functions) below)
 
 ### Understanding `unwrap`
 
@@ -127,6 +128,31 @@ print(r1.hash == r3.hash)  # False
 ```
 
 This enables intelligent caching based on computation identity, not just input values.
+
+## Side-Effect Functions
+
+Some pipeline functions produce files as side effects — plots, reports, exported
+CSVs — rather than returning data to be stored. These functions still benefit
+from cache-hit behavior: if the same function has already run with the same
+inputs, there's no need to regenerate the file.
+
+Use `generates_file=True` to mark these functions:
+
+```python
+@thunk(generates_file=True)
+def plot_signal(data, subject, session):
+    plt.plot(data)
+    plt.title(f"Subject {subject}, Session {session}")
+    plt.savefig(f"signal_s{subject}_{session}.png")
+```
+
+When a `generates_file` result is saved, only the lineage is stored (no data
+goes into DuckDB). On the next run with the same inputs, the function is
+skipped and the result has `data=None` and `is_complete=True`.
+
+The `generates_file` flag does **not** affect the function's hash — it is a
+storage concern, not a computation concern. Two otherwise-identical functions
+differing only in this flag will have the same lineage hash.
 
 ## Error Handling
 
