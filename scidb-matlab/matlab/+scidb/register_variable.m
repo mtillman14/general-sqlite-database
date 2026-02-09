@@ -7,22 +7,24 @@ function register_variable(type_arg, options)
 %   scidb.register_variable(TypeClass, schema_version=2) sets a custom
 %   schema version for the type.
 %
+%   This is only needed when you want to set a non-default schema_version.
+%   Types are auto-registered with schema_version=1 on first save/load.
+%
 %   Arguments:
-%       type_arg - A BaseVariable subclass instance (e.g. RawSignal)
+%       type_arg - A BaseVariable subclass instance (e.g. RawSignal())
 %
 %   Name-Value Arguments:
 %       schema_version - Schema version number (default 1)
 %
 %   Example:
-%       scidb.register_variable(RawSignal);
-%       scidb.register_variable(ProcessedSignal, schema_version=2);
+%       scidb.register_variable(RawSignal(), schema_version=2);
 
     arguments
-        type_arg
+        type_arg {mustBeA(type_arg, 'scidb.BaseVariable')}
         options.schema_version (1,1) double = 1
     end
 
-    type_name = scidb.internal.resolve_type_name(type_arg);
+    type_name = class(type_arg);
 
     py.scidb_matlab.bridge.register_matlab_variable( ...
         type_name, ...

@@ -13,7 +13,7 @@ classdef Thunk < handle
 %   Usage:
 %       filter_fn = scidb.Thunk(@bandpass_filter);
 %       result = filter_fn(raw_signal, 10, 200);
-%       scidb.save("FilteredSignal", result, subject=1, session="A");
+%       FilteredSignal().save(result, subject=1, session="A");
 %
 %   Multi-output:
 %       split_fn = scidb.Thunk(@split_data, unpack_output=true);

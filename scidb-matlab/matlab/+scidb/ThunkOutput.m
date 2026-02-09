@@ -5,7 +5,7 @@ classdef ThunkOutput < handle
 %   shadow (a real thunk.core.ThunkOutput instance) that encodes the
 %   full lineage graph.
 %
-%   When passed to scidb.save(), the Python shadow is handed directly
+%   When passed to Type().save(), the Python shadow is handed directly
 %   to Python's save_variable(), so isinstance checks pass and lineage
 %   extraction works unchanged.
 %

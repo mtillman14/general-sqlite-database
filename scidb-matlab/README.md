@@ -2,7 +2,7 @@
 
 MATLAB wrapper for the SciDB scientific data versioning framework.
 
-Provides `scidb.save`, `scidb.load`, and `scidb.Thunk` for MATLAB, with full lineage tracking and caching. All hashing, lineage computation, and database operations are delegated to Python via MATLAB's `py.` interface — the MATLAB layer is a thin wrapper.
+Provides `scidb.BaseVariable` and `scidb.Thunk` for MATLAB, with full lineage tracking and caching. All hashing, lineage computation, and database operations are delegated to Python via MATLAB's `py.` interface — the MATLAB layer is a thin wrapper.
 
 ## Requirements
 
@@ -31,15 +31,11 @@ addpath('/path/to/scidb-matlab/matlab');
 %% Configure the database
 scidb.configure_database("experiment.duckdb", ["subject", "session"], "pipeline.db");
 
-%% Register variable types (pass the class itself)
-scidb.register_variable(RawSignal);
-scidb.register_variable(FilteredSignal);
-
 %% Save raw data
-scidb.save(RawSignal, randn(100, 3), subject=1, session="A");
+RawSignal().save(randn(100, 3), subject=1, session="A");
 
 %% Load data
-raw = scidb.load(RawSignal, subject=1, session="A");
+raw = RawSignal().load(subject=1, session="A");
 disp(raw.data);       % 100x3 double
 disp(raw.record_id);  % "a3f8c2e1b9d04710"
 
@@ -48,14 +44,14 @@ filter_fn = scidb.Thunk(@bandpass_filter);
 result = filter_fn(raw, 10, 200);
 
 %% Save result (lineage is stored automatically)
-scidb.save(FilteredSignal, result, subject=1, session="A");
+FilteredSignal().save(result, subject=1, session="A");
 
 %% Second run — cache hit, no computation
-raw = scidb.load(RawSignal, subject=1, session="A");
+raw = RawSignal().load(subject=1, session="A");
 result = filter_fn(raw, 10, 200);  % Returns cached result instantly
 
 %% Inspect provenance
-p = scidb.provenance(FilteredSignal, subject=1, session="A");
+p = FilteredSignal().provenance(subject=1, session="A");
 fprintf("Computed by: %s\n", p.function_name);
 ```
 
@@ -64,8 +60,8 @@ fprintf("Computed by: %s\n", p.function_name);
 ```
 MATLAB (user code)
    │
-   ├── scidb.Thunk        ← wraps function handle, orchestrates cache check / execute
-   ├── scidb.save/load     ← thin wrappers around Python's DatabaseManager
+   ├── scidb.BaseVariable   ← instance methods: save, load, load_all, list_versions, provenance
+   ├── scidb.Thunk           ← wraps function handle, orchestrates cache check / execute
    │
    └── py. interface ──────────────────────────────┐
                                                     │
@@ -105,7 +101,7 @@ classdef FilteredSignal < scidb.BaseVariable
 end
 ```
 
-The class name becomes the database table name — no properties or methods needed. When you write `scidb.save(RawSignal, data, ...)`, MATLAB constructs a lightweight instance and `scidb.save` reads `class(token)` to get `"RawSignal"`.
+The class name becomes the database table name — no properties or methods needed. Types are auto-registered with Python on first use (save, load, etc.).
 
 ## API Reference
 
@@ -114,19 +110,19 @@ The class name becomes the database table name — no properties or methods need
 | Function | Description |
 |---|---|
 | `scidb.configure_database(db, keys, pipeline)` | Set up database connection |
-| `scidb.register_variable(TypeClass)` | Register a variable type |
+| `scidb.register_variable(Type(), schema_version=N)` | Pre-register with custom schema version (optional) |
 
-### Data Storage
+### Data Storage (instance methods on BaseVariable)
 
-All functions take a BaseVariable subclass as the first argument:
+All methods are called on instances of BaseVariable subclasses:
 
-| Function | Description |
+| Method | Description |
 |---|---|
-| `scidb.save(Type, data, name=val, ...)` | Save data with metadata |
-| `scidb.load(Type, name=val, ...)` | Load latest matching data |
-| `scidb.load_all(Type, name=val, ...)` | Load all matching data |
-| `scidb.list_versions(Type, name=val, ...)` | List all versions |
-| `scidb.provenance(Type, name=val, ...)` | Get lineage information |
+| `Type().save(data, name=val, ...)` | Save data with metadata |
+| `Type().load(name=val, ...)` | Load latest matching data |
+| `Type().load_all(name=val, ...)` | Load all matching data |
+| `Type().list_versions(name=val, ...)` | List all versions |
+| `Type().provenance(name=val, ...)` | Get lineage information |
 
 ### Thunk System
 
@@ -137,8 +133,8 @@ All functions take a BaseVariable subclass as the first argument:
 
 ### Return Types
 
-- `scidb.load` returns `scidb.BaseVariable` with `.data`, `.record_id`, `.metadata`
-- Thunk calls return `scidb.ThunkOutput` with `.data` (pass to `scidb.save`)
+- `Type().load(...)` returns `scidb.BaseVariable` with `.data`, `.record_id`, `.metadata`
+- Thunk calls return `scidb.ThunkOutput` with `.data` (pass to `Type().save(...)`)
 
 ## Cross-Language Interop
 
