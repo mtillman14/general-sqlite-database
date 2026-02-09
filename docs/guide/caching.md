@@ -105,6 +105,63 @@ Cache misses happen when:
 | Function modified   | Bytecode hash changed     |
 | Different constants | e.g., `x * 2` vs `x * 3` |
 
+## Side-Effect Functions (`generates_file`)
+
+Some pipeline steps produce files — plots, reports, exported CSVs — rather than
+returning data to store in the database. You still want cache-hit behavior so
+these steps are skipped on re-runs when inputs haven't changed.
+
+Use `@thunk(generates_file=True)`:
+
+```python
+class Figure(BaseVariable):
+    schema_version = 1
+
+@thunk(generates_file=True)
+def plot_signal(data, subject, session):
+    plt.plot(data)
+    plt.title(f"Subject {subject}, Session {session}")
+    plt.savefig(f"signal_s{subject}_{session}.png")
+
+# Run and save lineage (no data stored in DuckDB):
+data = ProcessedData.load(subject=1, session="A")
+result = plot_signal(data, subject=1, session="A")
+Figure.save(result, subject=1, session="A")  # Returns "generated:..." ID
+
+# Next run — cache hit, function skipped:
+data = ProcessedData.load(subject=1, session="A")
+result = plot_signal(data, subject=1, session="A")
+# result.data is None, result.is_complete is True
+```
+
+### How it works
+
+1. `Figure.save()` detects `generates_file=True` on the thunk and saves **lineage only** to PipelineDB, with a `generated:` prefixed record ID. No data row is written to DuckDB.
+2. On the next call with the same inputs, `Thunk.query.find_by_lineage()` finds the `generated:` record and returns a cache hit with `data=None`.
+3. The function is never re-executed.
+
+### With `for_each`
+
+When used with `for_each`, a `generates_file` function automatically receives
+the current metadata values as keyword arguments, so it can use them for file
+naming:
+
+```python
+for_each(
+    plot_signal,
+    inputs={"data": ProcessedData},
+    outputs=[Figure],
+    subject=subjects,
+    session=sessions,
+)
+```
+
+This behavior can be controlled explicitly with the `pass_metadata` parameter:
+
+- `pass_metadata=True` — always pass metadata as kwargs (even for regular functions)
+- `pass_metadata=False` — never pass metadata as kwargs (even for `generates_file` functions)
+- `pass_metadata=None` (default) — auto-detect from `generates_file`
+
 ## Best Practices
 
 ### 1. Save After Expensive Computations

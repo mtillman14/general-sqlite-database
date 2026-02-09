@@ -141,6 +141,92 @@ class TestPipelineThunk:
         assert key1 != key2
 
 
+class TestSavedVariableClassification:
+    """Test that saved variables with lineage are classified like ThunkOutputs."""
+
+    def _make_saved_variable(self, lineage_hash=None):
+        """Create a mock saved variable (duck-typed to match BaseVariable)."""
+        class FakeVariable:
+            def __init__(self, data, record_id, lineage_hash):
+                self.data = data
+                self._record_id = record_id
+                self._lineage_hash = lineage_hash
+                self._content_hash = "content123"
+                self._metadata = {"subject": 1}
+
+            def to_db(self):
+                return self.data
+
+            @classmethod
+            def from_db(cls, df):
+                return df
+
+        return FakeVariable(42, "rec_abc", lineage_hash)
+
+    def test_saved_variable_with_lineage_matches_thunk_output(self):
+        """A saved variable with lineage_hash should produce the same
+        cache tuple as the ThunkOutput it was saved from."""
+        from thunk.inputs import classify_input
+
+        @thunk
+        def process(x):
+            return x * 2
+
+        result = process(5)
+
+        # Classify the live ThunkOutput
+        thunk_classified = classify_input("arg_0", result)
+
+        # Create a saved variable with the ThunkOutput's hash
+        saved_var = self._make_saved_variable(lineage_hash=result.hash)
+        saved_classified = classify_input("arg_0", saved_var)
+
+        assert thunk_classified.to_cache_tuple() == saved_classified.to_cache_tuple()
+
+    def test_saved_variable_with_lineage_classified_as_thunk_output(self):
+        """A saved variable with lineage_hash should be classified as THUNK_OUTPUT."""
+        from thunk.inputs import classify_input, InputKind
+
+        saved_var = self._make_saved_variable(lineage_hash="somehash")
+        classified = classify_input("x", saved_var)
+
+        assert classified.kind == InputKind.THUNK_OUTPUT
+
+    def test_saved_variable_without_lineage_classified_as_saved(self):
+        """A saved variable without lineage_hash should still be SAVED_VARIABLE."""
+        from thunk.inputs import classify_input, InputKind
+
+        saved_var = self._make_saved_variable(lineage_hash=None)
+        classified = classify_input("x", saved_var)
+
+        assert classified.kind == InputKind.SAVED_VARIABLE
+
+    def test_downstream_lineage_hash_matches(self):
+        """A downstream thunk should compute the same lineage hash whether
+        its input is a live ThunkOutput or a saved-and-reloaded variable."""
+        from thunk.inputs import classify_inputs
+
+        @thunk
+        def step1(x):
+            return x + 1
+
+        @thunk
+        def step2(x):
+            return x * 2
+
+        # Path A: chain ThunkOutputs directly
+        out1 = step1(5)
+        out2_live = step2(out1)
+        hash_live = out2_live.pipeline_thunk.compute_lineage_hash()
+
+        # Path B: simulate save/reload of out1 then feed to step2
+        saved_var = self._make_saved_variable(lineage_hash=out1.hash)
+        out2_reloaded = step2(saved_var)
+        hash_reloaded = out2_reloaded.pipeline_thunk.compute_lineage_hash()
+
+        assert hash_live == hash_reloaded
+
+
 class TestChaining:
     """Test chained thunk computations."""
 

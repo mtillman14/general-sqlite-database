@@ -10,7 +10,7 @@ For most data types (scalars, numpy arrays, lists, dicts), **no serialization me
 from scidb import BaseVariable
 
 class MyVariable(BaseVariable):
-    schema_version = 1  # Required
+    pass  # schema_version defaults to 1
 ```
 
 ### Optional: Custom Serialization
@@ -21,7 +21,6 @@ Override `to_db()` and `from_db()` only when you need custom multi-column serial
 import pandas as pd
 
 class CustomVariable(BaseVariable):
-    schema_version = 1
 
     def to_db(self) -> pd.DataFrame:
         """Convert self.data to a DataFrame for storage."""
@@ -37,7 +36,7 @@ class CustomVariable(BaseVariable):
 
 | Component        | Purpose                                                      |
 |------------------|--------------------------------------------------------------|
-| `schema_version` | Integer version for schema migrations                        |
+| `schema_version` | *Optional.* Integer version for schema migrations (defaults to 1) |
 | `to_db()`        | *Optional.* Instance method converting `self.data` to `pd.DataFrame` |
 | `from_db()`      | *Optional.* Class method converting `pd.DataFrame` to native type    |
 
@@ -49,13 +48,13 @@ These types are handled automatically by SciDuck:
 
 ```python
 class ScalarValue(BaseVariable):
-    schema_version = 1
+    pass
 
 class ArrayValue(BaseVariable):
-    schema_version = 1
+    pass
 
 class DictValue(BaseVariable):
-    schema_version = 1
+    pass
 
 # Usage
 ScalarValue.save(3.14, subject=1)
@@ -69,7 +68,6 @@ DictValue.save({"key": "value"}, subject=1)
 
 ```python
 class IndexedArray(BaseVariable):
-    schema_version = 1
 
     def to_db(self) -> pd.DataFrame:
         return pd.DataFrame({
@@ -86,7 +84,6 @@ class IndexedArray(BaseVariable):
 
 ```python
 class MatrixValue(BaseVariable):
-    schema_version = 1
 
     def to_db(self) -> pd.DataFrame:
         rows, cols = self.data.shape
@@ -108,7 +105,6 @@ class MatrixValue(BaseVariable):
 
 ```python
 class DataFrameValue(BaseVariable):
-    schema_version = 1
 
     def to_db(self) -> pd.DataFrame:
         return self.data  # Already a DataFrame
@@ -124,7 +120,7 @@ When one variable class can represent multiple logical data types, create subcla
 
 ```python
 class TimeSeries(BaseVariable):
-    schema_version = 1
+    pass
 
 # Create specialized types - each gets its own table
 class Temperature(TimeSeries):
@@ -177,7 +173,7 @@ When a DataFrame contains multiple independent data items (e.g., one row per sub
 #   2        2      0.55
 
 class ScalarResult(BaseVariable):
-    schema_version = 1
+    pass
 
 # Save each row as a separate record
 record_ids = ScalarResult.save_from_dataframe(
@@ -225,7 +221,7 @@ The metadata keys you use in `save()` should reflect the natural structure of yo
 
 ```python
 class TrialResult(BaseVariable):
-    schema_version = 1
+    pass
 
 # Save results for each subject and trial
 subjects = [1, 2, 3]
@@ -255,7 +251,7 @@ for var in TrialResult.load_all(trial="baseline"):
 
 ```python
 class Recording(BaseVariable):
-    schema_version = 1
+    pass
 
 sessions = ["morning", "afternoon", "evening"]
 days = ["day1", "day2", "day3"]

@@ -17,7 +17,7 @@ from scidb import BaseVariable
 import numpy as np
 
 class SignalData(BaseVariable):
-    schema_version = 1  # Increment when changing the schema
+    pass
 ```
 
 For custom multi-column serialization, override `to_db()` and `from_db()`:
@@ -26,7 +26,6 @@ For custom multi-column serialization, override `to_db()` and `from_db()`:
 import pandas as pd
 
 class CustomSignal(BaseVariable):
-    schema_version = 1
 
     def to_db(self) -> pd.DataFrame:
         """Convert numpy array to DataFrame for storage."""
@@ -102,7 +101,7 @@ power = compute_power(filtered)
 
 # Save result - lineage captured
 class PowerValue(BaseVariable):
-    schema_version = 1
+    pass
 
 PowerValue.save(power, subject=1, trial=1, stage="power")
 
@@ -120,12 +119,13 @@ from scidb import Thunk
 from scipy.signal import butter, filtfilt
 
 # Wrap external functions
-thunked_butter = Thunk(butter)
+# unpack_output=True splits the returned tuple into separate ThunkOutputs
+thunked_butter = Thunk(butter, unpack_output=True)
 thunked_filtfilt = Thunk(filtfilt)
 
 # Use with full lineage tracking
 b, a = thunked_butter(N=4, Wn=0.1, btype='low')
-filtered = thunked_filtfilt(b.data, a.data, raw_data)
+filtered = thunked_filtfilt(b, a, raw_data)
 
 SignalData.save(filtered, subject=1, stage="filtered")
 ```
@@ -149,6 +149,7 @@ Humidity.save(humid_array, sensor=1, day="monday")
 
 ## Next Steps
 
+- [VO2 Max Walkthrough](guide/walkthrough.md) - Full example pipeline with design philosophy explanations
 - [Variables Guide](guide/variables.md) - Deep dive into variable types
 - [Database Guide](guide/database.md) - All database operations
 - [Lineage Guide](guide/lineage.md) - Full lineage tracking details

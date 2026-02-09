@@ -253,9 +253,10 @@ from scidb import Thunk
 from scipy.signal import butter, filtfilt, welch
 from sklearn.preprocessing import StandardScaler
 
-thunked_butter = Thunk(butter)      # Returns (b, a)
+# unpack_output=True for functions that return tuples you want to destructure
+thunked_butter = Thunk(butter, unpack_output=True)   # Returns (b, a)
 thunked_filtfilt = Thunk(filtfilt)
-thunked_welch = Thunk(welch)        # Returns (freqs, psd)
+thunked_welch = Thunk(welch, unpack_output=True)     # Returns (freqs, psd)
 ```
 
 ### Example: Signal Processing Pipeline
@@ -265,17 +266,17 @@ from scipy.signal import butter, filtfilt, welch
 from scidb import Thunk, BaseVariable, configure_database
 import numpy as np
 
-# Wrap scipy functions
-thunked_butter = Thunk(butter)
+# Wrap scipy functions (unpack_output=True for tuple returns)
+thunked_butter = Thunk(butter, unpack_output=True)
 thunked_filtfilt = Thunk(filtfilt)
-thunked_welch = Thunk(welch)
+thunked_welch = Thunk(welch, unpack_output=True)
 
 # Define variable types (native storage)
 class SignalData(BaseVariable):
-    schema_version = 1
+    pass
 
 class PSDData(BaseVariable):
-    schema_version = 1
+    pass
 
 # Setup
 db = configure_database("experiment.duckdb", ["subject", "session"], "pipeline.db")
@@ -284,7 +285,7 @@ db = configure_database("experiment.duckdb", ["subject", "session"], "pipeline.d
 raw_signal = SignalData.load(subject=1, session="baseline")
 
 b, a = thunked_butter(N=4, Wn=[1, 40], btype='band', fs=1000)
-filtered = thunked_filtfilt(b.data, a.data, raw_signal.data)
+filtered = thunked_filtfilt(b, a, raw_signal)
 freqs, psd = thunked_welch(filtered, fs=1000)
 
 # Save with lineage

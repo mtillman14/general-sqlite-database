@@ -152,13 +152,22 @@ def classify_input(name: str, value: Any) -> ClassifiedInput:
         type_name = type(value).__name__
 
         if record_id is not None:
-            # Saved variable - use lineage_hash for caching
             lineage_hash = getattr(value, "_lineage_hash", None) or getattr(value, "lineage_hash", None)
             content_hash = getattr(value, "_content_hash", None) or getattr(value, "content_hash", None)
+
+            if lineage_hash is not None:
+                # Variable was produced by a thunk — classify it the same way
+                # so that to_cache_tuple() matches the original ThunkOutput
+                return ClassifiedInput(
+                    kind=InputKind.THUNK_OUTPUT,
+                    name=name,
+                    hash=lineage_hash,
+                )
+
             return ClassifiedInput(
                 kind=InputKind.SAVED_VARIABLE,
                 name=name,
-                hash=lineage_hash if lineage_hash else _safe_hash(getattr(value, "data", value)),
+                hash=_safe_hash(getattr(value, "data", value)),
                 type_name=type_name,
                 record_id=record_id,
                 metadata=metadata,
