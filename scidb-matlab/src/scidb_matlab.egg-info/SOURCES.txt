@@ -1,0 +1,10 @@
+README.md
+pyproject.toml
+src/scidb_matlab/__init__.py
+src/scidb_matlab/bridge.py
+src/scidb_matlab.egg-info/PKG-INFO
+src/scidb_matlab.egg-info/SOURCES.txt
+src/scidb_matlab.egg-info/dependency_links.txt
+src/scidb_matlab.egg-info/requires.txt
+src/scidb_matlab.egg-info/top_level.txt
+tests/test_bridge.py

@@ -17,5 +17,6 @@ src/scidb.egg-info/dependency_links.txt
 src/scidb.egg-info/requires.txt
 src/scidb.egg-info/top_level.txt
 src/scidb/variables/__init__.py
+tests/test_generates_file.py
 tests/test_integration.py
 tests/test_lineage_mode.py
