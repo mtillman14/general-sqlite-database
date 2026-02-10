@@ -17,10 +17,12 @@ Example:
 
 from .fixed import Fixed
 from .foreach import for_each
+from .pathinput import PathInput
 
 __version__ = "0.1.0"
 
 __all__ = [
     "for_each",
     "Fixed",
+    "PathInput",
 ]

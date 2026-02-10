@@ -78,12 +78,16 @@ classdef BaseVariable < handle
         % -----------------------------------------------------------------
         % load
         % -----------------------------------------------------------------
-        function var = load(obj, varargin)
+        function result = load(obj, varargin)
         %LOAD  Load a variable from the database.
         %
-        %   VAR = TypeClass().load(Name, Value, ...)
+        %   RESULT = TypeClass().load(Name, Value, ...)
         %
-        %   Returns a scidb.BaseVariable with .data, .record_id, .metadata.
+        %   Returns a scidb.ThunkOutput with .data, .record_id, .metadata,
+        %   matching the return type of scidb.Thunk calls.  The Python
+        %   BaseVariable shadow is stored in .py_obj so that lineage
+        %   tracking works when the result is passed to another thunk or
+        %   re-saved.
         %
         %   Name-Value Arguments:
         %       Any metadata key-value pairs (e.g. subject=1, session="A")
@@ -102,35 +106,33 @@ classdef BaseVariable < handle
             py_db = py.scidb.database.get_database();
             py_var = py_db.load(py_class, py_metadata, version=char(version));
 
-            var = scidb.BaseVariable();
-            var.data = scidb.internal.from_python(py_var.data);
-            var.record_id = string(py_var.record_id);
-            var.content_hash = string(py_var.content_hash);
+            matlab_data = scidb.internal.from_python(py_var.data);
+            result = scidb.ThunkOutput(matlab_data, py_var);
+            result.record_id = string(py_var.record_id);
+            result.content_hash = string(py_var.content_hash);
 
             py_lh = py_var.lineage_hash;
             if ~isa(py_lh, 'py.NoneType')
-                var.lineage_hash = string(py_lh);
+                result.lineage_hash = string(py_lh);
             end
 
             py_meta = py_var.metadata;
             if ~isa(py_meta, 'py.NoneType')
-                var.metadata = scidb.internal.pydict_to_struct(py_meta);
+                result.metadata = scidb.internal.pydict_to_struct(py_meta);
             end
 
-            var.py_obj = py_var;
 
-            
         end
 
         % -----------------------------------------------------------------
         % load_all
         % -----------------------------------------------------------------
-        function vars = load_all(obj, varargin)
+        function results = load_all(obj, varargin)
         %LOAD_ALL  Load all variables matching the given metadata.
         %
-        %   VARS = TypeClass().load_all(Name, Value, ...)
+        %   RESULTS = TypeClass().load_all(Name, Value, ...)
         %
-        %   Returns an array of scidb.BaseVariable objects.
+        %   Returns an array of scidb.ThunkOutput objects.
         %
         %   Example:
         %       all_signals = RawSignal().load_all(subject=1);
@@ -142,7 +144,7 @@ classdef BaseVariable < handle
             py_db = py.scidb.database.get_database();
             py_gen = py_db.load_all(py_class, py_metadata);
 
-            vars = scidb.BaseVariable.empty();
+            results = scidb.ThunkOutput.empty();
             py_iter = py.builtins.iter(py_gen);
 
             while true
@@ -152,8 +154,8 @@ classdef BaseVariable < handle
                     break;
                 end
 
-                v = scidb.BaseVariable();
-                v.data = scidb.internal.from_python(py_var.data);
+                matlab_data = scidb.internal.from_python(py_var.data);
+                v = scidb.ThunkOutput(matlab_data, py_var);
                 v.record_id = string(py_var.record_id);
                 v.content_hash = string(py_var.content_hash);
 
@@ -167,11 +169,10 @@ classdef BaseVariable < handle
                     v.metadata = scidb.internal.pydict_to_struct(py_meta);
                 end
 
-                v.py_obj = py_var;
-                vars(end+1) = v; %#ok<AGROW>
+                results(end+1) = v; %#ok<AGROW>
             end
 
-            
+
         end
 
         % -----------------------------------------------------------------

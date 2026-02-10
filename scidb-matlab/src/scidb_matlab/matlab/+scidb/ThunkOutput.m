@@ -14,12 +14,20 @@ classdef ThunkOutput < handle
 %   ThunkOutput and records the lineage chain.
 %
 %   Properties:
-%       data   - The MATLAB result (double array, scalar, etc.)
-%       py_obj - Python thunk.core.ThunkOutput (internal use)
+%       data         - The MATLAB result (double array, scalar, etc.)
+%       py_obj       - Python thunk.core.ThunkOutput or BaseVariable (internal use)
+%       record_id    - Unique record ID (populated after load, empty after compute)
+%       metadata     - Metadata struct (populated after load, empty after compute)
+%       content_hash - Content hash (populated after load, empty after compute)
+%       lineage_hash - Lineage hash (populated after load, empty after compute)
 
     properties
         data            % MATLAB data (the actual computation result)
-        py_obj          % Python ThunkOutput instance (lineage shadow)
+        py_obj          % Python ThunkOutput or BaseVariable (lineage shadow)
+        record_id    string     % Unique record ID (populated after load)
+        metadata     struct     % Metadata key-value pairs (populated after load)
+        content_hash string     % Content hash (populated after load)
+        lineage_hash string     % Lineage hash (populated after load)
     end
 
     methods
@@ -31,6 +39,7 @@ classdef ThunkOutput < handle
         %   This constructor is called internally by scidb.Thunk.  Users
         %   do not create ThunkOutput objects directly.
 
+            obj.metadata = struct();
             if nargin > 0
                 obj.data = matlab_data;
                 obj.py_obj = py_thunk_output;
@@ -43,8 +52,13 @@ classdef ThunkOutput < handle
             if isempty(obj.data)
                 fprintf('  scidb.ThunkOutput (empty)\n');
             else
-                fprintf('  scidb.ThunkOutput containing %s\n', ...
-                    class(obj.data));
+                if strlength(obj.record_id) > 0
+                    fprintf('  scidb.ThunkOutput [%s] containing %s\n', ...
+                        obj.record_id, class(obj.data));
+                else
+                    fprintf('  scidb.ThunkOutput containing %s\n', ...
+                        class(obj.data));
+                end
                 disp(obj.data);
             end
         end

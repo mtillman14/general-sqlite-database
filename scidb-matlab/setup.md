@@ -2,7 +2,7 @@
 
 ## 1. Install Python
 
-MATLAB requires a compatible CPython installation. Check the [MATLAB-Python compatibility table](https://www.mathworks.com/support/requirements/python-compatibility.html) for your MATLAB release. scidb requires Python 3.10+.
+MATLAB requires a compatible CPython installation. Check the [MATLAB-Python compatibility table](https://www.mathworks.com/support/requirements/python-compatibility.html) for your MATLAB release. scidb requires Python 3.9+.
 
 Install Python if you don't already have it. On macOS/Linux, using a virtual environment is recommended:
 
