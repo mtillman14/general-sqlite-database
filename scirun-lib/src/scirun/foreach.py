@@ -114,6 +114,14 @@ def for_each(
         # Call the function
         print(f"[run] {metadata_str}: {fn_name}({', '.join(loaded_inputs.keys())})")
 
+        # For plain functions (not Thunks), unwrap BaseVariable / ThunkOutput
+        # inputs to raw .data so existing functions work without modification.
+        # Thunks handle their own unwrapping internally.
+        if not _is_thunk(fn):
+            loaded_inputs = {
+                k: _unwrap(v) for k, v in loaded_inputs.items()
+            }
+
         try:
             if should_pass_metadata:
                 result = fn(**loaded_inputs, **metadata)
@@ -145,6 +153,22 @@ def for_each(
         print(f"[dry-run] would process {total} iterations")
     else:
         print(f"[done] completed={completed}, skipped={skipped}, total={total}")
+
+
+def _is_thunk(fn: Any) -> bool:
+    """Check if fn is a thunk-lib Thunk (without hard dependency)."""
+    try:
+        from thunk.core import Thunk
+        return isinstance(fn, Thunk)
+    except ImportError:
+        return False
+
+
+def _unwrap(value: Any) -> Any:
+    """Extract raw data from a loaded variable, pass everything else through."""
+    if hasattr(value, 'data'):
+        return value.data
+    return value
 
 
 def _format_inputs(inputs: dict[str, type | Fixed]) -> str:

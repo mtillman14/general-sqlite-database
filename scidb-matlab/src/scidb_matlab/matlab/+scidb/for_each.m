@@ -193,6 +193,15 @@ function for_each(fn, inputs, outputs, varargin)
         fprintf('[run] %s: %s(%s)\n', metadata_str, fn_name, ...
             strjoin(string(input_names'), ', '));
 
+        % For plain function handles (not Thunks), unwrap ThunkOutput /
+        % BaseVariable inputs to raw data so existing functions work
+        % without modification.  Thunks handle their own unwrapping.
+        if ~isa(fn, 'scidb.Thunk')
+            for p = 1:n_inputs
+                loaded{p} = scidb.internal.unwrap_input(loaded{p});
+            end
+        end
+
         try
             % Determine how many outputs to capture.  For Thunks with
             % unpack_output=true MATLAB's subsref distributes outputs to

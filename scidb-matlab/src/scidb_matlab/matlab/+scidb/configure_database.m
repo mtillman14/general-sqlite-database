@@ -30,6 +30,11 @@ function db = configure_database(dataset_db_path, dataset_schema_keys, pipeline_
         options.lineage_mode string = "strict"
     end
 
+    % Convert keys to row vector
+    if size(dataset_schema_keys,1) > 1
+        dataset_schema_keys = dataset_schema_keys';
+    end
+
     % Convert MATLAB string array to Python list of strings
     py_schema_keys = py.list(cellstr(dataset_schema_keys));
 

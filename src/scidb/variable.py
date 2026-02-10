@@ -72,39 +72,6 @@ class BaseVariable:
         self.content_hash: str | None = None
         self.lineage_hash: str | None = None
 
-    @property
-    def record_id(self) -> str | None:
-        """The unique record ID, set after save() or load()."""
-        return self.record_id
-
-    @property
-    def metadata(self) -> dict | None:
-        """The metadata, set after save() or load()."""
-        return self.metadata
-
-    @property
-    def content_hash(self) -> str | None:
-        """The content hash (data identity). Always computed fresh from current data."""
-        if self.data is None:
-            return None
-        from .hashing import canonical_hash
-        from .thunk import ThunkOutput
-        data = self.data
-        if isinstance(data, ThunkOutput):
-            from .lineage import get_raw_value
-            data = get_raw_value(data)
-        return canonical_hash(data)
-
-    @property
-    def lineage_hash(self) -> str | None:
-        """
-        The lineage hash (computational identity), set after save() or load().
-
-        For raw data (not from a thunk), this is None.
-        For computed data, this captures how the value was computed.
-        """
-        return self.lineage_hash
-
     def to_db(self) -> pd.DataFrame:
         """
         Convert native data to a DataFrame for storage.
