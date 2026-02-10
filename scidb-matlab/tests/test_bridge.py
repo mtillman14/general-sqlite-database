@@ -127,9 +127,9 @@ class TestMatlabPipelineThunk:
     def test_classify_inputs_works_with_base_variable(self):
         """A real BaseVariable is classified correctly as a thunk input."""
         var = BaseVariable(np.array([1.0, 2.0, 3.0]))
-        var._record_id = "abc123def456abcd"
-        var._metadata = {"subject": 1}
-        var._content_hash = "1234567890abcdef"
+        var.record_id = "abc123def456abcd"
+        var.metadata = {"subject": 1}
+        var.content_hash = "1234567890abcdef"
 
         mt = MatlabThunk("abc", "f")
         pt = MatlabPipelineThunk(mt, {"arg_0": var})
@@ -154,9 +154,9 @@ class TestMatlabPipelineThunk:
         """A BaseVariable with _lineage_hash is reclassified as THUNK_OUTPUT,
         matching the behaviour for Python-saved thunk results."""
         var = BaseVariable(np.array([1.0]))
-        var._record_id = "abc123def456abcd"
-        var._lineage_hash = "a" * 64
-        var._content_hash = "1234567890abcdef"
+        var.record_id = "abc123def456abcd"
+        var.lineage_hash = "a" * 64
+        var.content_hash = "1234567890abcdef"
 
         mt = MatlabThunk("abc", "f")
         pt = MatlabPipelineThunk(mt, {"arg_0": var})
@@ -226,9 +226,9 @@ class TestExtractLineage:
 
     def test_extract_lineage_with_variable_input(self):
         var = BaseVariable(np.array([1.0, 2.0]))
-        var._record_id = "abc123def456abcd"
-        var._metadata = {"subject": 1}
-        var._content_hash = "1234567890abcdef"
+        var.record_id = "abc123def456abcd"
+        var.metadata = {"subject": 1}
+        var.content_hash = "1234567890abcdef"
 
         mt = MatlabThunk("abc", "process")
         pt = MatlabPipelineThunk(mt, {"arg_0": var, "arg_1": 2.5})
@@ -327,7 +327,7 @@ class TestSaveVariableCompatibility:
             # Verify we can load it back
             loaded = db.load(var_class, {"subject": 1})
             assert np.array_equal(loaded.data, result_data)
-            assert loaded._lineage_hash is not None
+            assert loaded.lineage_hash is not None
 
             # Verify lineage was saved
             assert db.has_lineage(record_id)

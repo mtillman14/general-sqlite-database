@@ -149,10 +149,10 @@ class TestSavedVariableClassification:
         class FakeVariable:
             def __init__(self, data, record_id, lineage_hash):
                 self.data = data
-                self._record_id = record_id
-                self._lineage_hash = lineage_hash
-                self._content_hash = "content123"
-                self._metadata = {"subject": 1}
+                self.record_id = record_id
+                self.lineage_hash = lineage_hash
+                self.content_hash = "content123"
+                self.metadata = {"subject": 1}
 
             def to_db(self):
                 return self.data

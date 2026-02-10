@@ -205,8 +205,8 @@ def create_app(
         # Attach variable metadata to header
         header["_record_id"] = var.record_id
         header["_metadata"] = var.metadata
-        header["_content_hash"] = var._content_hash
-        header["_lineage_hash"] = var._lineage_hash
+        header["_content_hash"] = var.content_hash
+        header["_lineage_hash"] = var.lineage_hash
 
         return Response(
             content=encode_envelope(header, data_body),
@@ -234,8 +234,8 @@ def create_app(
             header, data_body = serialize_data(var.data)
             header["_record_id"] = var.record_id
             header["_metadata"] = var.metadata
-            header["_content_hash"] = var._content_hash
-            header["_lineage_hash"] = var._lineage_hash
+            header["_content_hash"] = var.content_hash
+            header["_lineage_hash"] = var.lineage_hash
             envelope = encode_envelope(header, data_body)
             parts.append(struct.pack(">I", len(envelope)) + envelope)
 
@@ -322,8 +322,8 @@ def create_app(
             header, data_body = serialize_data(var.data)
             header["_record_id"] = var.record_id
             header["_metadata"] = var.metadata
-            header["_content_hash"] = var._content_hash
-            header["_lineage_hash"] = var._lineage_hash
+            header["_content_hash"] = var.content_hash
+            header["_lineage_hash"] = var.lineage_hash
             envelope = encode_envelope(header, data_body)
             results_data.append(struct.pack(">I", len(envelope)) + envelope)
 

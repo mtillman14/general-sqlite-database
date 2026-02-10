@@ -115,10 +115,10 @@ class RemoteDatabaseManager:
             raw_data = variable_class.from_db(raw_data)
 
         instance = variable_class(raw_data)
-        instance._record_id = header.get("_record_id")
-        instance._metadata = header.get("_metadata")
-        instance._content_hash = header.get("_content_hash")
-        instance._lineage_hash = header.get("_lineage_hash")
+        instance.record_id = header.get("_record_id")
+        instance.metadata = header.get("_metadata")
+        instance.content_hash = header.get("_content_hash")
+        instance.lineage_hash = header.get("_lineage_hash")
         return instance
 
     # -----------------------------------------------------------------
@@ -157,7 +157,7 @@ class RemoteDatabaseManager:
             raw_data = get_raw_value(data)
         elif isinstance(data, BaseVariable):
             raw_data = data.data
-            lineage_hash = data._lineage_hash
+            lineage_hash = data.lineage_hash
         else:
             raw_data = data
 

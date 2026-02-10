@@ -102,15 +102,15 @@ classdef BaseVariable < handle
 
             var = scidb.BaseVariable();
             var.data = scidb.internal.from_python(py_var.data);
-            var.record_id = string(py_var._record_id);
-            var.content_hash = string(py_var._content_hash);
+            var.record_id = string(py_var.record_id);
+            var.content_hash = string(py_var.content_hash);
 
-            py_lh = py_var._lineage_hash;
+            py_lh = py_var.lineage_hash;
             if ~isa(py_lh, 'py.NoneType')
                 var.lineage_hash = string(py_lh);
             end
 
-            py_meta = py_var._metadata;
+            py_meta = py_var.metadata;
             if ~isa(py_meta, 'py.NoneType')
                 var.metadata = scidb.internal.pydict_to_struct(py_meta);
             end
@@ -150,15 +150,15 @@ classdef BaseVariable < handle
 
                 v = scidb.BaseVariable();
                 v.data = scidb.internal.from_python(py_var.data);
-                v.record_id = string(py_var._record_id);
-                v.content_hash = string(py_var._content_hash);
+                v.record_id = string(py_var.record_id);
+                v.content_hash = string(py_var.content_hash);
 
-                py_lh = py_var._lineage_hash;
+                py_lh = py_var.lineage_hash;
                 if ~isa(py_lh, 'py.NoneType')
                     v.lineage_hash = string(py_lh);
                 end
 
-                py_meta = py_var._metadata;
+                py_meta = py_var.metadata;
                 if ~isa(py_meta, 'py.NoneType')
                     v.metadata = scidb.internal.pydict_to_struct(py_meta);
                 end
@@ -223,7 +223,8 @@ classdef BaseVariable < handle
 
             py_db = py.scidb.database.get_database();
             if version ~= "latest"
-                py_result = py_db.get_provenance(py_class, version=char(version), py_kwargs{:});
+                disp('what to do with syntax py_kwargs{:}?')
+                % py_result = py_db.get_provenance(py_class, version=char(version), py_kwargs{:});
             else
                 py_result = py_db.get_provenance(py_class, py_kwargs{:});
             end

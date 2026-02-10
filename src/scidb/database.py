@@ -466,7 +466,7 @@ class DatabaseManager:
 
         elif isinstance(data, BaseVariable):
             raw_data = data.data
-            lineage_hash = data._lineage_hash
+            lineage_hash = data.lineage_hash
 
         else:
             raw_data = data
@@ -476,9 +476,9 @@ class DatabaseManager:
             instance, metadata, lineage=lineage, lineage_hash=lineage_hash,
             pipeline_lineage_hash=pipeline_lineage_hash, index=index,
         )
-        instance._record_id = record_id
-        instance._metadata = metadata
-        instance._lineage_hash = lineage_hash
+        instance.record_id = record_id
+        instance.metadata = metadata
+        instance.lineage_hash = lineage_hash
 
         return record_id
 
@@ -734,10 +734,10 @@ class DatabaseManager:
             data = variable_class.from_db(data_df)
 
         instance = variable_class(data)
-        instance._record_id = record_id
-        instance._metadata = flat_metadata
-        instance._content_hash = content_hash
-        instance._lineage_hash = lineage_hash
+        instance.record_id = record_id
+        instance.metadata = flat_metadata
+        instance.content_hash = content_hash
+        instance.lineage_hash = lineage_hash
 
         return instance
 

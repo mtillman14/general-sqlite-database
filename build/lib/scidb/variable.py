@@ -67,20 +67,20 @@ class BaseVariable:
             data: The native Python object (numpy array, etc.)
         """
         self.data = data
-        self._record_id: str | None = None
-        self._metadata: dict | None = None
-        self._content_hash: str | None = None
-        self._lineage_hash: str | None = None
+        self.record_id: str | None = None
+        self.metadata: dict | None = None
+        self.content_hash: str | None = None
+        self.lineage_hash: str | None = None
 
     @property
     def record_id(self) -> str | None:
         """The unique record ID, set after save() or load()."""
-        return self._record_id
+        return self.record_id
 
     @property
     def metadata(self) -> dict | None:
         """The metadata, set after save() or load()."""
-        return self._metadata
+        return self.metadata
 
     @property
     def content_hash(self) -> str | None:
@@ -103,7 +103,7 @@ class BaseVariable:
         For raw data (not from a thunk), this is None.
         For computed data, this captures how the value was computed.
         """
-        return self._lineage_hash
+        return self.lineage_hash
 
     def to_db(self) -> pd.DataFrame:
         """
@@ -446,6 +446,6 @@ class BaseVariable:
     def __repr__(self) -> str:
         """Return a string representation of this variable."""
         type_name = type(self).__name__
-        if self._record_id:
-            return f"{type_name}(record_id={self._record_id[:12]}...)"
+        if self.record_id:
+            return f"{type_name}(record_id={self.record_id[:12]}...)"
         return f"{type_name}(data={type(self.data).__name__})"
