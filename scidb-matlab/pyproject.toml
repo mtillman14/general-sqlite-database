@@ -7,7 +7,7 @@ name = "scidb-matlab"
 version = "0.1.0"
 description = "MATLAB bridge for the SciDB scientific data versioning framework"
 license = {text = "MIT"}
-requires-python = ">=3.10"
+requires-python = ">=3.9"
 dependencies = [
     "scidb>=0.1.0",
 ]

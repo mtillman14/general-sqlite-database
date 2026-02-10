@@ -8,7 +8,7 @@ version = "0.1.0"
 description = "A lightweight database framework for scientific computing with versioning and provenance tracking"
 readme = "docs/index.md"
 license = {text = "MIT"}
-requires-python = ">=3.10"
+requires-python = ">=3.9"
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Intended Audience :: Science/Research",
