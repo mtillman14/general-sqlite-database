@@ -13,7 +13,7 @@ function kwargs = metadata_to_pykwargs(varargin)
             'Metadata must be specified as name-value pairs.');
     end
 
-    kwargs = cell(1, numel(varargin));
+    kwargs = cell(1,numel(varargin));
     for i = 1:2:numel(varargin)
         key = varargin{i};
         val = varargin{i+1};
@@ -32,7 +32,7 @@ function kwargs = metadata_to_pykwargs(varargin)
                 val = py.int(int64(val));
             end
         end
-
+        
         kwargs{i} = key;
         kwargs{i+1} = val;
     end

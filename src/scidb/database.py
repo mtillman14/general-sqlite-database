@@ -113,6 +113,8 @@ def get_database() -> "DatabaseManager":
         raise DatabaseNotConfiguredError(
             "Database not configured. Call configure_database(path) first."
         )
+    if getattr(db, "_closed", False):
+        db.reopen()
     return db
 
 
@@ -160,6 +162,7 @@ class DatabaseManager:
         self.dataset_db_path = Path(dataset_db_path)
         self.lineage_mode = lineage_mode
         self.dataset_schema_keys = list(dataset_schema_keys)
+        self.pipeline_db_path = Path(pipeline_db_path)
         self._registered_types: dict[str, Type[BaseVariable]] = {}
 
         # Initialize SciDuck backend for data storage
@@ -170,6 +173,8 @@ class DatabaseManager:
 
         # Create metadata tables for type registration (in DuckDB)
         self._ensure_meta_tables()
+
+        self._closed = False # Track connection open/closed state
 
     def _ensure_meta_tables(self):
         """Create internal metadata tables for type registration."""
@@ -980,6 +985,18 @@ class DatabaseManager:
             Thunk.query = None
         self._duck.close()
         self._pipeline_db.close()
+        # remove global reference
+        if getattr(_local, "database", None) is self:
+            self._closed = True
+
+    def reopen(self):
+        # reopen DuckDB
+        if self._duck is None:
+            self._duck = SciDuck(self.dataset_db_path, dataset_schema=self.dataset_schema_keys)
+        # reopen PipelineDB
+        if self._pipeline_db is None:
+            self._pipeline_db = PipelineDB(self.pipeline_db_path)
+        self._closed = False
 
     def __enter__(self):
         return self

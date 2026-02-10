@@ -33,12 +33,22 @@ function db = configure_database(dataset_db_path, dataset_schema_keys, pipeline_
     % Convert MATLAB string array to Python list of strings
     py_schema_keys = py.list(cellstr(dataset_schema_keys));
 
+    dataset_db_path = char(dataset_db_path);
+    if ~scidb.isabsolute(dataset_db_path)
+        dataset_db_path = fullfile(pwd, dataset_db_path);
+    end
+
+    pipeline_db_path = char(pipeline_db_path);
+    if ~scidb.isabsolute(pipeline_db_path)
+        pipeline_db_path = fullfile(pwd, pipeline_db_path);
+    end
+
     % Call Python's configure_database
     db = py.scidb.configure_database( ...
         char(dataset_db_path), ...
         py_schema_keys, ...
         char(pipeline_db_path), ...
-        lineage_mode = char(options.lineage_mode));
+        pyargs('lineage_mode', char(options.lineage_mode)));        
 
     % Verify the Python environment is working
     py_db = py.scidb.database.get_database();
@@ -46,4 +56,5 @@ function db = configure_database(dataset_db_path, dataset_schema_keys, pipeline_
         error('scidb:ConfigFailed', ...
             'configure_database() did not produce a valid DatabaseManager.');
     end
+    
 end

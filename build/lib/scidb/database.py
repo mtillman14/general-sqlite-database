@@ -160,6 +160,7 @@ class DatabaseManager:
         self.dataset_db_path = Path(dataset_db_path)
         self.lineage_mode = lineage_mode
         self.dataset_schema_keys = list(dataset_schema_keys)
+        self.pipeline_db_path = Path(pipeline_db_path)
         self._registered_types: dict[str, Type[BaseVariable]] = {}
 
         # Initialize SciDuck backend for data storage
@@ -217,12 +218,12 @@ class DatabaseManager:
 
         if not exists:
             # Create table from DataFrame schema
-            self._duck._conn.execute(
+            self._duck.con.execute(
                 f'CREATE TABLE "{table_name}" AS SELECT * FROM df WHERE 1=0'
             )
 
         # Insert data
-        self._duck._conn.execute(f'INSERT INTO "{table_name}" SELECT * FROM df')
+        self._duck.con.execute(f'INSERT INTO "{table_name}" SELECT * FROM df')
 
     def _load_dataframe(self, table_name: str, **filters) -> pd.DataFrame:
         """Load a DataFrame from DuckDB with optional filters."""
@@ -234,9 +235,9 @@ class DatabaseManager:
                 params.append(value)
             where_clause = " AND ".join(conditions)
             query = f'SELECT * FROM "{table_name}" WHERE {where_clause}'
-            return self._duck._conn.execute(query, params).fetchdf()
+            return self._duck.con.execute(query, params).fetchdf()
         else:
-            return self._duck._conn.execute(f'SELECT * FROM "{table_name}"').fetchdf()
+            return self._duck.con.execute(f'SELECT * FROM "{table_name}"').fetchdf()
 
     @staticmethod
     def _has_custom_serialization(variable_class: type) -> bool:
@@ -403,9 +404,28 @@ class DatabaseManager:
         # Normalize input: extract raw data and lineage info based on input type
         lineage = None
         lineage_hash = None
+        pipeline_lineage_hash = None
         raw_data = None
 
         if isinstance(data, ThunkOutput):
+            # Lineage-only save for side-effect functions (generates_file=True)
+            if data.pipeline_thunk.thunk.generates_file:
+                lineage = extract_lineage(data)
+                pipeline_lineage_hash = data.pipeline_thunk.compute_lineage_hash()
+                generated_id = f"generated:{pipeline_lineage_hash[:32]}"
+                user_id = get_user_id()
+                nested_metadata = self._split_metadata(metadata)
+                self._save_lineage(
+                    output_record_id=generated_id,
+                    output_type=variable_class.__name__,
+                    lineage=lineage,
+                    lineage_hash=pipeline_lineage_hash,
+                    user_id=user_id,
+                    schema_keys=nested_metadata.get("schema"),
+                    output_content_hash=None,
+                )
+                return generated_id
+
             # Data from a thunk computation
             unsaved = find_unsaved_variables(data)
 
@@ -425,6 +445,7 @@ class DatabaseManager:
 
             elif self.lineage_mode == "ephemeral" and unsaved:
                 user_id = get_user_id()
+                schema_keys = self._split_metadata(metadata).get("schema")
                 for var, path in unsaved:
                     inner_data = getattr(var, "data", None)
                     if isinstance(inner_data, ThunkOutput):
@@ -436,10 +457,12 @@ class DatabaseManager:
                             variable_type=var_type,
                             lineage=intermediate_lineage,
                             user_id=user_id,
+                            schema_keys=schema_keys,
                         )
 
             lineage = extract_lineage(data)
-            lineage_hash = data.pipeline_thunk.compute_lineage_hash()
+            lineage_hash = data.hash
+            pipeline_lineage_hash = data.pipeline_thunk.compute_lineage_hash()
             raw_data = get_raw_value(data)
 
         elif isinstance(data, BaseVariable):
@@ -450,7 +473,10 @@ class DatabaseManager:
             raw_data = data
 
         instance = variable_class(raw_data)
-        record_id = self.save(instance, metadata, lineage=lineage, lineage_hash=lineage_hash, index=index)
+        record_id = self.save(
+            instance, metadata, lineage=lineage, lineage_hash=lineage_hash,
+            pipeline_lineage_hash=pipeline_lineage_hash, index=index,
+        )
         instance.record_id = record_id
         instance.metadata = metadata
         instance.lineage_hash = lineage_hash
@@ -463,6 +489,7 @@ class DatabaseManager:
         metadata: dict,
         lineage: "LineageRecord | None" = None,
         lineage_hash: str | None = None,
+        pipeline_lineage_hash: str | None = None,
         index: Any = None,
     ) -> str:
         """
@@ -472,7 +499,10 @@ class DatabaseManager:
             variable: The variable instance to save
             metadata: Addressing metadata (flat dict)
             lineage: Optional lineage record if data came from a thunk
-            lineage_hash: Optional pre-computed lineage hash
+            lineage_hash: Optional pre-computed lineage hash (stored in DuckDB
+                for input classification when this variable is reused later)
+            pipeline_lineage_hash: Optional lineage hash for PipelineDB cache
+                lookup. If None, falls back to lineage_hash.
             index: Optional index to set on the DataFrame
 
         Returns:
@@ -540,7 +570,12 @@ class DatabaseManager:
 
         # Save lineage if provided
         if lineage is not None:
-            self._save_lineage(record_id, type_name, lineage, lineage_hash, user_id)
+            effective_plh = pipeline_lineage_hash if pipeline_lineage_hash is not None else lineage_hash
+            self._save_lineage(
+                record_id, type_name, lineage, effective_plh, user_id,
+                schema_keys=nested_metadata.get("schema"),
+                output_content_hash=content_hash,
+            )
 
         return record_id
 
@@ -551,6 +586,8 @@ class DatabaseManager:
         lineage: "LineageRecord",
         lineage_hash: str | None = None,
         user_id: str | None = None,
+        schema_keys: dict | None = None,
+        output_content_hash: str | None = None,
     ) -> None:
         """Save lineage record for a variable to PipelineDB (SQLite)."""
         self._pipeline_db.save_lineage(
@@ -562,6 +599,8 @@ class DatabaseManager:
             constants=lineage.constants,
             lineage_hash=lineage_hash,
             user_id=user_id,
+            schema_keys=schema_keys,
+            output_content_hash=output_content_hash,
         )
 
     def save_ephemeral_lineage(
@@ -570,6 +609,7 @@ class DatabaseManager:
         variable_type: str,
         lineage: "LineageRecord",
         user_id: str | None = None,
+        schema_keys: dict | None = None,
     ) -> None:
         """Save an ephemeral lineage record for an unsaved intermediate variable."""
         self._pipeline_db.save_ephemeral(
@@ -580,6 +620,7 @@ class DatabaseManager:
             inputs=lineage.inputs,
             constants=lineage.constants,
             user_id=user_id,
+            schema_keys=schema_keys,
         )
 
     def load(
@@ -809,6 +850,32 @@ class DatabaseManager:
             "constants": lineage["constants"],
         }
 
+    def get_provenance_by_schema(self, **schema_keys) -> list[dict]:
+        """
+        Get all provenance records at a schema location (schema-aware view).
+
+        Args:
+            **schema_keys: Schema key filters (e.g., subject="S01", session="1")
+
+        Returns:
+            List of lineage record dicts matching the schema keys
+        """
+        return self._pipeline_db.find_by_schema(**schema_keys)
+
+    def get_pipeline_structure(self) -> list[dict]:
+        """
+        Get the abstract pipeline structure (schema-blind view).
+
+        Returns unique (function_name, function_hash, output_type, input_types)
+        combinations, describing how variable types flow through functions
+        without reference to specific data instances or schema locations.
+
+        Returns:
+            List of dicts with keys: function_name, function_hash, output_type,
+            input_types (list of type names)
+        """
+        return self._pipeline_db.get_pipeline_structure()
+
     def has_lineage(self, record_id: str) -> bool:
         """Check if a variable has lineage information."""
         return self._pipeline_db.has_lineage(record_id)
@@ -868,12 +935,18 @@ class DatabaseManager:
             return None
 
         results = []
+        has_generated = False
         for record in records:
             output_record_id = record["output_record_id"]
             output_type = record["output_type"]
 
             # Skip ephemeral entries (no data stored in SciDuck)
             if output_record_id.startswith("ephemeral:"):
+                continue
+
+            # Track generated entries (lineage-only, no data stored)
+            if output_record_id.startswith("generated:"):
+                has_generated = True
                 continue
 
             var_class = self._get_variable_class(output_type)
@@ -888,7 +961,11 @@ class DatabaseManager:
                 # Record not found in SciDuck
                 return None
 
-        return results if results else None
+        if results:
+            return results
+        if has_generated:
+            return [None]
+        return None
 
     def _get_variable_class(self, type_name: str):
         """Get a variable class by name."""

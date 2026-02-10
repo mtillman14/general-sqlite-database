@@ -68,9 +68,11 @@ classdef BaseVariable < handle
 
             py_kwargs = scidb.internal.metadata_to_pykwargs(varargin{:});
 
-            py_db = py.scidb.database.get_database();
-            py_record_id = py_db.save_variable(py_class, py_data, py_kwargs{:});
+            py_db = py.scidb.database.get_database();            
+            py_record_id = py_db.save_variable(py_class, py_data, pyargs(py_kwargs{:}));
             record_id = char(py_record_id);
+
+            
         end
 
         % -----------------------------------------------------------------
@@ -116,6 +118,8 @@ classdef BaseVariable < handle
             end
 
             var.py_obj = py_var;
+
+            
         end
 
         % -----------------------------------------------------------------
@@ -166,6 +170,8 @@ classdef BaseVariable < handle
                 v.py_obj = py_var;
                 vars(end+1) = v; %#ok<AGROW>
             end
+
+            
         end
 
         % -----------------------------------------------------------------
@@ -199,6 +205,8 @@ classdef BaseVariable < handle
                 versions(i).version    = scidb.internal.pydict_to_struct(py_dict{'version'});
                 versions(i).created_at = string(py_dict{'created_at'});
             end
+
+            
         end
 
         % -----------------------------------------------------------------
@@ -224,9 +232,9 @@ classdef BaseVariable < handle
             py_db = py.scidb.database.get_database();
             if version ~= "latest"
                 disp('what to do with syntax py_kwargs{:}?')
-                % py_result = py_db.get_provenance(py_class, version=char(version), py_kwargs{:});
+                % py_result = py_db.get_provenance(py_class, version=char(version), pyargs(py_kwargs{:}));
             else
-                py_result = py_db.get_provenance(py_class, py_kwargs{:});
+                py_result = py_db.get_provenance(py_class, pyargs(py_kwargs{:}));
             end
 
             if isa(py_result, 'py.NoneType')
@@ -237,6 +245,8 @@ classdef BaseVariable < handle
                 prov.inputs        = scidb.internal.pylist_to_cell(py_result{'inputs'});
                 prov.constants     = scidb.internal.pylist_to_cell(py_result{'constants'});
             end
+
+            
         end
 
         % -----------------------------------------------------------------
