@@ -20,7 +20,7 @@ class SignalData(BaseVariable):
     pass
 ```
 
-For custom multi-column serialization, override `to_db()` and `from_db()`:
+For simple types, conversion to and from the database is handled automatically. For complex custom serialization, override `to_db()` and `from_db()`:
 
 ```python
 import pandas as pd
