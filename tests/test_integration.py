@@ -142,7 +142,7 @@ class TestIdempotentSaves:
 
         # Should only have one unique record_id in database
         rows = db._duck._fetchall(
-            "SELECT DISTINCT record_id FROM _record_metadata WHERE variable_name = 'ScalarValue'"
+            "SELECT DISTINCT record_id FROM _record_metadata WHERE variable_name = 'ScalarValue_data'"
         )
         assert len(rows) == 1
 
@@ -421,3 +421,97 @@ class TestPartialSchemaKeyLoad:
         loaded = scalar_class.load(version=record_id)
         assert not isinstance(loaded, list)
         assert loaded.data == 42
+
+
+class TestVariableViews:
+    """Test that auto-created views join variable data with schema and version info."""
+
+    def test_view_exists_after_first_save(self, db, scalar_class):
+        """A view with the class name should be created on first save."""
+        scalar_class.save(42, subject=1, trial=1)
+        # View should be queryable by the clean class name
+        rows = db._duck._fetchall('SELECT * FROM "ScalarValue"')
+        assert len(rows) == 1
+
+    def test_view_includes_schema_columns(self, db, scalar_class):
+        """View should include expanded schema columns from _schema."""
+        scalar_class.save(42, subject=1, trial=1)
+        df = db._duck._fetchdf('SELECT * FROM "ScalarValue"')
+        assert "subject" in df.columns
+        assert "trial" in df.columns
+        assert df.iloc[0]["subject"] == "1"
+        assert df.iloc[0]["trial"] == "1"
+
+    def test_view_includes_schema_level(self, db, scalar_class):
+        """View should include the schema_level from _schema."""
+        scalar_class.save(42, subject=1, trial=1)
+        df = db._duck._fetchdf('SELECT * FROM "ScalarValue"')
+        assert "schema_level" in df.columns
+        assert df.iloc[0]["schema_level"] == "trial"
+
+    def test_view_includes_version_keys(self, db, scalar_class):
+        """View should include version_keys from _variables."""
+        scalar_class.save(42, subject=1, trial=1, processing="v2")
+        df = db._duck._fetchdf('SELECT * FROM "ScalarValue"')
+        assert "version_keys" in df.columns
+        assert "processing" in df.iloc[0]["version_keys"]
+
+    def test_view_includes_variable_value(self, db, scalar_class):
+        """View should still include the actual data value."""
+        scalar_class.save(42, subject=1, trial=1)
+        df = db._duck._fetchdf('SELECT * FROM "ScalarValue"')
+        assert "value" in df.columns
+        assert df.iloc[0]["value"] == 42
+
+    def test_view_multiple_rows(self, db, scalar_class):
+        """View should show all rows with their respective schema info."""
+        scalar_class.save(10, subject=1, trial=1)
+        scalar_class.save(20, subject=1, trial=2)
+        scalar_class.save(30, subject=2, trial=1)
+
+        df = db._duck._fetchdf('SELECT * FROM "ScalarValue" ORDER BY "value"')
+        assert len(df) == 3
+
+        row1 = df[df["value"] == 10].iloc[0]
+        assert row1["subject"] == "1"
+        assert row1["trial"] == "1"
+
+        row2 = df[df["value"] == 20].iloc[0]
+        assert row2["subject"] == "1"
+        assert row2["trial"] == "2"
+
+        row3 = df[df["value"] == 30].iloc[0]
+        assert row3["subject"] == "2"
+        assert row3["trial"] == "1"
+
+    def test_view_subject_level_save(self, db, scalar_class):
+        """Saving at subject level should show NULLs for deeper schema keys."""
+        scalar_class.save(99, subject=1)
+        df = db._duck._fetchdf('SELECT * FROM "ScalarValue"')
+        assert df.iloc[0]["subject"] == "1"
+        assert df.iloc[0]["schema_level"] == "subject"
+        assert df.iloc[0]["trial"] is None or pd.isna(df.iloc[0]["trial"])
+
+    def test_view_custom_serialization(self, db, dataframe_class):
+        """View should work for custom-serialized variables too."""
+        original_df = pd.DataFrame({"x": [1.0, 2.0], "y": [3.0, 4.0]})
+        dataframe_class.save(original_df, subject=1, trial=1)
+
+        df = db._duck._fetchdf('SELECT * FROM "DataFrameValue"')
+        assert len(df) == 2  # Two rows from the DataFrame
+        assert "subject" in df.columns
+        assert "schema_level" in df.columns
+        assert df.iloc[0]["subject"] == "1"
+
+    def test_view_separate_per_variable_type(self, db, scalar_class, array_class):
+        """Each variable type should get its own view."""
+        scalar_class.save(42, subject=1, trial=1)
+        array_class.save(np.array([1, 2, 3]), subject=1, trial=1)
+
+        scalar_df = db._duck._fetchdf('SELECT * FROM "ScalarValue"')
+        array_df = db._duck._fetchdf('SELECT * FROM "ArrayValue"')
+
+        assert len(scalar_df) == 1
+        assert len(array_df) == 1
+        assert scalar_df.iloc[0]["subject"] == "1"
+        assert array_df.iloc[0]["subject"] == "1"

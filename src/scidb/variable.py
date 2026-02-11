@@ -116,6 +116,19 @@ class BaseVariable:
         Returns:
             str: Table name matching the class name
         """
+        return cls.__name__ + "_data"
+
+    @classmethod
+    def view_name(cls) -> str:
+        """
+        Get the view name for this variable type.
+
+        Returns the class name (e.g., "StepLength", "EMGData").
+        The view joins the data table with _schema and _variables.
+
+        Returns:
+            str: View name matching the class name
+        """
         return cls.__name__
 
     @classmethod

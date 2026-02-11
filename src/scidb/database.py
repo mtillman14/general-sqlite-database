@@ -213,11 +213,13 @@ class DatabaseManager:
             )
         """)
 
-    def _create_variable_view(self, table_name: str):
+    def _create_variable_view(self, variable_class: Type[BaseVariable]):
         """Create a view joining a variable table with _schema and _variables."""
+        table_name = variable_class.table_name()
+        view_name = variable_class.view_name()
         schema_cols = ", ".join(f's."{col}"' for col in self.dataset_schema_keys)
         self._duck._execute(f"""
-            CREATE OR REPLACE VIEW "{table_name}_view" AS
+            CREATE OR REPLACE VIEW "{view_name}" AS
             SELECT
                 t.*,
                 s.schema_level, {schema_cols},
@@ -315,6 +317,7 @@ class DatabaseManager:
     def _save_custom_to_sciduck(
         self,
         table_name: str,
+        variable_class: Type[BaseVariable],
         df: pd.DataFrame,
         schema_level: str | None,
         schema_keys: dict,
@@ -370,7 +373,7 @@ class DatabaseManager:
                     {data_cols_sql}
                 )
             """)
-            self._create_variable_view(table_name)
+            self._create_variable_view(variable_class)
 
         # Insert all DataFrame rows with the same (schema_id, version_id)
         for _, row in df.iterrows():
@@ -407,6 +410,7 @@ class DatabaseManager:
     def _save_native_direct(
         self,
         table_name: str,
+        variable_class: Type[BaseVariable],
         data: Any,
         content_hash: str,
         version_keys: dict | None = None,
@@ -434,7 +438,7 @@ class DatabaseManager:
                     "value" {ddb_type}
                 )
             """)
-            self._create_variable_view(table_name)
+            self._create_variable_view(variable_class)
 
         # Insert data
         self._duck._execute(
@@ -456,6 +460,7 @@ class DatabaseManager:
     def _save_native_with_schema(
         self,
         table_name: str,
+        variable_class: Type[BaseVariable],
         data: Any,
         schema_level: str,
         schema_keys: dict,
@@ -497,7 +502,7 @@ class DatabaseManager:
                     "value" {ddb_type}
                 )
             """)
-            self._create_variable_view(table_name)
+            self._create_variable_view(variable_class)
 
         # Insert data
         self._duck._execute(
@@ -951,7 +956,7 @@ class DatabaseManager:
                 df.index = index
 
             version_id, schema_id = self._save_custom_to_sciduck(
-                table_name, df, schema_level, schema_keys, content_hash,
+                table_name, type(variable), df, schema_level, schema_keys, content_hash,
                 version_keys=version_keys,
             )
         else:
@@ -959,13 +964,13 @@ class DatabaseManager:
             if schema_level is not None and schema_keys:
                 # Contiguous keys — save with schema-scoped version_id
                 version_id, schema_id = self._save_native_with_schema(
-                    table_name, variable.data, schema_level, schema_keys, content_hash,
+                    table_name, type(variable), variable.data, schema_level, schema_keys, content_hash,
                     version_keys=version_keys,
                 )
             else:
                 # No schema or non-contiguous keys — direct insert
                 version_id, schema_id = self._save_native_direct(
-                    table_name, variable.data, content_hash,
+                    table_name, type(variable), variable.data, content_hash,
                     version_keys=version_keys,
                 )
 
