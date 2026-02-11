@@ -77,6 +77,7 @@ class MatlabThunk:
         # Same algorithm as Thunk.__init__ (core.py lines 78-81)
         string_repr = f"{source_hash}{STRING_REPR_DELIMITER}{unpack_output}"
         self.hash: str = sha256(string_repr.encode()).hexdigest()
+        self.generates_file = False
 
 
 class MatlabPipelineThunk:
