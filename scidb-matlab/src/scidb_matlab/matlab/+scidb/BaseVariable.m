@@ -104,21 +104,30 @@ classdef BaseVariable < handle
             py_metadata = scidb.internal.metadata_to_pydict(metadata_args{:});
 
             py_db = py.scidb.database.get_database();
-            py_var = py_db.load(py_class, py_metadata, version=char(version));
 
-            matlab_data = scidb.internal.from_python(py_var.data);
-            result = scidb.ThunkOutput(matlab_data, py_var);
-            result.record_id = string(py_var.record_id);
-            result.content_hash = string(py_var.content_hash);
-
-            py_lh = py_var.lineage_hash;
-            if ~isa(py_lh, 'py.NoneType')
-                result.lineage_hash = string(py_lh);
+            % If loading by specific version, always return single
+            if version ~= "latest"
+                py_var = py_db.load(py_class, py_metadata, version=char(version));
+                result = scidb.BaseVariable.wrap_py_var(py_var);
+                return;
             end
 
-            py_meta = py_var.metadata;
-            if ~isa(py_meta, 'py.NoneType')
-                result.metadata = scidb.internal.pydict_to_struct(py_meta);
+            % Query all matching records
+            py_gen = py_db.load_all(py_class, py_metadata);
+            py_list = py.list(py_gen);
+            n = int64(py.builtins.len(py_list));
+
+            if n == 0
+                error('scidb:NotFoundError', 'No %s found matching the given metadata.', type_name);
+            elseif n == 1
+                % Single match → return single ThunkOutput
+                result = scidb.BaseVariable.wrap_py_var(py_list{1});
+            else
+                % Multiple matches → return array of ThunkOutput
+                result = scidb.ThunkOutput.empty();
+                for i = 1:n
+                    result(end+1) = scidb.BaseVariable.wrap_py_var(py_list{i}); %#ok<AGROW>
+                end
             end
 
 
@@ -153,23 +162,7 @@ classdef BaseVariable < handle
                 catch
                     break;
                 end
-
-                matlab_data = scidb.internal.from_python(py_var.data);
-                v = scidb.ThunkOutput(matlab_data, py_var);
-                v.record_id = string(py_var.record_id);
-                v.content_hash = string(py_var.content_hash);
-
-                py_lh = py_var.lineage_hash;
-                if ~isa(py_lh, 'py.NoneType')
-                    v.lineage_hash = string(py_lh);
-                end
-
-                py_meta = py_var.metadata;
-                if ~isa(py_meta, 'py.NoneType')
-                    v.metadata = scidb.internal.pydict_to_struct(py_meta);
-                end
-
-                results(end+1) = v; %#ok<AGROW>
+                results(end+1) = scidb.BaseVariable.wrap_py_var(py_var); %#ok<AGROW>
             end
 
 
@@ -272,6 +265,24 @@ classdef BaseVariable < handle
         function objs = empty()
         %EMPTY  Create an empty BaseVariable array (for preallocation).
             objs = scidb.BaseVariable.empty(0, 0);
+        end
+
+        function v = wrap_py_var(py_var)
+        %WRAP_PY_VAR  Convert a Python BaseVariable to a MATLAB ThunkOutput.
+            matlab_data = scidb.internal.from_python(py_var.data);
+            v = scidb.ThunkOutput(matlab_data, py_var);
+            v.record_id = string(py_var.record_id);
+            v.content_hash = string(py_var.content_hash);
+
+            py_lh = py_var.lineage_hash;
+            if ~isa(py_lh, 'py.NoneType')
+                v.lineage_hash = string(py_lh);
+            end
+
+            py_meta = py_var.metadata;
+            if ~isa(py_meta, 'py.NoneType')
+                v.metadata = scidb.internal.pydict_to_struct(py_meta);
+            end
         end
     end
 end

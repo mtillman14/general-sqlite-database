@@ -376,3 +376,48 @@ class TestCustomVariableType:
 
         loaded = Config.load(experiment="test")
         assert loaded.data == original
+
+
+class TestPartialSchemaKeyLoad:
+    """Test that load() returns a list when partial schema keys match multiple rows."""
+
+    def test_load_returns_list_for_partial_keys(self, db, scalar_class):
+        """Saving at trial level, then loading by subject only should return a list."""
+        scalar_class.save(10, subject=1, trial=1)
+        scalar_class.save(20, subject=1, trial=2)
+        scalar_class.save(30, subject=1, trial=3)
+
+        result = scalar_class.load(subject=1)
+        assert isinstance(result, list)
+        assert len(result) == 3
+        # Results are ordered by created_at DESC (newest first)
+        assert {v.data for v in result} == {10, 20, 30}
+
+    def test_load_returns_single_when_one_match(self, db, scalar_class):
+        """If only one row matches, load() should return a single variable."""
+        scalar_class.save(42, subject=1, trial=1)
+
+        loaded = scalar_class.load(subject=1, trial=1)
+        assert not isinstance(loaded, list)
+        assert loaded.data == 42
+
+    def test_load_returns_single_for_subject_level_save(self, db, scalar_class):
+        """Saving at subject level, loading by subject should return single."""
+        scalar_class.save(99, subject=1)
+
+        loaded = scalar_class.load(subject=1)
+        assert not isinstance(loaded, list)
+        assert loaded.data == 99
+
+    def test_load_partial_key_not_found_raises(self, db, scalar_class):
+        """Partial key load with no matches should raise NotFoundError."""
+        with pytest.raises(NotFoundError):
+            scalar_class.load(subject=999)
+
+    def test_load_by_version_always_returns_single(self, db, scalar_class):
+        """Loading by version/record_id should always return single."""
+        record_id = scalar_class.save(42, subject=1, trial=1)
+
+        loaded = scalar_class.load(version=record_id)
+        assert not isinstance(loaded, list)
+        assert loaded.data == 42

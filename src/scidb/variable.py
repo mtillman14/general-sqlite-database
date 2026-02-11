@@ -186,15 +186,13 @@ class BaseVariable:
         loc: Any | None = None,
         iloc: Any | None = None,
         **metadata,
-    ) -> Self:
+    ) -> Self | list[Self]:
         """
-        Load a single variable from the database.
+        Load variable(s) from the database.
 
-        Metadata keys are split into schema keys (dataset identity) and version
-        keys (computational identity) based on the configured dataset_schema_keys.
-
-        - If only schema keys are provided: returns the latest version at that location
-        - If version keys are also provided: returns the exact matching version
+        Returns a single variable when exactly one record matches, or a list
+        of variables when multiple records match. This allows partial schema
+        key queries to naturally return all matching rows.
 
         Args:
             version: "latest" for most recent, or specific record_id
@@ -205,7 +203,8 @@ class BaseVariable:
             **metadata: Addressing metadata to match
 
         Returns:
-            The matching variable instance (latest if multiple versions exist)
+            A single variable if one record matches, or
+            a list of variables if multiple records match.
 
         Raises:
             NotFoundError: If no matching data found
@@ -214,24 +213,43 @@ class BaseVariable:
             ValueError: If both loc and iloc are provided
 
         Example:
-            # Load full record
-            var = StepLength.load(subject=1, session="BL")
+            # Load single record (all schema keys provided)
+            var = StepLength.load(subject=1, device="left")
 
-            # Load single element by label
-            var = StepLength.load(subject=1, session="BL", loc=5)
+            # Load multiple records (partial schema keys)
+            vars = StepLength.load(subject=1)
 
-            # Load slice by position
-            var = StepLength.load(subject=1, session="BL", iloc=slice(0, 5))
-
-            # Load specific indices
-            var = StepLength.load(subject=1, session="BL", loc=[0, 2, 4])
+            # Load with indexing
+            var = StepLength.load(subject=1, device="left", loc=5)
         """
         from .database import get_database
 
         if loc is not None and iloc is not None:
             raise ValueError("Cannot specify both 'loc' and 'iloc'. Use one or the other.")
 
-        return get_database().load(cls, metadata, version=version, loc=loc, iloc=iloc)
+        db = get_database()
+
+        # Loading by specific version/record_id → always single variable
+        if version != "latest" and version is not None:
+            return db.load(cls, metadata, version=version, loc=loc, iloc=iloc)
+
+        # Query all matching records
+        from .exceptions import NotFoundError
+
+        results = list(db.load_all(cls, metadata))
+
+        if not results:
+            raise NotFoundError(
+                f"No {cls.__name__} found matching metadata: {metadata}"
+            )
+        elif len(results) == 1:
+            # Single match → return variable directly (with loc/iloc support)
+            if loc is not None or iloc is not None:
+                return db.load(cls, metadata, version=version, loc=loc, iloc=iloc)
+            return results[0]
+        else:
+            # Multiple matches → return list
+            return results
 
     @classmethod
     def load_all(
