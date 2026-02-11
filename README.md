@@ -331,6 +331,12 @@ for_each(
     session=["pre", "post"],
     trial=[1, 2, 3, 4, 5],
 )
+
+# Get the FilteredForce created with smoothing=0.2
+filtered_force0_2 = FilteredForce.load(smoothing=0.2) # Returns all subjects, sessions, and trials.
+
+# Get the FilteredForce created with smoothing=0.3
+filtered_force0_3 = FilteredForce.load(smoothing=0.3) # Returns all subjects, sessions, and trials.
 ```
 
 ## The Bigger Picture: Shareable Pipelines
