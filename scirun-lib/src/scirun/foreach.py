@@ -8,7 +8,7 @@ from .fixed import Fixed
 
 def for_each(
     fn: Callable,
-    inputs: dict[str, type | Fixed],
+    inputs: dict[str, Any],
     outputs: list[type],
     dry_run: bool = False,
     save: bool = True,
@@ -23,11 +23,18 @@ def for_each(
     - Input types to have a `.load(**metadata)` class method
     - Output types to have a `.save(data, **metadata)` class method
 
+    Inputs can be:
+    - Variable types (classes with .load()) — loaded from the database
+    - Fixed wrappers — loaded with overridden metadata
+    - PathInput instances — resolved to file paths
+    - Plain values (constants) — passed directly to the function and
+      included in the save metadata as version keys
+
     Args:
         fn: The function to execute (typically a thunked function, but
             works with any callable)
-        inputs: Dict mapping parameter names to variable types
-                (or Fixed wrappers for overridden metadata)
+        inputs: Dict mapping parameter names to variable types,
+                Fixed wrappers, or constant values
         outputs: List of variable types for outputs (positional)
         dry_run: If True, only print what would be loaded/saved without
                  actually executing
@@ -41,11 +48,10 @@ def for_each(
     Example:
         for_each(
             filter_data,
-            inputs={"step_length": StepLength, "step_width": StepWidth},
-            outputs=[FilteredStepLength, FilteredStepWidth],
+            inputs={"step_length": StepLength, "smoothing": 0.2},
+            outputs=[FilteredStepLength],
             subject=subjects,
             session=sessions,
-            speed=speeds,
         )
 
         # Preview what would happen
@@ -58,6 +64,15 @@ def for_each(
             ...
         )
     """
+    # Separate loadable inputs from constants
+    loadable_inputs = {}
+    constant_inputs = {}
+    for param_name, var_spec in inputs.items():
+        if _is_loadable(var_spec):
+            loadable_inputs[param_name] = var_spec
+        else:
+            constant_inputs[param_name] = var_spec
+
     keys = list(metadata_iterables.keys())
     value_lists = [metadata_iterables[k] for k in keys]
 
@@ -84,15 +99,15 @@ def for_each(
         metadata_str = ", ".join(f"{k}={v}" for k, v in metadata.items())
 
         if dry_run:
-            _print_dry_run_iteration(inputs, outputs, metadata, should_pass_metadata)
+            _print_dry_run_iteration(inputs, outputs, metadata, constant_inputs, should_pass_metadata)
             completed += 1
             continue
 
-        # Load inputs
+        # Load inputs (only loadable ones, not constants)
         loaded_inputs = {}
         load_failed = False
 
-        for param_name, var_spec in inputs.items():
+        for param_name, var_spec in loadable_inputs.items():
             if isinstance(var_spec, Fixed):
                 load_metadata = {**metadata, **var_spec.fixed_metadata}
                 var_type = var_spec.var_type
@@ -103,7 +118,8 @@ def for_each(
             try:
                 loaded_inputs[param_name] = var_type.load(**load_metadata)
             except Exception as e:
-                print(f"[skip] {metadata_str}: failed to load {param_name} ({var_type.__name__}): {e}")
+                var_name = getattr(var_type, '__name__', type(var_type).__name__)
+                print(f"[skip] {metadata_str}: failed to load {param_name} ({var_name}): {e}")
                 load_failed = True
                 break
 
@@ -112,7 +128,8 @@ def for_each(
             continue
 
         # Call the function
-        print(f"[run] {metadata_str}: {fn_name}({', '.join(loaded_inputs.keys())})")
+        all_param_names = list(loaded_inputs.keys()) + list(constant_inputs.keys())
+        print(f"[run] {metadata_str}: {fn_name}({', '.join(all_param_names)})")
 
         # For plain functions (not Thunks), unwrap BaseVariable / ThunkOutput
         # inputs to raw .data so existing functions work without modification.
@@ -121,6 +138,9 @@ def for_each(
             loaded_inputs = {
                 k: _unwrap(v) for k, v in loaded_inputs.items()
             }
+
+        # Merge constants into function arguments
+        loaded_inputs.update(constant_inputs)
 
         try:
             if should_pass_metadata:
@@ -136,11 +156,12 @@ def for_each(
         if not isinstance(result, tuple):
             result = (result,)
 
-        # Save outputs
+        # Save outputs (include constants as version keys in metadata)
+        save_metadata = {**metadata, **constant_inputs}
         if save:
             for output_type, output_value in zip(outputs, result):
                 try:
-                    output_type.save(output_value, **metadata)
+                    output_type.save(output_value, **save_metadata)
                     print(f"[save] {metadata_str}: {output_type.__name__}")
                 except Exception as e:
                     print(f"[error] {metadata_str}: failed to save {output_type.__name__}: {e}")
@@ -153,6 +174,11 @@ def for_each(
         print(f"[dry-run] would process {total} iterations")
     else:
         print(f"[done] completed={completed}, skipped={skipped}, total={total}")
+
+
+def _is_loadable(var_spec: Any) -> bool:
+    """Check if an input spec is a loadable type (class, Fixed, or has .load())."""
+    return isinstance(var_spec, (type, Fixed)) or hasattr(var_spec, 'load')
 
 
 def _is_thunk(fn: Any) -> bool:
@@ -171,41 +197,50 @@ def _unwrap(value: Any) -> Any:
     return value
 
 
-def _format_inputs(inputs: dict[str, type | Fixed]) -> str:
+def _format_inputs(inputs: dict[str, Any]) -> str:
     """Format inputs dict for display."""
     parts = []
     for name, var_spec in inputs.items():
         if isinstance(var_spec, Fixed):
             fixed_str = ", ".join(f"{k}={v}" for k, v in var_spec.fixed_metadata.items())
             parts.append(f"{name}: Fixed({var_spec.var_type.__name__}, {fixed_str})")
+        elif _is_loadable(var_spec):
+            var_name = getattr(var_spec, '__name__', type(var_spec).__name__)
+            parts.append(f"{name}: {var_name}")
         else:
-            parts.append(f"{name}: {var_spec.__name__}")
+            parts.append(f"{name}: {var_spec!r}")
     return "{" + ", ".join(parts) + "}"
 
 
 def _print_dry_run_iteration(
-    inputs: dict[str, type | Fixed],
+    inputs: dict[str, Any],
     outputs: list[type],
     metadata: dict[str, Any],
+    constant_inputs: dict[str, Any],
     pass_metadata: bool = False,
 ) -> None:
     """Print what would happen for one iteration in dry-run mode."""
     metadata_str = ", ".join(f"{k}={v}" for k, v in metadata.items())
+    save_metadata = {**metadata, **constant_inputs}
+    save_metadata_str = ", ".join(f"{k}={v}" for k, v in save_metadata.items())
     print(f"[dry-run] {metadata_str}:")
 
     for param_name, var_spec in inputs.items():
         if isinstance(var_spec, Fixed):
             load_metadata = {**metadata, **var_spec.fixed_metadata}
             var_type = var_spec.var_type
+            load_str = ", ".join(f"{k}={v}" for k, v in load_metadata.items())
+            var_name = getattr(var_type, '__name__', type(var_type).__name__)
+            print(f"  load {param_name} = {var_name}.load({load_str})")
+        elif _is_loadable(var_spec):
+            load_str = ", ".join(f"{k}={v}" for k, v in metadata.items())
+            var_name = getattr(var_spec, '__name__', type(var_spec).__name__)
+            print(f"  load {param_name} = {var_name}.load({load_str})")
         else:
-            load_metadata = metadata
-            var_type = var_spec
-
-        load_str = ", ".join(f"{k}={v}" for k, v in load_metadata.items())
-        print(f"  load {param_name} = {var_type.__name__}.load({load_str})")
+            print(f"  constant {param_name} = {var_spec!r}")
 
     if pass_metadata:
         print(f"  pass metadata: {metadata_str}")
 
     for output_type in outputs:
-        print(f"  save {output_type.__name__}.save(..., {metadata_str})")
+        print(f"  save {output_type.__name__}.save(..., {save_metadata_str})")

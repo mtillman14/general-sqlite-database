@@ -343,7 +343,7 @@ filtered_force0_3 = FilteredForce.load(smoothing=0.3) # Returns all subjects, se
 
 By abstracting away all infrastructure — file paths, storage formats, naming conventions — SciDB decouples your analysis logic from your local environment. Your pipeline code contains _only_ the scientific computation.
 
-This opens a door that hasn't been fully opened before: **truly portable, shareable data processing pipelines.** When a pipeline is just a sequence of typed functions with declared inputs and outputs, it can be shared, reproduced, and built upon by anyone — regardless of how their data is organized on disk.
+This opens the door to **truly portable, shareable data processing pipelines.** When a pipeline is just a sequence of typed functions with declared inputs and outputs, it can be shared, reproduced, and built upon by anyone — regardless of how their data is organized on disk.
 
 Today, sharing a pipeline means sharing a pile of scripts with hardcoded paths and implicit assumptions. With SciDB, the pipeline _is_ the science, and the infrastructure adapts to wherever it runs.
 

@@ -8,10 +8,17 @@ function for_each(fn, inputs, outputs, varargin)
 %   the function, and saves the results under the corresponding output
 %   variable types.
 %
+%   Inputs can be:
+%   - BaseVariable instances — loaded from the database
+%   - scidb.Fixed wrappers — loaded with overridden metadata
+%   - scidb.PathInput instances — resolved to file paths
+%   - Plain values (constants) — passed directly to the function and
+%     included in the save metadata as version keys
+%
 %   Arguments:
 %       fn      - Function handle or scidb.Thunk
-%       inputs  - Struct mapping parameter names to BaseVariable instances
-%                 (or scidb.Fixed wrappers for overridden metadata).
+%       inputs  - Struct mapping parameter names to BaseVariable instances,
+%                 scidb.Fixed wrappers, or constant values.
 %                 The field order determines argument order when calling fn.
 %       outputs - Cell array of BaseVariable instances for output types
 %
@@ -26,8 +33,8 @@ function for_each(fn, inputs, outputs, varargin)
 %   Example:
 %       scidb.for_each(@filter_data, ...
 %           struct('step_length', StepLength(), ...
-%                  'step_width',  StepWidth()), ...
-%           {FilteredStepLength(), FilteredStepWidth()}, ...
+%                  'smoothing',   0.2), ...
+%           {FilteredStepLength()}, ...
 %           subject=[1 2 3], ...
 %           session=["A" "B"]);
 %
@@ -99,9 +106,26 @@ function for_each(fn, inputs, outputs, varargin)
         total = total * numel(meta_values{i});
     end
 
-    % Parse inputs struct
+    % Parse inputs struct — separate loadable inputs from constants
     input_names = fieldnames(inputs);
     n_inputs = numel(input_names);
+
+    loadable_idx = false(1, n_inputs);
+    constant_names = {};
+    constant_values = {};
+    constant_nv = {};  % name-value pairs for save metadata
+
+    for p = 1:n_inputs
+        var_spec = inputs.(input_names{p});
+        if is_loadable(var_spec)
+            loadable_idx(p) = true;
+        else
+            constant_names{end+1} = input_names{p}; %#ok<AGROW>
+            constant_values{end+1} = var_spec; %#ok<AGROW>
+            constant_nv{end+1} = input_names{p}; %#ok<AGROW>
+            constant_nv{end+1} = var_spec; %#ok<AGROW>
+        end
+    end
 
     % Parse outputs cell array
     n_outputs = numel(outputs);
@@ -145,19 +169,28 @@ function for_each(fn, inputs, outputs, varargin)
         end
         metadata_str = strjoin(meta_parts, ', ');
 
+        % Build save metadata (iteration metadata + constants)
+        save_nv = [meta_nv, constant_nv];
+
         % --- Dry-run iteration ---
         if dry_run
             print_dry_run_iteration(inputs, input_names, outputs, ...
-                metadata, meta_keys, metadata_str, should_pass_metadata);
+                metadata, meta_keys, metadata_str, constant_nv, should_pass_metadata);
             completed = completed + 1;
             continue;
         end
 
-        % --- Load inputs ---
+        % --- Load inputs (only loadable ones, not constants) ---
         loaded = cell(1, n_inputs);
         load_failed = false;
 
         for p = 1:n_inputs
+            if ~loadable_idx(p)
+                % Constant — use value directly
+                loaded{p} = inputs.(input_names{p});
+                continue;
+            end
+
             var_spec = inputs.(input_names{p});
 
             if isa(var_spec, 'scidb.Fixed')
@@ -196,9 +229,12 @@ function for_each(fn, inputs, outputs, varargin)
         % For plain function handles (not Thunks), unwrap ThunkOutput /
         % BaseVariable inputs to raw data so existing functions work
         % without modification.  Thunks handle their own unwrapping.
+        % Only unwrap loadable inputs, not constants.
         if ~isa(fn, 'scidb.Thunk')
             for p = 1:n_inputs
-                loaded{p} = scidb.internal.unwrap_input(loaded{p});
+                if loadable_idx(p)
+                    loaded{p} = scidb.internal.unwrap_input(loaded{p});
+                end
             end
         end
 
@@ -234,12 +270,12 @@ function for_each(fn, inputs, outputs, varargin)
             continue;
         end
 
-        % --- Save outputs ---
+        % --- Save outputs (include constants in metadata) ---
         if do_save
             for o = 1:min(n_outputs, numel(result))
                 out_inst = outputs{o};
                 try
-                    out_inst.save(result{o}, meta_nv{:});
+                    out_inst.save(result{o}, save_nv{:});
                     fprintf('[save] %s: %s\n', metadata_str, class(out_inst));
                 catch err
                     fprintf('[error] %s: failed to save %s: %s\n', ...
@@ -265,6 +301,16 @@ end
 % =========================================================================
 % Local helper functions
 % =========================================================================
+
+function tf = is_loadable(var_spec)
+%IS_LOADABLE  Check if an input spec is a loadable type.
+%   Returns true for BaseVariable instances, Fixed wrappers, and PathInput.
+%   Returns false for plain constants (numeric, string, logical, etc.).
+    tf = isa(var_spec, 'scidb.BaseVariable') ...
+      || isa(var_spec, 'scidb.Fixed') ...
+      || isa(var_spec, 'scidb.PathInput');
+end
+
 
 function [meta_args, opts] = split_options(varargin)
 %SPLIT_OPTIONS  Separate known option flags from metadata name-value pairs.
@@ -316,8 +362,10 @@ function s = format_inputs(inputs, input_names)
             end
             parts{i} = sprintf('%s: Fixed(%s, %s)', input_names{i}, ...
                 class(var_spec.var_type), strjoin(fixed_parts, ', '));
-        else
+        elseif is_loadable(var_spec)
             parts{i} = sprintf('%s: %s', input_names{i}, class(var_spec));
+        else
+            parts{i} = sprintf('%s: %s', input_names{i}, format_value(var_spec));
         end
     end
     s = ['{' strjoin(parts, ', ') '}'];
@@ -331,6 +379,24 @@ function s = format_outputs(outputs)
         parts{i} = class(outputs{i});
     end
     s = strjoin(parts, ', ');
+end
+
+
+function s = format_value(val)
+%FORMAT_VALUE  Format a constant value for display.
+    if isnumeric(val)
+        s = sprintf('%g', val);
+    elseif islogical(val)
+        if val
+            s = 'true';
+        else
+            s = 'false';
+        end
+    elseif ischar(val) || isstring(val)
+        s = sprintf('''%s''', string(val));
+    else
+        s = mat2str(val);
+    end
 end
 
 
@@ -360,7 +426,7 @@ end
 
 
 function print_dry_run_iteration(inputs, input_names, outputs, ...
-    metadata, meta_keys, metadata_str, pass_metadata)
+    metadata, meta_keys, metadata_str, constant_nv, pass_metadata)
 %PRINT_DRY_RUN_ITERATION  Show what would happen for one iteration.
     fprintf('[dry-run] %s:\n', metadata_str);
 
@@ -373,30 +439,62 @@ function print_dry_run_iteration(inputs, input_names, outputs, ...
                 load_meta.(fields{f}) = var_spec.fixed_metadata.(fields{f});
             end
             type_name = class(var_spec.var_type);
-        else
-            load_meta = metadata;
-            type_name = class(var_spec);
-        end
 
-        load_fields = fieldnames(load_meta);
-        load_parts = cell(1, numel(load_fields));
-        for f = 1:numel(load_fields)
-            val = load_meta.(load_fields{f});
-            if isnumeric(val)
-                load_parts{f} = sprintf('%s=%g', load_fields{f}, val);
-            else
-                load_parts{f} = sprintf('%s=%s', load_fields{f}, string(val));
+            load_fields = fieldnames(load_meta);
+            load_parts = cell(1, numel(load_fields));
+            for f = 1:numel(load_fields)
+                val = load_meta.(load_fields{f});
+                if isnumeric(val)
+                    load_parts{f} = sprintf('%s=%g', load_fields{f}, val);
+                else
+                    load_parts{f} = sprintf('%s=%s', load_fields{f}, string(val));
+                end
             end
+            fprintf('  load %s = %s().load(%s)\n', input_names{p}, ...
+                type_name, strjoin(load_parts, ', '));
+        elseif is_loadable(var_spec)
+            type_name = class(var_spec);
+
+            load_fields = fieldnames(metadata);
+            load_parts = cell(1, numel(load_fields));
+            for f = 1:numel(load_fields)
+                val = metadata.(load_fields{f});
+                if isnumeric(val)
+                    load_parts{f} = sprintf('%s=%g', load_fields{f}, val);
+                else
+                    load_parts{f} = sprintf('%s=%s', load_fields{f}, string(val));
+                end
+            end
+            fprintf('  load %s = %s().load(%s)\n', input_names{p}, ...
+                type_name, strjoin(load_parts, ', '));
+        else
+            fprintf('  constant %s = %s\n', input_names{p}, ...
+                format_value(var_spec));
         end
-        fprintf('  load %s = %s().load(%s)\n', input_names{p}, ...
-            type_name, strjoin(load_parts, ', '));
     end
 
     if pass_metadata
         fprintf('  pass metadata: %s\n', metadata_str);
     end
 
+    % Build save metadata string (iteration metadata + constants)
+    save_parts = {};
+    load_fields = fieldnames(metadata);
+    for f = 1:numel(load_fields)
+        val = metadata.(load_fields{f});
+        if isnumeric(val)
+            save_parts{end+1} = sprintf('%s=%g', load_fields{f}, val); %#ok<AGROW>
+        else
+            save_parts{end+1} = sprintf('%s=%s', load_fields{f}, string(val)); %#ok<AGROW>
+        end
+    end
+    for i = 1:2:numel(constant_nv)
+        save_parts{end+1} = sprintf('%s=%s', constant_nv{i}, ...
+            format_value(constant_nv{i+1})); %#ok<AGROW>
+    end
+    save_metadata_str = strjoin(save_parts, ', ');
+
     for o = 1:numel(outputs)
-        fprintf('  save %s().save(..., %s)\n', class(outputs{o}), metadata_str);
+        fprintf('  save %s().save(..., %s)\n', class(outputs{o}), save_metadata_str);
     end
 end

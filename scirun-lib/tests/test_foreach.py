@@ -85,7 +85,7 @@ class TestForEachBasic:
         """Should execute once for single value."""
 
         def process(x):
-            return x.data + "_processed"
+            return x + "_processed"
 
         for_each(
             process,
@@ -118,7 +118,7 @@ class TestForEachBasic:
         """Should load multiple inputs."""
 
         def process(a, b):
-            return f"{a.data}_{b.data}"
+            return f"{a}_{b}"
 
         for_each(
             process,
@@ -326,4 +326,161 @@ class TestForEachOutput:
         assert MockOutput.saved_data[0]["metadata"] == {
             "subject": 42,
             "session": "XYZ",
+        }
+
+
+class TestForEachWithConstants:
+    """Tests for constant values in inputs dict."""
+
+    def test_constant_passed_to_function(self):
+        """Constants should be passed as kwargs to the function."""
+        received_args = {}
+
+        def process(x, smoothing):
+            received_args["x"] = x
+            received_args["smoothing"] = smoothing
+            return "result"
+
+        for_each(
+            process,
+            inputs={"x": MockVariableA, "smoothing": 0.2},
+            outputs=[MockOutput],
+            subject=[1],
+        )
+
+        assert received_args["smoothing"] == 0.2
+        assert len(MockOutput.saved_data) == 1
+
+    def test_constant_saved_as_metadata(self):
+        """Constants should be included in save metadata as version keys."""
+
+        def process(x, smoothing):
+            return "result"
+
+        for_each(
+            process,
+            inputs={"x": MockVariableA, "smoothing": 0.2},
+            outputs=[MockOutput],
+            subject=[1],
+        )
+
+        assert MockOutput.saved_data[0]["metadata"] == {
+            "subject": 1,
+            "smoothing": 0.2,
+        }
+
+    def test_constant_with_variable_inputs(self):
+        """Constants and variable inputs should work together."""
+        received_args = {}
+
+        def process(a, b, threshold):
+            received_args["a"] = a
+            received_args["b"] = b
+            received_args["threshold"] = threshold
+            return "result"
+
+        for_each(
+            process,
+            inputs={"a": MockVariableA, "b": MockVariableB, "threshold": 10},
+            outputs=[MockOutput],
+            subject=[1, 2],
+        )
+
+        # 2 iterations, both should have threshold in metadata
+        assert len(MockOutput.saved_data) == 2
+        assert MockOutput.saved_data[0]["metadata"] == {"subject": 1, "threshold": 10}
+        assert MockOutput.saved_data[1]["metadata"] == {"subject": 2, "threshold": 10}
+        assert received_args["threshold"] == 10
+
+    def test_multiple_constants(self):
+        """Multiple constants should all be passed and saved."""
+
+        def process(x, low_hz, high_hz, method):
+            return f"{low_hz}-{high_hz}-{method}"
+
+        for_each(
+            process,
+            inputs={
+                "x": MockVariableA,
+                "low_hz": 20,
+                "high_hz": 450,
+                "method": "bandpass",
+            },
+            outputs=[MockOutput],
+            subject=[1],
+        )
+
+        assert MockOutput.saved_data[0]["data"] == "20-450-bandpass"
+        assert MockOutput.saved_data[0]["metadata"] == {
+            "subject": 1,
+            "low_hz": 20,
+            "high_hz": 450,
+            "method": "bandpass",
+        }
+
+    def test_constant_not_loaded(self):
+        """Constants should not trigger .load() calls."""
+        load_count = [0]
+
+        class CountingVariable:
+            @classmethod
+            def load(cls, **metadata):
+                load_count[0] += 1
+                return MockVariableA(f"data_{metadata}")
+
+        def process(x, factor):
+            return "result"
+
+        for_each(
+            process,
+            inputs={"x": CountingVariable, "factor": 2.5},
+            outputs=[MockOutput],
+            subject=[1],
+        )
+
+        # Only the variable should trigger a load, not the constant
+        assert load_count[0] == 1
+
+    def test_constant_in_dry_run(self, capsys):
+        """Dry run should display constants correctly."""
+
+        def my_func(x, smoothing):
+            return x
+
+        for_each(
+            my_func,
+            inputs={"x": MockVariableA, "smoothing": 0.2},
+            outputs=[MockOutput],
+            dry_run=True,
+            subject=[1],
+        )
+
+        captured = capsys.readouterr()
+        assert "constant smoothing = 0.2" in captured.out
+        assert "smoothing=0.2" in captured.out  # in save line
+        assert "MockVariableA" in captured.out
+
+    def test_constant_with_fixed(self):
+        """Constants should work alongside Fixed inputs."""
+
+        def process(baseline, current, threshold):
+            return "result"
+
+        for_each(
+            process,
+            inputs={
+                "baseline": Fixed(MockVariableA, session="BL"),
+                "current": MockVariableB,
+                "threshold": 5.0,
+            },
+            outputs=[MockOutput],
+            subject=[1],
+            session=["A"],
+        )
+
+        assert len(MockOutput.saved_data) == 1
+        assert MockOutput.saved_data[0]["metadata"] == {
+            "subject": 1,
+            "session": "A",
+            "threshold": 5.0,
         }
