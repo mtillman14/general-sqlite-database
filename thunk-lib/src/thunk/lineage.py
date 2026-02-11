@@ -165,7 +165,7 @@ def find_unsaved_variables(
                 traverse(value, input_path, depth - 1)
 
         elif is_trackable_variable(thunk_or_var):
-            record_id = getattr(thunk_or_var, "_record_id", None) or getattr(thunk_or_var, "record_id", None)
+            record_id = getattr(thunk_or_var, "record_id", None)
             if record_id is None:
                 # Found an unsaved variable
                 unsaved.append((thunk_or_var, path))

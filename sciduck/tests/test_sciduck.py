@@ -256,19 +256,12 @@ class TestVersioning:
         versions = duck.list_versions("versioned")
         assert len(versions) == 2
 
-    def test_duplicate_hash_skips_save(self, duck):
-        """Saving identical data should return existing version_id."""
+    def test_saving_same_data_creates_new_version(self, duck):
+        """Saving identical data creates a new version (no hash dedup)."""
         v1 = duck.save("dedup", 42, subject="S01", session="A", trial="1")
         v2 = duck.save("dedup", 42, subject="S01", session="A", trial="1")
 
-        assert v1 == v2  # Same version returned
-
-    def test_force_overrides_dedup(self, duck):
-        """force=True should save even if hash matches."""
-        v1 = duck.save("forced", 42, subject="S01", session="A", trial="1")
-        v2 = duck.save("forced", 42, subject="S01", session="A", trial="1", force=True)
-
-        assert v2 == v1 + 1  # New version created
+        assert v2 == v1 + 1  # New version created each time
 
 
 # ---------------------------------------------------------------------------

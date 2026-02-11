@@ -112,7 +112,7 @@ def is_trackable_variable(obj: Any) -> bool:
     """
     return (
         hasattr(obj, "data")
-        and hasattr(obj, "_record_id")
+        and hasattr(obj, "record_id")
         and hasattr(obj, "to_db")
         and hasattr(obj, "from_db")
     )
@@ -147,13 +147,13 @@ def classify_input(name: str, value: Any) -> ClassifiedInput:
 
     if is_trackable_variable(value):
         # Input is a trackable variable (e.g., scidb BaseVariable)
-        record_id = getattr(value, "_record_id", None) or getattr(value, "record_id", None)
-        metadata = getattr(value, "_metadata", None) or getattr(value, "metadata", None)
+        record_id = getattr(value, "record_id", None)
+        metadata = getattr(value, "metadata", None)
         type_name = type(value).__name__
 
         if record_id is not None:
-            lineage_hash = getattr(value, "_lineage_hash", None) or getattr(value, "lineage_hash", None)
-            content_hash = getattr(value, "_content_hash", None) or getattr(value, "content_hash", None)
+            lineage_hash = getattr(value, "lineage_hash", None)
+            content_hash = getattr(value, "content_hash", None)
 
             if lineage_hash is not None:
                 # Variable was produced by a thunk — classify it the same way

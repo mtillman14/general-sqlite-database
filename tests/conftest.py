@@ -24,12 +24,9 @@ from scidb.database import _local
 from scidb.thunk import Thunk
 
 
-# Default schema keys for testing - covers common test metadata patterns
-DEFAULT_TEST_SCHEMA_KEYS = [
-    "subject", "trial", "experiment", "name", "sensor", "condition",
-    "channel", "session", "category", "key", "group", "item", "stage",
-    "half", "version", "stat_type", "processing"
-]
+# Default schema keys for testing - defines the hierarchical dataset structure.
+# Keys not in this list are treated as version parameters (e.g. stage, type, dtype).
+DEFAULT_TEST_SCHEMA_KEYS = ["subject", "trial"]
 
 
 @pytest.fixture

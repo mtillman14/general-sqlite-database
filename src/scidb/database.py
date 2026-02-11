@@ -27,7 +27,7 @@ _project_root = Path(__file__).parent.parent.parent
 sys.path.insert(0, str(_project_root / "sciduck" / "src"))
 sys.path.insert(0, str(_project_root / "pipelinedb-lib" / "src"))
 
-from sciduck import SciDuck, _infer_duckdb_type, _python_to_storage, _storage_to_python
+from sciduck import SciDuck, _infer_duckdb_type, _python_to_storage
 from pipelinedb import PipelineDB
 
 
@@ -161,6 +161,12 @@ class DatabaseManager:
 
         self.dataset_db_path = Path(dataset_db_path)
         self.lineage_mode = lineage_mode
+
+        if isinstance(dataset_schema_keys, (set, frozenset)):
+            raise TypeError(
+                "dataset_schema_keys must be an ordered sequence (list or tuple), "
+                "not a set. Schema key order defines the dataset hierarchy."
+            )
         self.dataset_schema_keys = list(dataset_schema_keys)
         self.pipeline_db_path = Path(pipeline_db_path)
         self._registered_types: dict[str, Type[BaseVariable]] = {}
@@ -173,6 +179,7 @@ class DatabaseManager:
 
         # Create metadata tables for type registration (in DuckDB)
         self._ensure_meta_tables()
+        self._ensure_record_metadata_table()
 
         self._closed = False # Track connection open/closed state
 
@@ -187,6 +194,22 @@ class DatabaseManager:
                 table_name VARCHAR NOT NULL,
                 schema_version INTEGER NOT NULL,
                 registered_at TIMESTAMP DEFAULT current_timestamp
+            )
+        """)
+
+    def _ensure_record_metadata_table(self):
+        """Create the _record_metadata side table for record-level metadata."""
+        self._duck._execute("""
+            CREATE TABLE IF NOT EXISTS _record_metadata (
+                record_id VARCHAR PRIMARY KEY,
+                variable_name VARCHAR NOT NULL,
+                version_id INTEGER NOT NULL,
+                schema_id INTEGER NOT NULL,
+                content_hash VARCHAR,
+                lineage_hash VARCHAR,
+                schema_version INTEGER,
+                user_id VARCHAR,
+                created_at VARCHAR NOT NULL
             )
         """)
 
@@ -205,117 +228,459 @@ class DatabaseManager:
                 version[key] = value
         return {"schema": schema, "version": version}
 
-    def _flatten_metadata(self, nested_metadata: dict) -> dict:
-        """Flatten nested schema/version metadata back to flat dict."""
-        flat = {}
-        flat.update(nested_metadata.get("schema", {}))
-        flat.update(nested_metadata.get("version", {}))
-        return flat
+    def _infer_schema_level(self, schema_keys: dict) -> str | None:
+        """
+        Infer the schema level from contiguous keys starting at the top.
 
-    def _save_dataframe(self, table_name: str, df: pd.DataFrame) -> None:
-        """Save a DataFrame directly to DuckDB, creating the table if needed."""
-        # Check if table exists
-        exists = self._duck._fetchall(
-            "SELECT 1 FROM information_schema.tables WHERE table_name = ?",
-            [table_name],
+        Walks dataset_schema_keys top-down. Returns the deepest key where all
+        keys from the top are contiguously present.
+
+        Returns None if no schema keys are provided.
+
+        Raises ValueError if schema keys are non-contiguous (e.g. providing
+        "subject" and "stage" but not "trial" when the hierarchy is
+        ["subject", "trial", "stage"]).
+        """
+        if not schema_keys:
+            return None
+
+        level = None
+        found_gap = False
+        for key in self.dataset_schema_keys:
+            if key in schema_keys:
+                if found_gap:
+                    # Determine the expected keys for a helpful error message
+                    level_idx = self.dataset_schema_keys.index(key)
+                    missing = [
+                        k for k in self.dataset_schema_keys[:level_idx]
+                        if k not in schema_keys
+                    ]
+                    raise ValueError(
+                        f"Non-contiguous schema keys: '{key}' was provided but "
+                        f"{missing} are missing. Schema keys must be provided "
+                        f"as a contiguous prefix of the hierarchy: "
+                        f"{self.dataset_schema_keys}"
+                    )
+                level = key
+            else:
+                if level is not None:
+                    found_gap = True
+        return level
+
+    def _save_record_metadata(
+        self,
+        record_id: str,
+        variable_name: str,
+        version_id: int,
+        schema_id: int,
+        content_hash: str,
+        lineage_hash: str | None,
+        schema_version: int,
+        user_id: str | None,
+        created_at: str,
+    ) -> None:
+        """Insert a record into _record_metadata. Idempotent via ON CONFLICT DO NOTHING."""
+        self._duck._execute(
+            """
+            INSERT INTO _record_metadata (
+                record_id, variable_name, version_id, schema_id,
+                content_hash, lineage_hash, schema_version,
+                user_id, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT (record_id) DO NOTHING
+            """,
+            [
+                record_id, variable_name, version_id, schema_id,
+                content_hash, lineage_hash, schema_version,
+                user_id, created_at,
+            ],
         )
 
-        if not exists:
-            # Create table from DataFrame schema
-            self._duck.con.execute(
-                f'CREATE TABLE "{table_name}" AS SELECT * FROM df WHERE 1=0'
+    def _save_custom_to_sciduck(
+        self,
+        table_name: str,
+        df: pd.DataFrame,
+        schema_level: str | None,
+        schema_keys: dict,
+        content_hash: str,
+        version_keys: dict | None = None,
+    ) -> tuple[int, int]:
+        """
+        Save a custom-serialized DataFrame into SciDuck's table format.
+
+        Creates a table with schema_id, version_id, and data columns.
+        Registers in _variables with dtype = {"custom": True}.
+
+        Returns (version_id, schema_id).
+        """
+        schema_id = (
+            self._duck._get_or_create_schema_id(schema_level, schema_keys)
+            if schema_level is not None and schema_keys
+            else 0
+        )
+
+        # Next version scoped to this schema entry (not global)
+        if self._duck._table_exists(table_name):
+            rows = self._duck._fetchall(
+                f'SELECT COALESCE(MAX(version_id), 0) FROM "{table_name}" WHERE schema_id = ?',
+                [schema_id]
+            )
+            version_id = rows[0][0] + 1
+        else:
+            version_id = 1
+
+        # Ensure table exists with SciDuck-compatible schema
+        if not self._duck._table_exists(table_name):
+            # Infer column types from DataFrame
+            col_defs = []
+            for col in df.columns:
+                # Map pandas dtypes to DuckDB types
+                dtype = df[col].dtype
+                if pd.api.types.is_integer_dtype(dtype):
+                    ddb_type = "BIGINT"
+                elif pd.api.types.is_float_dtype(dtype):
+                    ddb_type = "DOUBLE"
+                elif pd.api.types.is_bool_dtype(dtype):
+                    ddb_type = "BOOLEAN"
+                else:
+                    ddb_type = "VARCHAR"
+                col_defs.append(f'"{col}" {ddb_type}')
+
+            data_cols_sql = ", ".join(col_defs)
+            self._duck._execute(f"""
+                CREATE TABLE "{table_name}" (
+                    schema_id INTEGER NOT NULL,
+                    version_id INTEGER NOT NULL,
+                    {data_cols_sql}
+                )
+            """)
+
+        # Insert all DataFrame rows with the same (schema_id, version_id)
+        for _, row in df.iterrows():
+            col_names = ["schema_id", "version_id"] + list(df.columns)
+            col_str = ", ".join(f'"{c}"' for c in col_names)
+            placeholders = ", ".join(["?"] * len(col_names))
+            values = [schema_id, version_id] + [
+                row[c].item() if hasattr(row[c], 'item') else row[c]
+                for c in df.columns
+            ]
+            self._duck._execute(
+                f'INSERT INTO "{table_name}" ({col_str}) VALUES ({placeholders})',
+                values,
             )
 
-        # Insert data
-        self._duck.con.execute(f'INSERT INTO "{table_name}" SELECT * FROM df')
+        # Register in _variables with custom dtype marker (skip if version exists
+        # from another schema entry — version_id is scoped per schema entry)
+        effective_level = schema_level or self.dataset_schema_keys[-1]
+        existing_var = self._duck._fetchall(
+            "SELECT 1 FROM _variables WHERE variable_name = ? AND version_id = ?",
+            [table_name, version_id],
+        )
+        if not existing_var:
+            self._duck._execute(
+                "INSERT INTO _variables (variable_name, version_id, schema_level, "
+                "dtype, version_keys, description) VALUES (?, ?, ?, ?, ?, ?)",
+                [table_name, version_id, effective_level,
+                 json.dumps({"custom": True}),
+                 json.dumps(version_keys or {}, sort_keys=True), ""],
+            )
 
-    def _load_dataframe(self, table_name: str, **filters) -> pd.DataFrame:
-        """Load a DataFrame from DuckDB with optional filters."""
-        if filters:
-            conditions = []
-            params = []
-            for key, value in filters.items():
-                conditions.append(f'"{key}" = ?')
-                params.append(value)
-            where_clause = " AND ".join(conditions)
-            query = f'SELECT * FROM "{table_name}" WHERE {where_clause}'
-            return self._duck.con.execute(query, params).fetchdf()
+        return version_id, schema_id
+
+    def _save_native_direct(
+        self,
+        table_name: str,
+        data: Any,
+        content_hash: str,
+        version_keys: dict | None = None,
+    ) -> tuple[int, int]:
+        """
+        Save native data directly without SciDuck's schema-aware save.
+
+        Used when schema keys are non-contiguous or absent. Creates a
+        SciDuck-compatible table with schema_id=0 and version_id.
+
+        Returns (version_id, schema_id=0).
+        """
+        version_id = self._duck._next_version(table_name)
+
+        ddb_type, col_meta = _infer_duckdb_type(data)
+        storage_value = _python_to_storage(data, col_meta)
+        dtype_meta = {"mode": "single_column", "columns": {"value": col_meta}}
+
+        # Ensure table exists
+        if not self._duck._table_exists(table_name):
+            self._duck._execute(f"""
+                CREATE TABLE "{table_name}" (
+                    schema_id INTEGER NOT NULL,
+                    version_id INTEGER NOT NULL,
+                    "value" {ddb_type}
+                )
+            """)
+
+        # Insert data
+        self._duck._execute(
+            f'INSERT INTO "{table_name}" ("schema_id", "version_id", "value") VALUES (?, ?, ?)',
+            [0, version_id, storage_value],
+        )
+
+        # Register in _variables
+        self._duck._execute(
+            "INSERT INTO _variables (variable_name, version_id, schema_level, "
+            "dtype, version_keys, description) VALUES (?, ?, ?, ?, ?, ?)",
+            [table_name, version_id, self.dataset_schema_keys[-1],
+             json.dumps(dtype_meta),
+             json.dumps(version_keys or {}, sort_keys=True), ""],
+        )
+
+        return version_id, 0
+
+    def _save_native_with_schema(
+        self,
+        table_name: str,
+        data: Any,
+        schema_level: str,
+        schema_keys: dict,
+        content_hash: str,
+        version_keys: dict | None = None,
+    ) -> tuple[int, int]:
+        """
+        Save native data at a specific schema location.
+
+        Like _save_native_direct but with schema-aware storage and
+        version_id scoped per schema entry rather than globally.
+
+        Returns (version_id, schema_id).
+        """
+        schema_id = self._duck._get_or_create_schema_id(
+            schema_level, {k: str(v) for k, v in schema_keys.items()}
+        )
+
+        # Next version scoped to this schema entry (not global)
+        if self._duck._table_exists(table_name):
+            rows = self._duck._fetchall(
+                f'SELECT COALESCE(MAX(version_id), 0) FROM "{table_name}" WHERE schema_id = ?',
+                [schema_id]
+            )
+            version_id = rows[0][0] + 1
         else:
-            return self._duck.con.execute(f'SELECT * FROM "{table_name}"').fetchdf()
+            version_id = 1
+
+        ddb_type, col_meta = _infer_duckdb_type(data)
+        storage_value = _python_to_storage(data, col_meta)
+        dtype_meta = {"mode": "single_column", "columns": {"value": col_meta}}
+
+        # Ensure table exists
+        if not self._duck._table_exists(table_name):
+            self._duck._execute(f"""
+                CREATE TABLE "{table_name}" (
+                    schema_id INTEGER NOT NULL,
+                    version_id INTEGER NOT NULL,
+                    "value" {ddb_type}
+                )
+            """)
+
+        # Insert data
+        self._duck._execute(
+            f'INSERT INTO "{table_name}" ("schema_id", "version_id", "value") VALUES (?, ?, ?)',
+            [schema_id, version_id, storage_value],
+        )
+
+        # Register in _variables (skip if this version already registered
+        # by another schema entry — version_id is scoped per schema entry)
+        existing_var = self._duck._fetchall(
+            "SELECT 1 FROM _variables WHERE variable_name = ? AND version_id = ?",
+            [table_name, version_id],
+        )
+        if not existing_var:
+            self._duck._execute(
+                "INSERT INTO _variables (variable_name, version_id, schema_level, "
+                "dtype, version_keys, description) VALUES (?, ?, ?, ?, ?, ?)",
+                [table_name, version_id, schema_level,
+                 json.dumps(dtype_meta),
+                 json.dumps(version_keys or {}, sort_keys=True), ""],
+            )
+
+        return version_id, schema_id
 
     @staticmethod
     def _has_custom_serialization(variable_class: type) -> bool:
         """Check if a BaseVariable subclass overrides to_db or from_db."""
         return "to_db" in variable_class.__dict__ or "from_db" in variable_class.__dict__
 
-    def _ensure_native_table(self, table_name: str, ddb_type: str) -> None:
-        """Create a table for native (SciDuck) storage if it doesn't exist."""
-        exists = self._duck._fetchall(
-            "SELECT 1 FROM information_schema.tables WHERE table_name = ?",
-            [table_name],
-        )
-        if exists:
-            return
-
-        schema_cols = ", ".join(
-            f'"{k}" VARCHAR' for k in self.dataset_schema_keys
-        )
-
-        self._duck._execute(f'''
-            CREATE TABLE "{table_name}" (
-                "value" {ddb_type},
-                "_dtype_meta" VARCHAR,
-                "_record_id" VARCHAR,
-                "_content_hash" VARCHAR,
-                "_lineage_hash" VARCHAR,
-                "_schema_version" INTEGER,
-                "_metadata" VARCHAR,
-                "_user_id" VARCHAR,
-                "_created_at" VARCHAR,
-                {schema_cols}
-            )
-        ''')
-
-    def _save_native_row(
+    def _find_record(
         self,
         table_name: str,
-        data: Any,
-        record_id: str,
-        content_hash: str,
-        lineage_hash: str | None,
-        schema_version: int,
-        nested_metadata: dict,
-        user_id: str | None,
-    ) -> None:
-        """Save a single row using SciDuck's native type conversion."""
-        ddb_type, col_meta = _infer_duckdb_type(data)
-        storage_value = _python_to_storage(data, col_meta)
-        dtype_meta_json = json.dumps(col_meta)
-        metadata_json = json.dumps(nested_metadata, sort_keys=True)
-        created_at = datetime.now().isoformat()
+        record_id: str | None = None,
+        nested_metadata: dict | None = None,
+    ) -> pd.DataFrame:
+        """
+        Query _record_metadata to find matching records.
 
-        self._ensure_native_table(table_name, ddb_type)
+        Supports two modes:
+        - By record_id: direct primary key lookup (with JOINs for full row data)
+        - By metadata: filter by schema keys via JOIN with _schema, optionally
+          filter by version_keys JSON from _variables, order by created_at DESC
 
-        col_names = [
-            "value", "_dtype_meta", "_record_id", "_content_hash", "_lineage_hash",
-            "_schema_version", "_metadata", "_user_id", "_created_at",
-        ]
-        values: list[Any] = [
-            storage_value, dtype_meta_json, record_id, content_hash, lineage_hash,
-            schema_version, metadata_json, user_id, created_at,
-        ]
-
-        for key, value in nested_metadata.get("schema", {}).items():
-            col_names.append(key)
-            values.append(value)
-
-        col_str = ", ".join(f'"{c}"' for c in col_names)
-        placeholders = ", ".join(["?"] * len(col_names))
-
-        self._duck._execute(
-            f'INSERT INTO "{table_name}" ({col_str}) VALUES ({placeholders})',
-            values,
+        Returns a DataFrame of matching rows including schema columns and version_keys.
+        """
+        # Build schema column SELECT list
+        schema_col_select = ", ".join(
+            f's."{col}"' for col in self.dataset_schema_keys
         )
+
+        if record_id is not None:
+            sql = (
+                f"SELECT rm.*, {schema_col_select}, v.version_keys "
+                f"FROM _record_metadata rm "
+                f"LEFT JOIN _schema s ON rm.schema_id = s.schema_id "
+                f"LEFT JOIN _variables v ON rm.variable_name = v.variable_name "
+                f"AND rm.version_id = v.version_id "
+                f"WHERE rm.record_id = ? AND rm.variable_name = ?"
+            )
+            return self._duck._fetchdf(sql, [record_id, table_name])
+
+        # By metadata
+        schema_keys = nested_metadata.get("schema", {}) if nested_metadata else {}
+        version_keys = nested_metadata.get("version", {}) if nested_metadata else {}
+
+        conditions = ["rm.variable_name = ?"]
+        params: list[Any] = [table_name]
+
+        # Filter schema keys via _schema columns in SQL
+        for key, value in schema_keys.items():
+            conditions.append(f's."{key}" = ?')
+            params.append(str(value))
+
+        where = " AND ".join(conditions)
+        sql = (
+            f"SELECT rm.*, {schema_col_select}, v.version_keys "
+            f"FROM _record_metadata rm "
+            f"LEFT JOIN _schema s ON rm.schema_id = s.schema_id "
+            f"LEFT JOIN _variables v ON rm.variable_name = v.variable_name "
+            f"AND rm.version_id = v.version_id "
+            f"WHERE {where} "
+            f"ORDER BY rm.created_at DESC"
+        )
+        df = self._duck._fetchdf(sql, params)
+
+        # Filter by version keys via Python-side JSON parsing
+        if version_keys and len(df) > 0:
+            for key, value in version_keys.items():
+                mask = df["version_keys"].apply(
+                    lambda vk, k=key, v=value: json.loads(vk).get(k) == v
+                    if vk is not None and isinstance(vk, str) else False
+                )
+                df = df[mask]
+
+        return df
+
+    def _reconstruct_metadata_from_row(self, row: pd.Series) -> tuple[dict, dict]:
+        """
+        Reconstruct flat and nested metadata from a JOINed row.
+
+        The row contains schema columns from _schema and version_keys from
+        _variables, which together form the complete metadata.
+
+        Returns (flat_metadata, nested_metadata).
+        """
+        schema = {}
+        for key in self.dataset_schema_keys:
+            if key in row.index:
+                val = row[key]
+                if val is not None and not (isinstance(val, float) and pd.isna(val)):
+                    schema[key] = str(val)
+
+        vk_raw = row.get("version_keys")
+        version = {}
+        if vk_raw is not None and isinstance(vk_raw, str):
+            version = json.loads(vk_raw)
+
+        nested_metadata = {"schema": schema, "version": version}
+        flat_metadata = {}
+        flat_metadata.update(schema)
+        flat_metadata.update(version)
+        return flat_metadata, nested_metadata
+
+    def _load_by_record_row(
+        self,
+        variable_class: type[BaseVariable],
+        row: pd.Series,
+        loc: Any = None,
+        iloc: Any = None,
+    ) -> BaseVariable:
+        """
+        Load a variable instance given a row from _record_metadata.
+
+        Determines native vs custom deserialization from _variables.dtype,
+        loads data from SciDuck, and constructs the BaseVariable instance.
+        """
+        table_name = row["variable_name"]
+        version_id = int(row["version_id"])
+        schema_id = int(row["schema_id"])
+        record_id = row["record_id"]
+        content_hash = row["content_hash"]
+        lineage_hash = row["lineage_hash"]
+        # Normalize NaN to None (DuckDB may return NaN for NULL in some contexts)
+        if lineage_hash is not None and not isinstance(lineage_hash, str):
+            lineage_hash = None
+        flat_metadata, nested_metadata = self._reconstruct_metadata_from_row(row)
+
+        # Get dtype from _variables to determine deserialization path
+        dtype_rows = self._duck._fetchall(
+            "SELECT dtype FROM _variables WHERE variable_name = ? AND version_id = ?",
+            [table_name, version_id],
+        )
+
+        if not dtype_rows:
+            raise NotFoundError(
+                f"No version {version_id} found for {table_name} in _variables"
+            )
+
+        dtype_meta = json.loads(dtype_rows[0][0])
+        is_custom = dtype_meta.get("custom", False)
+
+        if is_custom:
+            # Custom path: direct query by version_id and schema_id
+            df = self._duck._fetchdf(
+                f'SELECT * FROM "{table_name}" WHERE version_id = ? AND schema_id = ?',
+                [version_id, schema_id],
+            )
+            # Drop SciDuck internal columns
+            df = df.drop(columns=["schema_id", "version_id"], errors="ignore")
+
+            if loc is not None:
+                if not isinstance(loc, (list, range, slice)):
+                    loc = [loc]
+                df = df.loc[loc]
+            elif iloc is not None:
+                if not isinstance(iloc, (list, range, slice)):
+                    iloc = [iloc]
+                df = df.iloc[iloc]
+
+            data = variable_class.from_db(df)
+        else:
+            # Native path: use SciDuck.load() with version_id and raw=True
+            schema_keys = nested_metadata.get("schema", {})
+            schema_level = self._infer_schema_level(schema_keys)
+            if schema_level is not None and schema_keys:
+                data = self._duck.load(
+                    table_name, version_id=version_id, raw=True,
+                    **{k: str(v) for k, v in schema_keys.items()},
+                )
+            else:
+                # Non-contiguous or no schema — load directly
+                data = self._duck.load(
+                    table_name, version_id=version_id, raw=True,
+                )
+
+        instance = variable_class(data)
+        instance.record_id = record_id
+        instance.metadata = flat_metadata
+        instance.content_hash = content_hash
+        instance.lineage_hash = lineage_hash
+
+        return instance
 
     def register(self, variable_class: Type[BaseVariable]) -> None:
         """
@@ -540,6 +905,19 @@ class DatabaseManager:
             metadata=nested_metadata,
         )
 
+        # Idempotency: check if record already exists in _record_metadata
+        existing = self._duck._fetchall(
+            "SELECT 1 FROM _record_metadata WHERE record_id = ?",
+            [record_id],
+        )
+        if existing:
+            return record_id
+
+        schema_keys = nested_metadata.get("schema", {})
+        version_keys = nested_metadata.get("version", {})
+        schema_level = self._infer_schema_level(schema_keys)
+        created_at = datetime.now().isoformat()
+
         if self._has_custom_serialization(type(variable)):
             # Custom serialization: user provides to_db() → DataFrame
             df = variable.to_db()
@@ -553,24 +931,36 @@ class DatabaseManager:
                     )
                 df.index = index
 
-            df["_record_id"] = record_id
-            df["_content_hash"] = content_hash
-            df["_lineage_hash"] = lineage_hash
-            df["_schema_version"] = variable.schema_version
-            df["_metadata"] = json.dumps(nested_metadata, sort_keys=True)
-            df["_user_id"] = user_id
-            df["_created_at"] = datetime.now().isoformat()
-
-            for key, value in nested_metadata.get("schema", {}).items():
-                df[key] = value
-
-            self._save_dataframe(table_name, df)
-        else:
-            # Native storage: SciDuck handles type conversion
-            self._save_native_row(
-                table_name, variable.data, record_id, content_hash,
-                lineage_hash, variable.schema_version, nested_metadata, user_id,
+            version_id, schema_id = self._save_custom_to_sciduck(
+                table_name, df, schema_level, schema_keys, content_hash,
+                version_keys=version_keys,
             )
+        else:
+            # Native storage
+            if schema_level is not None and schema_keys:
+                # Contiguous keys — save with schema-scoped version_id
+                version_id, schema_id = self._save_native_with_schema(
+                    table_name, variable.data, schema_level, schema_keys, content_hash,
+                    version_keys=version_keys,
+                )
+            else:
+                # No schema or non-contiguous keys — direct insert
+                version_id, schema_id = self._save_native_direct(
+                    table_name, variable.data, content_hash,
+                    version_keys=version_keys,
+                )
+
+        self._save_record_metadata(
+            record_id=record_id,
+            variable_name=table_name,
+            version_id=version_id,
+            schema_id=schema_id,
+            content_hash=content_hash,
+            lineage_hash=lineage_hash,
+            schema_version=variable.schema_version,
+            user_id=user_id,
+            created_at=created_at,
+        )
 
         # Save lineage if provided
         if lineage is not None:
@@ -651,36 +1041,24 @@ class DatabaseManager:
         table_name = self._ensure_registered(variable_class, auto_register=True)
 
         try:
-            # Build query
             if version != "latest" and version is not None:
                 # Load by specific record_id
-                df = self._load_dataframe(table_name, _record_id=version)
-                if len(df) == 0:
+                records = self._find_record(table_name, record_id=version)
+                if len(records) == 0:
                     raise NotFoundError(f"No data found with record_id '{version}'")
             else:
                 # Load by metadata
-                split = self._split_metadata(metadata)
-                schema_filter = split["schema"]
-
-                df = self._load_dataframe(table_name, **schema_filter)
-
-                # Further filter by version keys if provided
-                version_filter = split["version"]
-                if version_filter:
-                    for key, value in version_filter.items():
-                        # Filter on _metadata JSON column
-                        mask = df["_metadata"].apply(
-                            lambda m: json.loads(m).get("version", {}).get(key) == value
-                        )
-                        df = df[mask]
-
-                if len(df) == 0:
+                nested_metadata = self._split_metadata(metadata)
+                records = self._find_record(table_name, nested_metadata=nested_metadata)
+                if len(records) == 0:
                     raise NotFoundError(
                         f"No {variable_class.__name__} found matching metadata: {metadata}"
                     )
 
-                # Get latest by created_at
-                df = df.sort_values("_created_at", ascending=False).head(1)
+            # Take the first (latest) record
+            row = records.iloc[0]
+        except NotFoundError:
+            raise
         except Exception as e:
             if "does not exist" in str(e).lower() or "not found" in str(e).lower():
                 raise NotFoundError(
@@ -688,63 +1066,7 @@ class DatabaseManager:
                 )
             raise
 
-        return self._df_to_variable(variable_class, df, loc=loc, iloc=iloc)
-
-    def _df_to_variable(
-        self,
-        variable_class: Type[BaseVariable],
-        df: pd.DataFrame,
-        loc: Any = None,
-        iloc: Any = None,
-    ) -> BaseVariable:
-        """Convert a DataFrame row to a variable instance."""
-        # Extract metadata columns
-        record_id = df["_record_id"].iloc[0]
-        content_hash = df["_content_hash"].iloc[0]
-        lineage_hash = df["_lineage_hash"].iloc[0] if "_lineage_hash" in df.columns else None
-        metadata_json = df["_metadata"].iloc[0]
-        nested_metadata = json.loads(metadata_json)
-        flat_metadata = self._flatten_metadata(nested_metadata)
-
-        # Determine deserialization path from stored data
-        use_native = (
-            "_dtype_meta" in df.columns
-            and df["_dtype_meta"].iloc[0] is not None
-            and pd.notna(df["_dtype_meta"].iloc[0])
-        )
-
-        if use_native:
-            # Native path: SciDuck handles type restoration
-            col_meta = json.loads(df["_dtype_meta"].iloc[0])
-            raw_value = df["value"].iloc[0]
-            data = _storage_to_python(raw_value, col_meta)
-        else:
-            # Custom path: use from_db()
-            internal_cols = [
-                "_record_id", "_content_hash", "_lineage_hash",
-                "_schema_version", "_metadata", "_user_id", "_created_at",
-                "_dtype_meta",
-            ] + self.dataset_schema_keys
-            data_df = df.drop(columns=[c for c in internal_cols if c in df.columns], errors="ignore")
-
-            if loc is not None:
-                if not isinstance(loc, (list, range, slice)):
-                    loc = [loc]
-                data_df = data_df.loc[loc]
-            elif iloc is not None:
-                if not isinstance(iloc, (list, range, slice)):
-                    iloc = [iloc]
-                data_df = data_df.iloc[iloc]
-
-            data = variable_class.from_db(data_df)
-
-        instance = variable_class(data)
-        instance.record_id = record_id
-        instance.metadata = flat_metadata
-        instance.content_hash = content_hash
-        instance.lineage_hash = lineage_hash
-
-        return instance
+        return self._load_by_record_row(variable_class, row, loc=loc, iloc=iloc)
 
     def load_all(
         self,
@@ -762,28 +1084,15 @@ class DatabaseManager:
             BaseVariable instances matching the metadata
         """
         table_name = self._ensure_registered(variable_class, auto_register=True)
-
-        split = self._split_metadata(metadata)
-        schema_filter = split["schema"]
+        nested_metadata = self._split_metadata(metadata)
 
         try:
-            df = self._load_dataframe(table_name, **schema_filter)
+            records = self._find_record(table_name, nested_metadata=nested_metadata)
         except Exception:
             return  # No data
 
-        # Further filter by version keys if provided
-        version_filter = split["version"]
-        if version_filter:
-            for key, value in version_filter.items():
-                mask = df["_metadata"].apply(
-                    lambda m: json.loads(m).get("version", {}).get(key) == value
-                )
-                df = df[mask]
-
-        # Yield each unique record_id
-        for record_id in df["_record_id"].unique():
-            record_df = df[df["_record_id"] == record_id]
-            yield self._df_to_variable(variable_class, record_df)
+        for _, row in records.iterrows():
+            yield self._load_by_record_row(variable_class, row)
 
     def list_versions(
         self,
@@ -801,23 +1110,21 @@ class DatabaseManager:
             List of dicts with record_id, schema, version, created_at
         """
         table_name = self._ensure_registered(variable_class, auto_register=True)
-
-        split = self._split_metadata(metadata)
-        schema_filter = split["schema"]
+        nested_metadata = self._split_metadata(metadata)
 
         try:
-            df = self._load_dataframe(table_name, **schema_filter)
+            records = self._find_record(table_name, nested_metadata=nested_metadata)
         except Exception:
             return []
 
         results = []
-        for _, row in df.iterrows():
-            nested_metadata = json.loads(row["_metadata"])
+        for _, row in records.iterrows():
+            _, nested = self._reconstruct_metadata_from_row(row)
             results.append({
-                "record_id": row["_record_id"],
-                "schema": nested_metadata.get("schema", {}),
-                "version": nested_metadata.get("version", {}),
-                "created_at": row["_created_at"],
+                "record_id": row["record_id"],
+                "schema": nested.get("schema", {}),
+                "version": nested.get("version", {}),
+                "created_at": row["created_at"],
             })
 
         # Sort by created_at descending

@@ -15,7 +15,6 @@ import duckdb
 import pandas as pd
 import numpy as np
 import json
-import hashlib
 import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple, Union
@@ -335,7 +334,7 @@ class SciDuck:
                 version_id INTEGER NOT NULL,
                 schema_level VARCHAR NOT NULL,
                 dtype VARCHAR,
-                data_hash VARCHAR,
+                version_keys VARCHAR DEFAULT '{}',
                 created_at TIMESTAMP DEFAULT current_timestamp,
                 description VARCHAR DEFAULT '',
                 PRIMARY KEY (variable_name, version_id)
@@ -412,39 +411,6 @@ class SciDuck:
         return new_id
 
     # ------------------------------------------------------------------
-    # Hashing
-    # ------------------------------------------------------------------
-
-    @staticmethod
-    def _hash_value(value: Any) -> bytes:
-        """Return a canonical byte representation of a single value for hashing."""
-        if isinstance(value, np.ndarray):
-            # Contiguous byte buffer — fast and deterministic
-            return value.tobytes()
-        if isinstance(value, (int, float, bool, str)):
-            return repr(value).encode()
-        if isinstance(value, (list, dict)):
-            return json.dumps(value, sort_keys=True, default=str).encode()
-        # Fallback
-        return repr(value).encode()
-
-    def _compute_hash(self, entries: List[Tuple[dict, Any]]) -> str:
-        """
-        Compute a SHA-256 hash over all entries (schema keys + data values).
-
-        The hash covers both the schema keys and the data so that saving
-        the same data to different schema entries produces a different hash.
-        """
-        h = hashlib.sha256()
-        for key_dict, value in entries:
-            # Hash the schema keys (sorted for determinism)
-            for k in sorted(key_dict.keys()):
-                h.update(f"{k}={key_dict[k]}".encode())
-            # Hash the data value
-            h.update(self._hash_value(value))
-        return h.hexdigest()
-
-    # ------------------------------------------------------------------
     # Save
     # ------------------------------------------------------------------
 
@@ -477,8 +443,8 @@ class SciDuck:
         description : str
             Optional description for this version.
         force : bool
-            If False (default), skip saving when the data hash matches the
-            latest version.  Set True to save a new version regardless.
+            Deprecated, kept for backward compatibility. Previously controlled
+            hash-based deduplication which has been removed.
         **schema_keys
             Keyword arguments specifying the schema entry for Mode B.
             e.g. subject="S01", session=1, trial=3.
@@ -487,8 +453,7 @@ class SciDuck:
         Returns
         -------
         int
-            The version_id that was saved (or the existing version_id if
-            the save was skipped due to duplicate hash).
+            The version_id that was saved.
         """
         if schema_level is None:
             schema_level = self.dataset_schema[-1]
@@ -536,19 +501,6 @@ class SciDuck:
                 "  (C) a dict mapping tuples to values."
             )
 
-        # --- Compute hash and check for duplicates ---
-        data_hash = self._compute_hash(entries)
-
-        if not force and version_id is None:
-            # Check if the latest version has the same hash
-            existing = self._fetchall(
-                "SELECT version_id, data_hash FROM _variables "
-                "WHERE variable_name = ? ORDER BY version_id DESC LIMIT 1",
-                [name],
-            )
-            if existing and existing[0][1] == data_hash:
-                return existing[0][0]  # Return existing version_id, skip save
-
         # --- Resolve version ---
         if version_id is None:
             version_id = self._next_version(name)
@@ -576,8 +528,8 @@ class SciDuck:
         # --- Register in _variables ---
         self._execute(
             "INSERT INTO _variables (variable_name, version_id, schema_level, "
-            "dtype, data_hash, description) VALUES (?, ?, ?, ?, ?, ?)",
-            [name, version_id, schema_level, json.dumps(dtype_meta), data_hash,
+            "dtype, description) VALUES (?, ?, ?, ?, ?)",
+            [name, version_id, schema_level, json.dumps(dtype_meta),
              description],
         )
 
@@ -815,7 +767,7 @@ class SciDuck:
         List all versions of a variable.
         """
         return self._fetchdf(
-            "SELECT version_id, schema_level, data_hash, created_at, description "
+            "SELECT version_id, schema_level, version_keys, created_at, description "
             "FROM _variables WHERE variable_name = ? "
             "ORDER BY version_id",
             [name],
