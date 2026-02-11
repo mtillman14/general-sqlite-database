@@ -1,6 +1,6 @@
 # SciDB
 
-**So you can focus on the science, not data management.**
+## Better Research Tools, Better Research Outcomes
 
 SciDB is a database framework purpose-built for scientific data analysis. It gives you a structured, versioned, and queryable home for every piece of data your pipeline produces — from raw signals to final results — with near zero infrastructure code on your part, and **zero changes to your analysis code**.
 
@@ -12,13 +12,15 @@ Every scientist who writes analysis code eventually builds the same thing: a tan
 
 That infrastructure code is never the point. But it eats weeks of your time, it's fragile, and it's different in every lab.
 
+**Scientists want to focus on the science, not data management.**
+
 SciDB replaces all of it with three ideas:
 
 - **Named variable types** — instead of files on disk, your data lives in typed database tables you can query by metadata
 - **Automatic lineage** — a simple decorator records exactly what function and inputs produced each result
 - **Computation caching** — if you've already computed something, SciDB knows and skips it
 
-The result: your analysis scripts contain _only_ analysis logic. The infrastructure is handled for you.
+With SciDB, your analysis scripts contain _only_ analysis logic. The infrastructure is handled for you.
 
 ## Quick Start
 
@@ -38,7 +40,7 @@ Every project starts by configuring a database. You do this once.
 from scidb import configure_database
 
 db = configure_database(
-    "my_experiment.duckdb",                       # Where your data is stored
+    "my_experiment_data.duckdb",                  # Where your data is stored
     dataset_schema_keys=["subject", "session"],   # How your dataset is organized
     pipeline_db_path="pipeline.db",               # Where lineage is tracked
 )
@@ -80,7 +82,9 @@ print(raw.data)  # your numpy array
 
 ### Track Lineage Automatically
 
-Which function created that variable? Were the most recent settings used? Wrap your analysis functions with `@thunk` and SciDB records what produced what **and the input variable values** — automatically:
+Which function created that variable? Were the most recent settings used the last time I ran this?
+
+Wrap your analysis functions with `@thunk` and SciDB records which functions produced what **and the input variable values** — automatically:
 
 ```python
 from scidb import thunk
@@ -109,7 +113,16 @@ print(provenance["function_name"])  # "bandpass_filter"
 print(provenance["constants"])      # {"low_hz": 20, "high_hz": 450}
 ```
 
-Your functions stay clean. They receive normal numpy arrays and return normal values. The `@thunk` decorator handles all the bookkeeping at the boundary.
+Your functions stay clean, no boilerplate required. They receive normal numpy arrays and return normal values. The `@thunk` decorator handles all the bookkeeping at the boundary.
+
+If the `@thunk` decorator is still too close to your code for your test, wrap it in a `Thunk()` call later on:
+
+```python
+
+from scidb.thunk import Thunk
+
+compute_max = Thunk(compute_max)
+```
 
 **Run the same pipeline again and every step is skipped** — SciDB recognizes the same function + same inputs and returns the cached result instantly.
 

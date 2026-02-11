@@ -191,7 +191,7 @@ Structured provenance information.
 
 ## Integration with SciDB
 
-Thunk is designed to work seamlessly with [SciDB](https://github.com/example/scidb), a scientific data versioning framework. When used together, SciDB provides a `QueryByMetadata` backend that enables automatic caching:
+Thunk is designed to work seamlessly with [SciDB](https://github.com/mtillman14/general-sqlite-database), a scientific data versioning framework. When used together, SciDB provides a `QueryByMetadata` backend that enables automatic caching:
 
 ```python
 from scidb import BaseVariable
