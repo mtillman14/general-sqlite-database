@@ -213,6 +213,22 @@ class DatabaseManager:
             )
         """)
 
+    def _create_variable_view(self, table_name: str):
+        """Create a view joining a variable table with _schema and _variables."""
+        schema_cols = ", ".join(f's."{col}"' for col in self.dataset_schema_keys)
+        self._duck._execute(f"""
+            CREATE OR REPLACE VIEW "{table_name}_view" AS
+            SELECT
+                t.*,
+                s.schema_level, {schema_cols},
+                v.version_keys, v.description
+            FROM "{table_name}" t
+            LEFT JOIN _schema s ON t.schema_id = s.schema_id
+            LEFT JOIN _variables v
+                ON v.variable_name = '{table_name}'
+                AND t.version_id = v.version_id
+        """)
+
     def _split_metadata(self, flat_metadata: dict) -> dict:
         """
         Split flat metadata into nested schema/version structure.
@@ -354,6 +370,7 @@ class DatabaseManager:
                     {data_cols_sql}
                 )
             """)
+            self._create_variable_view(table_name)
 
         # Insert all DataFrame rows with the same (schema_id, version_id)
         for _, row in df.iterrows():
@@ -417,6 +434,7 @@ class DatabaseManager:
                     "value" {ddb_type}
                 )
             """)
+            self._create_variable_view(table_name)
 
         # Insert data
         self._duck._execute(
@@ -479,6 +497,7 @@ class DatabaseManager:
                     "value" {ddb_type}
                 )
             """)
+            self._create_variable_view(table_name)
 
         # Insert data
         self._duck._execute(
