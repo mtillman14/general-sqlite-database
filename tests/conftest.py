@@ -90,6 +90,11 @@ class MatrixValue(BaseVariable):
 
 
 class DataFrameValue(BaseVariable):
+    """Pandas DataFrame — uses native storage (no to_db/from_db needed)."""
+    schema_version = 1
+
+
+class CustomDataFrameValue(BaseVariable):
     """Pandas DataFrame — uses custom serialization (to_db/from_db)."""
     schema_version = 1
 
@@ -119,3 +124,8 @@ def matrix_class():
 @pytest.fixture
 def dataframe_class():
     return DataFrameValue
+
+
+@pytest.fixture
+def custom_dataframe_class():
+    return CustomDataFrameValue

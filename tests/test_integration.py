@@ -101,10 +101,10 @@ class TestEndToEndArrayWorkflow:
 
 
 class TestEndToEndDataFrameWorkflow:
-    """Test complete workflow with pandas DataFrames."""
+    """Test complete workflow with pandas DataFrames (native, no to_db/from_db)."""
 
     def test_save_and_load_dataframe(self, db, dataframe_class):
-        """Save and load a DataFrame."""
+        """Save and load a DataFrame without to_db/from_db."""
         original = pd.DataFrame({
             "time": [0.0, 0.1, 0.2, 0.3],
             "x": [1.0, 2.0, 3.0, 4.0],
@@ -127,6 +127,36 @@ class TestEndToEndDataFrameWorkflow:
         loaded = dataframe_class.load(subject=1)
         for col in original.columns:
             assert loaded.data[col].dtype == original[col].dtype
+
+    def test_10x5_dataframe_roundtrip(self, db, dataframe_class):
+        """A 10x5 DataFrame should roundtrip without to_db/from_db."""
+        original = pd.DataFrame({
+            "a": np.arange(10, dtype="float64"),
+            "b": np.arange(10, 20, dtype="float64"),
+            "c": np.arange(20, 30, dtype="int64"),
+            "d": [f"s{i}" for i in range(10)],
+            "e": np.linspace(0, 1, 10),
+        })
+        dataframe_class.save(original, subject=1, trial=1)
+
+        loaded = dataframe_class.load(subject=1, trial=1)
+        pd.testing.assert_frame_equal(loaded.data, original)
+
+
+class TestEndToEndCustomDataFrameWorkflow:
+    """Test complete workflow with pandas DataFrames using custom to_db/from_db."""
+
+    def test_save_and_load_custom_dataframe(self, db, custom_dataframe_class):
+        """Save and load a DataFrame with explicit to_db/from_db."""
+        original = pd.DataFrame({
+            "time": [0.0, 0.1, 0.2, 0.3],
+            "x": [1.0, 2.0, 3.0, 4.0],
+            "y": [5.0, 6.0, 7.0, 8.0],
+        })
+        custom_dataframe_class.save(original, subject=1, trial=1)
+
+        loaded = custom_dataframe_class.load(subject=1, trial=1)
+        pd.testing.assert_frame_equal(loaded.data, original)
 
 
 class TestIdempotentSaves:
@@ -492,8 +522,8 @@ class TestVariableViews:
         assert df.iloc[0]["schema_level"] == "subject"
         assert df.iloc[0]["trial"] is None or pd.isna(df.iloc[0]["trial"])
 
-    def test_view_custom_serialization(self, db, dataframe_class):
-        """View should work for custom-serialized variables too."""
+    def test_view_dataframe(self, db, dataframe_class):
+        """View should work for DataFrame variables."""
         original_df = pd.DataFrame({"x": [1.0, 2.0], "y": [3.0, 4.0]})
         dataframe_class.save(original_df, subject=1, trial=1)
 

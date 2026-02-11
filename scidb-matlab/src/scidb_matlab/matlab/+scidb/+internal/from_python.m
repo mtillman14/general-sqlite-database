@@ -31,6 +31,19 @@ function data = from_python(py_obj)
             data{i} = scidb.internal.from_python(c{i});
         end
 
+    elseif isa(py_obj, 'py.pandas.core.frame.DataFrame')
+        % pandas DataFrame -> MATLAB table
+        col_names = cell(py_obj.columns.tolist());
+        args = cell(1, numel(col_names));
+        for i = 1:numel(col_names)
+            col = py_obj{col_names{i}};
+            args{i} = scidb.internal.from_python(col.to_numpy());
+            % Ensure column vector
+            args{i} = args{i}(:);
+        end
+        col_name_strs = cellfun(@string, col_names, 'UniformOutput', false);
+        data = table(args{:}, 'VariableNames', [col_name_strs{:}]);
+
     elseif isa(py_obj, 'py.dict')
         data = scidb.internal.pydict_to_struct(py_obj);
 

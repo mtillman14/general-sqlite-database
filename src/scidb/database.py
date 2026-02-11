@@ -682,7 +682,11 @@ class DatabaseManager:
                     iloc = [iloc]
                 df = df.iloc[iloc]
 
-            data = variable_class.from_db(df)
+            if self._has_custom_serialization(variable_class):
+                data = variable_class.from_db(df)
+            else:
+                # Native DataFrame: return raw DataFrame directly
+                data = df
         else:
             # Native path: use SciDuck.load() with version_id and raw=True
             schema_keys = nested_metadata.get("schema", {})
@@ -945,6 +949,23 @@ class DatabaseManager:
         if self._has_custom_serialization(type(variable)):
             # Custom serialization: user provides to_db() → DataFrame
             df = variable.to_db()
+
+            if index is not None:
+                index_list = list(index) if not isinstance(index, list) else index
+                if len(index_list) != len(df):
+                    raise ValueError(
+                        f"Index length ({len(index_list)}) does not match "
+                        f"DataFrame row count ({len(df)})"
+                    )
+                df.index = index
+
+            version_id, schema_id = self._save_custom_to_sciduck(
+                table_name, type(variable), df, schema_level, schema_keys, content_hash,
+                version_keys=version_keys,
+            )
+        elif isinstance(variable.data, pd.DataFrame):
+            # Native DataFrame: store directly as multi-column DuckDB table
+            df = variable.data.copy()
 
             if index is not None:
                 index_list = list(index) if not isinstance(index, list) else index

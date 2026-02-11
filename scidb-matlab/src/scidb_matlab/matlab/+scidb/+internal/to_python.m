@@ -49,6 +49,19 @@ function py_obj = to_python(data)
             py_obj.append(scidb.internal.to_python(data{i}));
         end
 
+    elseif istable(data)
+        % MATLAB table -> pandas DataFrame
+        col_names = data.Properties.VariableNames;
+        py_dict = py.dict();
+        for i = 1:numel(col_names)
+            col = data.(col_names{i});
+            if iscategorical(col)
+                col = string(col);
+            end
+            py_dict{col_names{i}} = scidb.internal.to_python(col);
+        end
+        py_obj = py.pandas.DataFrame(py_dict);
+
     elseif isstruct(data) && isscalar(data)
         % Scalar struct -> Python dict
         py_obj = py.dict();
