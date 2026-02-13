@@ -103,7 +103,7 @@ classdef PathGenerator < handle
 
             obj.n = numel(combos);
             obj.paths = strings(1, obj.n);
-            obj.metadata = repmat(struct(), 1, obj.n);
+            all_meta = cell(1, obj.n);
 
             for idx = 1:obj.n
                 combo = combos{idx};
@@ -132,8 +132,9 @@ classdef PathGenerator < handle
                 end
 
                 obj.paths(idx) = string(full_path);
-                obj.metadata(idx) = meta;
+                all_meta{idx} = meta;
             end
+            obj.metadata = [all_meta{:}];
         end
 
         function n = length(obj)

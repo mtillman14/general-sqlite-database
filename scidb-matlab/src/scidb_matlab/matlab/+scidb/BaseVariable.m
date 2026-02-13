@@ -187,7 +187,7 @@ classdef BaseVariable < handle
             py_kwargs = scidb.internal.metadata_to_pykwargs(varargin{:});
 
             py_db = py.scidb.database.get_database();
-            py_list = py_db.list_versions(py_class, py_kwargs{:});
+            py_list = py_db.list_versions(py_class, pyargs(py_kwargs{:}));
 
             n = int64(py.builtins.len(py_list));
             versions = struct('record_id', {}, 'schema', {}, 'version', {}, 'created_at', {});
