@@ -1204,7 +1204,7 @@ class DatabaseManager:
         self,
         variable_class: Type[BaseVariable],
         metadata: dict,
-        version_id: int | list[int] | str = "all",
+        version_id="all",
     ):
         """
         Load all variables matching the given metadata as a generator.
