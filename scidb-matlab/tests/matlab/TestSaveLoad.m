@@ -215,7 +215,7 @@ classdef TestSaveLoad < matlab.unittest.TestCase
             % Raw data (not from a thunk) should have no lineage hash
             RawSignal().save([1 2 3], 'subject', 1, 'session', 'A');
             result = RawSignal().load('subject', 1, 'session', 'A');
-            testCase.verifyEqual(result.lineage_hash, "");
+            testCase.verifyEqual(result.lineage_hash, string.empty);
         end
 
         function test_loaded_py_obj_populated(testCase)
