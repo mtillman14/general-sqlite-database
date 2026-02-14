@@ -49,7 +49,8 @@ classdef PathInput < handle
         %
         %   Substitutes {key} placeholders in the template with the
         %   supplied metadata values and returns the resolved absolute
-        %   path as a string.
+        %   path as a string.  The 'db' key is accepted and ignored
+        %   for compatibility with for_each's uniform db= passthrough.
 
             % Parse name-value pairs
             if mod(numel(varargin), 2) ~= 0
@@ -60,6 +61,9 @@ classdef PathInput < handle
             resolved = obj.path_template;
             for i = 1:2:numel(varargin)
                 key = string(varargin{i});
+                if strcmpi(key, 'db')
+                    continue;  % Skip db parameter
+                end
                 val = varargin{i+1};
                 if isnumeric(val)
                     val_str = num2str(val);

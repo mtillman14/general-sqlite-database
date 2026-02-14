@@ -48,19 +48,11 @@ classdef BaseVariable < dynamicprops
         %   DATA can be a numeric array, scalar, scidb.ThunkOutput (lineage
         %   is stored automatically), or scidb.BaseVariable (re-save).
         %
-        %   Name-Value Arguments:
-        %       db - Optional DatabaseManager to use instead of the global
-        %            database (returned by scidb.configure_database).
-        %       Any other name-value pairs are metadata (e.g. subject=1).
-        %
         %   Example:
         %       RawSignal().save(randn(100,3), subject=1, session="A");
         %
         %       result = my_thunk(input_var, 2.5);
         %       Processed().save(result, subject=1, session="A");
-        %
-        %       % Save to a specific database
-        %       RawSignal().save(data, db=db2, subject=1);
 
             type_name = class(obj);
             py_class = scidb.internal.ensure_registered(type_name);
@@ -74,19 +66,13 @@ classdef BaseVariable < dynamicprops
                 py_data = scidb.internal.to_python(data);
             end
 
-            % Extract db option from metadata args
-            [metadata_nv, db_val] = extract_db(varargin);
-            py_kwargs = scidb.internal.metadata_to_pykwargs(metadata_nv{:});
+            py_kwargs = scidb.internal.metadata_to_pykwargs(varargin{:});
 
-            if isempty(db_val)
-                py_db = py.scidb.database.get_database();
-            else
-                py_db = db_val;
-            end
+            py_db = py.scidb.database.get_database();            
             py_record_id = py_db.save_variable(py_class, py_data, pyargs(py_kwargs{:}));
             record_id = char(py_record_id);
 
-
+            
         end
 
         % -----------------------------------------------------------------
@@ -108,8 +94,6 @@ classdef BaseVariable < dynamicprops
         %       version  - Specific record_id to load (default "latest")
         %       as_table - If true, return a MATLAB table when multiple
         %                  results match (default false)
-        %       db       - Optional DatabaseManager to use instead of the
-        %                  global database
         %
         %   Example:
         %       raw = RawSignal().load(subject=1, session="A");
@@ -117,21 +101,14 @@ classdef BaseVariable < dynamicprops
         %
         %       % Load as table
         %       tbl = RawSignal().load(as_table=true, subject=1);
-        %
-        %       % Load from a specific database
-        %       raw = RawSignal().load(db=db2, subject=1, session="A");
 
             type_name = class(obj);
             py_class = scidb.internal.ensure_registered(type_name);
 
-            [metadata_args, version, as_table, db_val] = split_load_args(varargin{:});
+            [metadata_args, version, as_table] = split_load_args(varargin{:});
             py_metadata = scidb.internal.metadata_to_pydict(metadata_args{:});
 
-            if isempty(db_val)
-                py_db = py.scidb.database.get_database();
-            else
-                py_db = db_val;
-            end
+            py_db = py.scidb.database.get_database();
 
             % If loading by specific version, always return single
             if version ~= "latest"
@@ -182,27 +159,20 @@ classdef BaseVariable < dynamicprops
         %           "all"    : return every version
         %           "latest" : return only the latest version per parameter set
         %           integer  : return only that specific version_id
-        %       db         - Optional DatabaseManager to use instead of the
-        %                    global database
         %       Any other name-value pairs are metadata filters.
         %       Non-scalar numeric or string arrays are treated as "match any".
         %
         %   Example:
         %       all_signals = RawSignal().load_all(subject=1);
         %       latest_only = RawSignal().load_all(subject=1, version_id="latest");
-        %       all_from_db = RawSignal().load_all(db=db2, subject=1);
 
             type_name = class(obj);
             py_class = scidb.internal.ensure_registered(type_name);
 
-            [metadata_args, py_version_id, as_table, db_val] = scidb.internal.split_load_all_args(varargin{:});
+            [metadata_args, py_version_id, as_table] = scidb.internal.split_load_all_args(varargin{:});
             py_metadata = scidb.internal.metadata_to_pydict(metadata_args{:});
 
-            if isempty(db_val)
-                py_db = py.scidb.database.get_database();
-            else
-                py_db = db_val;
-            end
+            py_db = py.scidb.database.get_database();
             py_gen = py_db.load_all(py_class, py_metadata, pyargs('version_id', py_version_id));
 
             results_arr = scidb.ThunkOutput.empty();
@@ -233,11 +203,6 @@ classdef BaseVariable < dynamicprops
         %
         %   VERSIONS = TypeClass().list_versions(Name, Value, ...)
         %
-        %   Name-Value Arguments:
-        %       db - Optional DatabaseManager to use instead of the global
-        %            database
-        %       Any other name-value pairs are metadata filters.
-        %
         %   Returns a struct array with fields: record_id, schema,
         %   version, created_at.
         %
@@ -246,15 +211,9 @@ classdef BaseVariable < dynamicprops
 
             type_name = class(obj);
             py_class = scidb.internal.ensure_registered(type_name);
+            py_kwargs = scidb.internal.metadata_to_pykwargs(varargin{:});
 
-            [metadata_nv, db_val] = extract_db(varargin);
-            py_kwargs = scidb.internal.metadata_to_pykwargs(metadata_nv{:});
-
-            if isempty(db_val)
-                py_db = py.scidb.database.get_database();
-            else
-                py_db = db_val;
-            end
+            py_db = py.scidb.database.get_database();
             py_list = py_db.list_versions(py_class, pyargs(py_kwargs{:}));
 
             n = int64(py.builtins.len(py_list));
@@ -279,11 +238,6 @@ classdef BaseVariable < dynamicprops
         %
         %   PROV = TypeClass().provenance(Name, Value, ...)
         %
-        %   Name-Value Arguments:
-        %       db - Optional DatabaseManager to use instead of the global
-        %            database
-        %       Any other name-value pairs are metadata filters.
-        %
         %   Returns a struct with function_name, function_hash, inputs,
         %   constants.  Returns [] if no lineage recorded.
         %
@@ -293,14 +247,10 @@ classdef BaseVariable < dynamicprops
             type_name = class(obj);
             py_class = scidb.internal.ensure_registered(type_name);
 
-            [metadata_args, version, db_val] = scidb.internal.split_version_arg(varargin{:});
+            [metadata_args, version] = scidb.internal.split_version_arg(varargin{:});
             py_kwargs = scidb.internal.metadata_to_pykwargs(metadata_args{:});
 
-            if isempty(db_val)
-                py_db = py.scidb.database.get_database();
-            else
-                py_db = db_val;
-            end
+            py_db = py.scidb.database.get_database();
             if version ~= "latest"
                 disp('what to do with syntax py_kwargs{:}?')
                 % py_result = py_db.get_provenance(py_class, version=char(version), pyargs(py_kwargs{:}));
@@ -350,23 +300,20 @@ classdef BaseVariable < dynamicprops
             %      RawSignal = BaseVariable.str2var("RawSignal");
             if isstring(s), s = char(s); end
             var_folder = fullfile(pwd, 'src', 'vars');
-            classFileName = fullfile(var_folder, [s '.m']);            
-            if ~isfile(classFileName)
-                classDefText = sprintf('classdef %s < scidb.BaseVariable\nend\n', s);
-                % Write the text to the file
-                fid = fopen(classFileName, 'w');
-                if fid == -1
-                    error('Could not create class definition file: %s', classFileName);
-                end
-                fprintf(fid, '%s', classDefText);
-                fclose(fid);
-                % Refresh the MATLAB path to recognize the new class
-                rehash;
+            classFileName = fullfile(var_folder, [s '.m']);
+            classDefText = ['classdef ' s ' < handle\nend'];
+            if ~isfil
+            % Write the text to the file
+            fid = fopen(classFileName, 'w');
+            if fid == -1
+                error('Could not create class definition file: %s', classFileName);
             end
+            fprintf(fid, '%s', classDefText);
+            fclose(fid);
 
-            py_class = scidb.internal.ensure_registered(s);            
+            py_class = scidb.internal.ensure_registered(s);
 
-            obj = eval([s '()']); % Call the newly created class
+            obj = feval([s '()']); % Call the newly created class
             obj.py_obj = py_class([]);  % Create an empty Python BaseVariable shadow
         end
 
@@ -409,11 +356,10 @@ end
 % Local helper functions
 % =========================================================================
 
-function [metadata_args, version, as_table, db] = split_load_args(varargin)
-%SPLIT_LOAD_ARGS  Separate 'version', 'as_table', and 'db' from metadata args.
+function [metadata_args, version, as_table] = split_load_args(varargin)
+%SPLIT_LOAD_ARGS  Separate 'version' and 'as_table' from metadata args.
     version = "latest";
     as_table = false;
-    db = [];
     metadata_args = {};
 
     i = 1;
@@ -427,38 +373,10 @@ function [metadata_args, version, as_table, db] = split_load_args(varargin)
         elseif strcmpi(key, 'as_table') && i < numel(varargin)
             as_table = logical(varargin{i+1});
             i = i + 2;
-        elseif strcmpi(key, 'db') && i < numel(varargin)
-            db = varargin{i+1};
-            i = i + 2;
         else
             metadata_args{end+1} = varargin{i};   %#ok<AGROW>
             metadata_args{end+1} = varargin{i+1};  %#ok<AGROW>
             i = i + 2;
-        end
-    end
-end
-
-
-function [remaining, db] = extract_db(args)
-%EXTRACT_DB  Extract 'db' option from name-value pairs.
-%   Returns remaining name-value pairs and the db value ([] if not found).
-    db = [];
-    remaining = {};
-
-    i = 1;
-    while i <= numel(args)
-        key = args{i};
-        if (ischar(key) || isstring(key)) && strcmpi(string(key), 'db') && i < numel(args)
-            db = args{i+1};
-            i = i + 2;
-        else
-            remaining{end+1} = args{i};   %#ok<AGROW>
-            if i < numel(args)
-                remaining{end+1} = args{i+1}; %#ok<AGROW>
-                i = i + 2;
-            else
-                i = i + 1;
-            end
         end
     end
 end

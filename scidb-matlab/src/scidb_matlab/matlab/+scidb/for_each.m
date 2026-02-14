@@ -28,6 +28,8 @@ function for_each(fn, inputs, outputs, varargin)
 %       pass_metadata - If true, pass metadata as trailing name-value
 %                       arguments to fn. If not specified, auto-detects
 %                       based on fn.generates_file when fn is a Thunk.
+%       db            - Optional DatabaseManager to use for all load/save
+%                       operations instead of the global database
 %       (any other)   - Metadata iterables (numeric or string arrays)
 %
 %   Example:
@@ -59,6 +61,13 @@ function for_each(fn, inputs, outputs, varargin)
     dry_run = opts.dry_run;
     do_save = opts.save;
     as_table_raw = opts.as_table;
+
+    % Build db name-value pair for passthrough to load/save
+    if isempty(opts.db)
+        db_nv = {};
+    else
+        db_nv = {'db', opts.db};
+    end
 
     % Auto-detect pass_metadata
     if isempty(opts.pass_metadata)
@@ -218,7 +227,7 @@ function for_each(fn, inputs, outputs, varargin)
             end
 
             try
-                loaded{p} = var_inst.load(load_nv{:});
+                loaded{p} = var_inst.load(load_nv{:}, db_nv{:});
             catch err
                 fprintf('[skip] %s: failed to load %s (%s): %s\n', ...
                     metadata_str, input_names{p}, class(var_inst), err.message);
@@ -292,7 +301,7 @@ function for_each(fn, inputs, outputs, varargin)
             for o = 1:min(n_outputs, numel(result))
                 out_inst = outputs{o};
                 try
-                    out_inst.save(result{o}, save_nv{:});
+                    out_inst.save(result{o}, save_nv{:}, db_nv{:});
                     fprintf('[save] %s: %s\n', metadata_str, class(out_inst));
                 catch err
                     fprintf('[error] %s: failed to save %s: %s\n', ...
@@ -335,6 +344,7 @@ function [meta_args, opts] = split_options(varargin)
     opts.save = true;
     opts.pass_metadata = [];
     opts.as_table = string.empty;
+    opts.db = [];
 
     meta_args = {};
     i = 1;
@@ -365,6 +375,10 @@ function [meta_args, opts] = split_options(varargin)
                     elseif iscell(val)
                         opts.as_table = string(val);
                     end
+                    i = i + 2;
+                    continue;
+                case "db"
+                    opts.db = varargin{i+1};
                     i = i + 2;
                     continue;
             end

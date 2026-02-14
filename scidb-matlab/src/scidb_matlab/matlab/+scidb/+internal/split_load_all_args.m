@@ -1,13 +1,14 @@
-function [metadata_args, py_version_id, as_table] = split_load_all_args(varargin)
-%SPLIT_LOAD_ALL_ARGS  Separate 'version_id' and 'as_table' from other name-value metadata.
+function [metadata_args, py_version_id, as_table, db] = split_load_all_args(varargin)
+%SPLIT_LOAD_ALL_ARGS  Separate 'version_id', 'as_table', and 'db' from other name-value metadata.
 %
-%   [metadata_args, py_version_id, as_table] = scidb.internal.split_load_all_args(...)
-%   extracts the 'version_id' and 'as_table' keys if present, returning the
-%   remaining name-value pairs and the version_id as a Python-compatible value.
-%   Defaults to "all" and false respectively.
+%   [metadata_args, py_version_id, as_table, db] = scidb.internal.split_load_all_args(...)
+%   extracts the 'version_id', 'as_table', and 'db' keys if present,
+%   returning the remaining name-value pairs and the version_id as a
+%   Python-compatible value. Defaults to "all", false, and [] respectively.
 
     py_version_id = py.str('all');
     as_table = false;
+    db = [];
     metadata_args = {};
 
     i = 1;
@@ -27,6 +28,9 @@ function [metadata_args, py_version_id, as_table] = split_load_all_args(varargin
             elseif isnumeric(val) && ~isscalar(val)
                 py_version_id = py.list(arrayfun(@(x) py.int(int64(x)), val, 'UniformOutput', false));
             end
+            i = i + 2;
+        elseif strcmpi(key, 'db') && i < numel(varargin)
+            db = varargin{i+1};
             i = i + 2;
         else
             metadata_args{end+1} = varargin{i};   %#ok<AGROW>

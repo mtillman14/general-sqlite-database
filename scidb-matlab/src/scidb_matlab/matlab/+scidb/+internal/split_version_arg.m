@@ -1,11 +1,13 @@
-function [metadata_args, version] = split_version_arg(varargin)
-%SPLIT_VERSION_ARG  Separate 'version' from other name-value metadata.
+function [metadata_args, version, db] = split_version_arg(varargin)
+%SPLIT_VERSION_ARG  Separate 'version' and 'db' from other name-value metadata.
 %
-%   [metadata_args, version] = scidb.internal.split_version_arg(...)
-%   extracts the 'version' key if present, returning the remaining
-%   name-value pairs and the version string.  Defaults to "latest".
+%   [metadata_args, version, db] = scidb.internal.split_version_arg(...)
+%   extracts the 'version' and 'db' keys if present, returning the
+%   remaining name-value pairs, the version string, and the db value.
+%   Defaults to "latest" and [] respectively.
 
     version = "latest";
+    db = [];
     metadata_args = {};
 
     i = 1;
@@ -15,6 +17,9 @@ function [metadata_args, version] = split_version_arg(varargin)
 
         if strcmpi(key, 'version') && i < numel(varargin)
             version = string(varargin{i+1});
+            i = i + 2;
+        elseif strcmpi(key, 'db') && i < numel(varargin)
+            db = varargin{i+1};
             i = i + 2;
         else
             metadata_args{end+1} = varargin{i};   %#ok<AGROW>
