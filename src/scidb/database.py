@@ -83,8 +83,6 @@ def configure_database(
     Raises:
         ValueError: If lineage_mode is not "strict" or "ephemeral"
     """
-    from .thunk import Thunk
-
     db = DatabaseManager(
         dataset_db_path,
         dataset_schema_keys=dataset_schema_keys,
@@ -93,8 +91,7 @@ def configure_database(
     )
     for cls in BaseVariable._all_subclasses.values():
         db.register(cls)
-    Thunk.query = db
-    _local.database = db
+    db.set_current_db()
     return db
 
 
@@ -1443,6 +1440,13 @@ class DatabaseManager:
         # reopen PipelineDB
         if self._pipeline_db is None:
             self._pipeline_db = PipelineDB(self.pipeline_db_path)
+        self._closed = False
+
+    def set_current_db(self):
+        """Set this DatabaseManager as the active global database."""
+        from .thunk import Thunk
+        Thunk.query = self
+        _local.database = self
         self._closed = False
 
     def __enter__(self):

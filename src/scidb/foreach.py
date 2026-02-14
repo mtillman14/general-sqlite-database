@@ -40,6 +40,7 @@ def for_each(
     inputs: dict[str, type | Fixed],
     outputs: list[type],
     dry_run: bool = False,
+    db=None,
     **metadata_iterables: list[Any],
 ) -> None:
     """
@@ -54,6 +55,8 @@ def for_each(
         outputs: List of BaseVariable types for outputs (positional)
         dry_run: If True, only print what would be loaded/saved without
                  actually executing
+        db: Optional DatabaseManager instance to use for all load/save
+            operations instead of the global database.
         **metadata_iterables: Iterables of metadata values to combine
 
     Example:
@@ -118,7 +121,8 @@ def for_each(
                 var_type = var_spec
 
             try:
-                loaded_inputs[param_name] = var_type.load(**load_metadata)
+                db_kwargs = {"db": db} if db is not None else {}
+                loaded_inputs[param_name] = var_type.load(**db_kwargs, **load_metadata)
             except Exception as e:
                 print(f"[skip] {metadata_str}: failed to load {param_name} ({var_type.__name__}): {e}")
                 load_failed = True
@@ -143,9 +147,10 @@ def for_each(
             result = (result,)
 
         # Save outputs
+        db_kwargs = {"db": db} if db is not None else {}
         for output_type, output_value in zip(outputs, result):
             try:
-                output_type.save(output_value, **metadata)
+                output_type.save(output_value, **db_kwargs, **metadata)
                 print(f"[save] {metadata_str}: {output_type.__name__}")
             except Exception as e:
                 print(f"[error] {metadata_str}: failed to save {output_type.__name__}: {e}")

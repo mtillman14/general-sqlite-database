@@ -138,6 +138,7 @@ class BaseVariable:
         cls,
         data: Any,
         index: Any | None = None,
+        db=None,
         **metadata,
     ) -> str:
         """
@@ -155,6 +156,9 @@ class BaseVariable:
             index: Optional index for the DataFrame. Sets df.index after to_db()
                 is called. Useful for storing lists/arrays with semantic indexing.
                 Must match the length of the DataFrame rows.
+            db: Optional DatabaseManager instance to use instead of the global
+                database. Allows one-shot operations against a specific database
+                without changing the global default.
             **metadata: Addressing metadata (e.g., subject=1, trial=1)
 
         Returns:
@@ -181,6 +185,9 @@ class BaseVariable:
             # Re-save an existing variable with new metadata
             var = CleanData.load(subject=1, trial=1)
             record_id = CleanData.save(var, subject=1, trial=2)
+
+            # Save to a specific database
+            record_id = CleanData.save(data, db=aim2_db, subject=1, trial=1)
         """
         from .exceptions import ReservedMetadataKeyError
 
@@ -192,7 +199,8 @@ class BaseVariable:
             )
 
         from .database import get_database
-        return get_database().save_variable(cls, data, index=index, **metadata)
+        _db = db or get_database()
+        return _db.save_variable(cls, data, index=index, **metadata)
 
     @classmethod
     def load(
@@ -201,6 +209,7 @@ class BaseVariable:
         loc: Any | None = None,
         iloc: Any | None = None,
         as_table: bool = False,
+        db=None,
         **metadata,
     ) -> "Self | list[Self] | pd.DataFrame":
         """
@@ -223,6 +232,9 @@ class BaseVariable:
             as_table: If True, return a pd.DataFrame when multiple results
                 match instead of a list of variables. Single results still
                 return a single variable instance. Default is False.
+            db: Optional DatabaseManager instance to use instead of the global
+                database. Allows one-shot operations against a specific database
+                without changing the global default.
             **metadata: Addressing metadata to match
 
         Returns:
@@ -248,22 +260,25 @@ class BaseVariable:
 
             # Load with indexing
             var = StepLength.load(subject=1, device="left", loc=5)
+
+            # Load from a specific database
+            var = StepLength.load(db=aim2_db, subject=1, device="left")
         """
         from .database import get_database
 
         if loc is not None and iloc is not None:
             raise ValueError("Cannot specify both 'loc' and 'iloc'. Use one or the other.")
 
-        db = get_database()
+        _db = db or get_database()
 
         # Loading by specific version/record_id → always single variable
         if version != "latest" and version is not None:
-            return db.load(cls, metadata, version=version, loc=loc, iloc=iloc)
+            return _db.load(cls, metadata, version=version, loc=loc, iloc=iloc)
 
         # Query all matching records (latest version per parameter set)
         from .exceptions import NotFoundError
 
-        results = list(db.load_all(cls, metadata, version_id="latest"))
+        results = list(_db.load_all(cls, metadata, version_id="latest"))
 
         if not results:
             raise NotFoundError(
@@ -272,7 +287,7 @@ class BaseVariable:
         elif len(results) == 1:
             # Single match → return variable directly (with loc/iloc support)
             if loc is not None or iloc is not None:
-                return db.load(cls, metadata, version=version, loc=loc, iloc=iloc)
+                return _db.load(cls, metadata, version=version, loc=loc, iloc=iloc)
             return results[0]
         else:
             # Multiple matches
@@ -301,6 +316,7 @@ class BaseVariable:
         as_df: bool = False,
         include_record_id: bool = False,
         version_id: int | list[int] | str = "all",
+        db=None,
         **metadata,
     ):
         """
@@ -318,6 +334,9 @@ class BaseVariable:
                 - "latest": return only the latest version per parameter set
                 - int: return only that specific version_id
                 - list[int]: return only those version_ids
+            db: Optional DatabaseManager instance to use instead of the global
+                database. Allows one-shot operations against a specific database
+                without changing the global default.
             **metadata: Addressing metadata to match (partial matching supported).
                 List values are interpreted as "match any" (OR semantics).
 
@@ -345,19 +364,22 @@ class BaseVariable:
             # Control version selection
             for var in ProcessedSignal.load_all(subject=1, version_id="latest"):
                 print(var.data)
+
+            # Load from a specific database
+            df = ProcessedSignal.load_all(db=aim2_db, subject=1, as_df=True)
         """
         import pandas as pd
         from .database import get_database
         from .exceptions import NotFoundError
 
-        db = get_database()
+        _db = db or get_database()
 
         if not as_df:
             # Return generator via helper to avoid making this function a generator
-            return cls._load_all_generator(db, metadata, version_id=version_id)
+            return cls._load_all_generator(_db, metadata, version_id=version_id)
         else:
             # Collect into DataFrame
-            results = list(db.load_all(cls, metadata, version_id=version_id))
+            results = list(_db.load_all(cls, metadata, version_id=version_id))
 
             if not results:
                 raise NotFoundError(
@@ -382,6 +404,7 @@ class BaseVariable:
     @classmethod
     def list_versions(
         cls,
+        db=None,
         **metadata,
     ) -> list[dict]:
         """
@@ -392,6 +415,9 @@ class BaseVariable:
         computational variants exist for a given dataset location.
 
         Args:
+            db: Optional DatabaseManager instance to use instead of the global
+                database. Allows one-shot operations against a specific database
+                without changing the global default.
             **metadata: Schema metadata to match
 
         Returns:
@@ -408,7 +434,8 @@ class BaseVariable:
         """
         from .database import get_database
 
-        return get_database().list_versions(cls, **metadata)
+        _db = db or get_database()
+        return _db.list_versions(cls, **metadata)
 
     @classmethod
     def save_from_dataframe(
@@ -416,6 +443,7 @@ class BaseVariable:
         df: pd.DataFrame,
         data_column: str,
         metadata_columns: list[str],
+        db=None,
         **common_metadata,
     ) -> list[str]:
         """
@@ -428,6 +456,9 @@ class BaseVariable:
             df: DataFrame where each row is a separate data item
             data_column: Column name containing the data to store
             metadata_columns: Column names to use as metadata for each row
+            db: Optional DatabaseManager instance to use instead of the global
+                database. Allows one-shot operations against a specific database
+                without changing the global default.
             **common_metadata: Additional metadata applied to all rows
 
         Returns:
@@ -465,7 +496,7 @@ class BaseVariable:
 
             # Extract data and save
             data = row[data_column]
-            record_id = cls.save(data, **full_metadata)
+            record_id = cls.save(data, db=db, **full_metadata)
             record_ides.append(record_id)
 
         return record_ides

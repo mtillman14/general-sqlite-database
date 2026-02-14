@@ -14,6 +14,7 @@ def for_each(
     save: bool = True,
     pass_metadata: bool | None = None,
     as_table: list[str] | bool | None = None,
+    db=None,
     **metadata_iterables: list[Any],
 ) -> None:
     """
@@ -52,6 +53,8 @@ def for_each(
                   Only applies when load() returns a list (multiple
                   matches). The DataFrame has columns for metadata keys,
                   version_id, and a data column named after the variable type.
+        db: Optional DatabaseManager instance to use for all load/save
+            operations instead of the global database.
         **metadata_iterables: Iterables of metadata values to combine
 
     Example:
@@ -133,7 +136,8 @@ def for_each(
                 var_type = var_spec
 
             try:
-                loaded_inputs[param_name] = var_type.load(**load_metadata)
+                db_kwargs = {"db": db} if db is not None else {}
+                loaded_inputs[param_name] = var_type.load(**db_kwargs, **load_metadata)
             except Exception as e:
                 var_name = getattr(var_type, '__name__', type(var_type).__name__)
                 print(f"[skip] {metadata_str}: failed to load {param_name} ({var_name}): {e}")
@@ -183,9 +187,10 @@ def for_each(
         # Save outputs (include constants as version keys in metadata)
         save_metadata = {**metadata, **constant_inputs}
         if save:
+            db_kwargs = {"db": db} if db is not None else {}
             for output_type, output_value in zip(outputs, result):
                 try:
-                    output_type.save(output_value, **save_metadata)
+                    output_type.save(output_value, **db_kwargs, **save_metadata)
                     print(f"[save] {metadata_str}: {output_type.__name__}")
                 except Exception as e:
                     print(f"[error] {metadata_str}: failed to save {output_type.__name__}: {e}")
