@@ -77,33 +77,7 @@ classdef TestAsTable < matlab.unittest.TestCase
             testCase.verifyEqual(numel(result), 2);
         end
 
-        function test_loadall_as_table_true_multiple_versions(testCase)
-            %% load_all(as_table=true) with multiple versions should show incrementing version_id
-            RawSignal().save([1 2 3], 'subject', 1, 'session', 'A');
-            RawSignal().save([4 5 6], 'subject', 1, 'session', 'A');
-
-            result = RawSignal().load_all('as_table', true, 'subject', 1, 'session', 'A');
-            testCase.verifyTrue(isa(result, 'table'));
-            testCase.verifyEqual(height(result), 2);
-            testCase.verifyEqual(result.version_id, [2; 1]);
-        end
-
-        function test_loadall_as_table_false_multiple_versions(testCase)
-            %% load_all(as_table=true) with multiple versions should show incrementing version_id
-            RawSignal().save([1 2 3], 'subject', 1, 'session', 'A');
-            RawSignal().save([4 5 6], 'subject', 1, 'session', 'A');
-
-            result = RawSignal().load_all('as_table', false, 'subject', 1, 'session', 'A');
-            testCase.verifyTrue(isa(result, 'scidb.ThunkOutput'));
-            testCase.verifyEqual(numel(result), 2);
-            testCase.verifyEqual([result.version_id], int64([2 1]));
-
-            % test default is 'false'
-            result = RawSignal().load_all('subject', 1, 'session', 'A');
-            testCase.verifyTrue(isa(result, 'scidb.ThunkOutput'));
-            testCase.verifyEqual(numel(result), 2);
-            testCase.verifyEqual([result.version_id], int64([2 1]));
-        end
+        function test_load_as_table_true_multiple_versions
 
         function test_for_each_as_table(testCase)
             %% for_each with as_table converts multi-result to table

@@ -169,13 +169,13 @@ classdef BaseVariable < handle
             type_name = class(obj);
             py_class = scidb.internal.ensure_registered(type_name);
 
-            [metadata_args, py_version_id] = scidb.internal.split_load_all_args(varargin{:});
+            [metadata_args, py_version_id, as_table] = scidb.internal.split_load_all_args(varargin{:});
             py_metadata = scidb.internal.metadata_to_pydict(metadata_args{:});
 
             py_db = py.scidb.database.get_database();
             py_gen = py_db.load_all(py_class, py_metadata, pyargs('version_id', py_version_id));
 
-            results = scidb.ThunkOutput.empty();
+            results_arr = scidb.ThunkOutput.empty();
             py_iter = py.builtins.iter(py_gen);
 
             while true
@@ -184,9 +184,14 @@ classdef BaseVariable < handle
                 catch
                     break;
                 end
-                results(end+1) = scidb.BaseVariable.wrap_py_var(py_var); %#ok<AGROW>
+                results_arr(end+1) = scidb.BaseVariable.wrap_py_var(py_var); %#ok<AGROW>
             end
 
+            if as_table && numel(results_arr) > 1
+                results = multi_result_to_table(results_arr, type_name);
+            else
+                results = results_arr;
+            end
 
         end
 

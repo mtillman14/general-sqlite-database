@@ -1,12 +1,13 @@
-function [metadata_args, py_version_id] = split_load_all_args(varargin)
-%SPLIT_LOAD_ALL_ARGS  Separate 'version_id' from other name-value metadata.
+function [metadata_args, py_version_id, as_table] = split_load_all_args(varargin)
+%SPLIT_LOAD_ALL_ARGS  Separate 'version_id' and 'as_table' from other name-value metadata.
 %
-%   [metadata_args, py_version_id] = scidb.internal.split_load_all_args(...)
-%   extracts the 'version_id' key if present, returning the remaining
-%   name-value pairs and the version_id as a Python-compatible value.
-%   Defaults to "all".
+%   [metadata_args, py_version_id, as_table] = scidb.internal.split_load_all_args(...)
+%   extracts the 'version_id' and 'as_table' keys if present, returning the
+%   remaining name-value pairs and the version_id as a Python-compatible value.
+%   Defaults to "all" and false respectively.
 
     py_version_id = py.str('all');
+    as_table = false;
     metadata_args = {};
 
     i = 1;
@@ -14,7 +15,10 @@ function [metadata_args, py_version_id] = split_load_all_args(varargin)
         key = varargin{i};
         if isstring(key), key = char(key); end
 
-        if strcmpi(key, 'version_id') && i < numel(varargin)
+        if strcmpi(key, 'as_table') && i < numel(varargin)
+            as_table = logical(varargin{i+1});
+            i = i + 2;
+        elseif strcmpi(key, 'version_id') && i < numel(varargin)
             val = varargin{i+1};
             if isstring(val) || ischar(val)
                 py_version_id = py.str(char(val));
