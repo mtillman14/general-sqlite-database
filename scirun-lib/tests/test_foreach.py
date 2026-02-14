@@ -484,3 +484,287 @@ class TestForEachWithConstants:
             "session": "A",
             "threshold": 5.0,
         }
+
+
+class TestForEachAsTable:
+    """Tests for as_table parameter in for_each."""
+
+    def test_as_table_converts_list_to_dataframe(self):
+        """When as_table includes an input name, multi-result loads become DataFrames."""
+        import pandas as pd
+
+        class MultiResultVar:
+            """Mock variable that returns a list from load()."""
+
+            @classmethod
+            def load(cls, **metadata):
+                # Simulate multi-result: return a list of mock vars
+                results = []
+                for i in range(3):
+                    v = MockVariableA(i * 10)
+                    v.metadata = {"subject": str(metadata.get("subject", 1)), "trial": str(i + 1)}
+                    v.version_id = 1
+                    results.append(v)
+                return results
+
+            @classmethod
+            def view_name(cls):
+                return "MultiResultVar"
+
+        received = {}
+
+        def process(values):
+            received["values"] = values
+            return "result"
+
+        for_each(
+            process,
+            inputs={"values": MultiResultVar},
+            outputs=[MockOutput],
+            as_table=["values"],
+            subject=[1],
+        )
+
+        assert isinstance(received["values"], pd.DataFrame)
+        assert len(received["values"]) == 3
+        assert "MultiResultVar" in received["values"].columns
+        assert "version_id" in received["values"].columns
+
+    def test_without_as_table_returns_list(self):
+        """Without as_table, multi-result loads stay as lists."""
+
+        class MultiResultVar:
+            @classmethod
+            def load(cls, **metadata):
+                results = []
+                for i in range(3):
+                    v = MockVariableA(i * 10)
+                    v.metadata = {"subject": "1", "trial": str(i + 1)}
+                    v.version_id = 1
+                    results.append(v)
+                return results
+
+            @classmethod
+            def view_name(cls):
+                return "MultiResultVar"
+
+        received = {}
+
+        def process(values):
+            received["values"] = values
+            return "result"
+
+        for_each(
+            process,
+            inputs={"values": MultiResultVar},
+            outputs=[MockOutput],
+            subject=[1],
+        )
+
+        # Without as_table, the list should be unwrapped to raw data
+        # (each element's .data), not converted to DataFrame
+        assert not hasattr(received["values"], "columns")
+
+    def test_as_table_only_affects_specified_inputs(self):
+        """as_table should only convert specified inputs, not all."""
+        import pandas as pd
+
+        class MultiA:
+            @classmethod
+            def load(cls, **metadata):
+                results = []
+                for i in range(2):
+                    v = MockVariableA(i)
+                    v.metadata = {"subject": "1", "trial": str(i + 1)}
+                    v.version_id = 1
+                    results.append(v)
+                return results
+
+            @classmethod
+            def view_name(cls):
+                return "MultiA"
+
+        class SingleB:
+            @classmethod
+            def load(cls, **metadata):
+                v = MockVariableB("single")
+                return v
+
+        received = {}
+
+        def process(a, b):
+            received["a"] = a
+            received["b"] = b
+            return "result"
+
+        for_each(
+            process,
+            inputs={"a": MultiA, "b": SingleB},
+            outputs=[MockOutput],
+            as_table=["a"],
+            subject=[1],
+        )
+
+        assert isinstance(received["a"], pd.DataFrame)
+        # b is single, so it gets unwrapped to raw data
+        assert received["b"] == "single"
+
+    def test_as_table_single_result_not_converted(self):
+        """as_table should not convert single-result loads."""
+        import pandas as pd
+
+        class SingleVar:
+            @classmethod
+            def load(cls, **metadata):
+                v = MockVariableA(42)
+                v.metadata = {"subject": "1"}
+                v.version_id = 1
+                return v  # Single result, not a list
+
+            @classmethod
+            def view_name(cls):
+                return "SingleVar"
+
+        received = {}
+
+        def process(values):
+            received["values"] = values
+            return "result"
+
+        for_each(
+            process,
+            inputs={"values": SingleVar},
+            outputs=[MockOutput],
+            as_table=["values"],
+            subject=[1],
+        )
+
+        # Single result gets unwrapped to .data, not converted to DataFrame
+        assert not isinstance(received["values"], pd.DataFrame)
+        assert received["values"] == 42
+
+    def test_as_table_true_converts_all_loadable_inputs(self):
+        """as_table=True should convert all loadable multi-result inputs."""
+        import pandas as pd
+
+        class MultiA:
+            @classmethod
+            def load(cls, **metadata):
+                results = []
+                for i in range(2):
+                    v = MockVariableA(i)
+                    v.metadata = {"subject": "1", "trial": str(i + 1)}
+                    v.version_id = 1
+                    results.append(v)
+                return results
+
+            @classmethod
+            def view_name(cls):
+                return "MultiA"
+
+        class MultiB:
+            @classmethod
+            def load(cls, **metadata):
+                results = []
+                for i in range(2):
+                    v = MockVariableB(i * 100)
+                    v.metadata = {"subject": "1", "trial": str(i + 1)}
+                    v.version_id = 1
+                    results.append(v)
+                return results
+
+            @classmethod
+            def view_name(cls):
+                return "MultiB"
+
+        received = {}
+
+        def process(a, b):
+            received["a"] = a
+            received["b"] = b
+            return "result"
+
+        for_each(
+            process,
+            inputs={"a": MultiA, "b": MultiB},
+            outputs=[MockOutput],
+            as_table=True,
+            subject=[1],
+        )
+
+        assert isinstance(received["a"], pd.DataFrame)
+        assert isinstance(received["b"], pd.DataFrame)
+        assert "MultiA" in received["a"].columns
+        assert "MultiB" in received["b"].columns
+
+    def test_as_table_false_no_conversion(self):
+        """as_table=False should not convert any inputs."""
+
+        class MultiResultVar:
+            @classmethod
+            def load(cls, **metadata):
+                results = []
+                for i in range(2):
+                    v = MockVariableA(i)
+                    v.metadata = {"subject": "1", "trial": str(i + 1)}
+                    v.version_id = 1
+                    results.append(v)
+                return results
+
+            @classmethod
+            def view_name(cls):
+                return "MultiResultVar"
+
+        received = {}
+
+        def process(values):
+            received["values"] = values
+            return "result"
+
+        for_each(
+            process,
+            inputs={"values": MultiResultVar},
+            outputs=[MockOutput],
+            as_table=False,
+            subject=[1],
+        )
+
+        # False should mean no conversion — list gets unwrapped
+        assert not hasattr(received["values"], "columns")
+
+    def test_as_table_true_skips_constants(self):
+        """as_table=True should only affect loadable inputs, not constants."""
+        import pandas as pd
+
+        class MultiA:
+            @classmethod
+            def load(cls, **metadata):
+                results = []
+                for i in range(2):
+                    v = MockVariableA(i)
+                    v.metadata = {"subject": "1", "trial": str(i + 1)}
+                    v.version_id = 1
+                    results.append(v)
+                return results
+
+            @classmethod
+            def view_name(cls):
+                return "MultiA"
+
+        received = {}
+
+        def process(a, factor):
+            received["a"] = a
+            received["factor"] = factor
+            return "result"
+
+        for_each(
+            process,
+            inputs={"a": MultiA, "factor": 2.5},
+            outputs=[MockOutput],
+            as_table=True,
+            subject=[1],
+        )
+
+        assert isinstance(received["a"], pd.DataFrame)
+        assert received["factor"] == 2.5

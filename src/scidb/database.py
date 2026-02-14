@@ -793,6 +793,8 @@ class DatabaseManager:
         instance.metadata = flat_metadata
         instance.content_hash = content_hash
         instance.lineage_hash = lineage_hash
+        instance.version_id = version_id
+        instance.parameter_id = parameter_id
 
         return instance
 

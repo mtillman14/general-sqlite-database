@@ -91,16 +91,21 @@ classdef BaseVariable < handle
         %
         %   Name-Value Arguments:
         %       Any metadata key-value pairs (e.g. subject=1, session="A")
-        %       version - Specific record_id to load (default "latest")
+        %       version  - Specific record_id to load (default "latest")
+        %       as_table - If true, return a MATLAB table when multiple
+        %                  results match (default false)
         %
         %   Example:
         %       raw = RawSignal().load(subject=1, session="A");
         %       disp(raw.data);
+        %
+        %       % Load as table
+        %       tbl = RawSignal().load(as_table=true, subject=1);
 
             type_name = class(obj);
             py_class = scidb.internal.ensure_registered(type_name);
 
-            [metadata_args, version] = scidb.internal.split_version_arg(varargin{:});
+            [metadata_args, version, as_table] = split_load_args(varargin{:});
             py_metadata = scidb.internal.metadata_to_pydict(metadata_args{:});
 
             py_db = py.scidb.database.get_database();
@@ -123,10 +128,16 @@ classdef BaseVariable < handle
                 % Single match → return single ThunkOutput
                 result = scidb.BaseVariable.wrap_py_var(py_list{1});
             else
-                % Multiple matches → return array of ThunkOutput
-                result = scidb.ThunkOutput.empty();
+                % Multiple matches
+                results_arr = scidb.ThunkOutput.empty();
                 for i = 1:n
-                    result(end+1) = scidb.BaseVariable.wrap_py_var(py_list{i}); %#ok<AGROW>
+                    results_arr(end+1) = scidb.BaseVariable.wrap_py_var(py_list{i}); %#ok<AGROW>
+                end
+
+                if as_table
+                    result = multi_result_to_table(results_arr, type_name);
+                else
+                    result = results_arr;
                 end
             end
 
@@ -294,6 +305,98 @@ classdef BaseVariable < handle
             if ~isa(py_meta, 'py.NoneType')
                 v.metadata = scidb.internal.pydict_to_struct(py_meta);
             end
+
+            py_vid = py.builtins.getattr(py_var, 'version_id', py.None);
+            if ~isa(py_vid, 'py.NoneType')
+                v.version_id = int64(py_vid);
+            end
+
+            py_pid = py.builtins.getattr(py_var, 'parameter_id', py.None);
+            if ~isa(py_pid, 'py.NoneType')
+                v.parameter_id = int64(py_pid);
+            end
         end
     end
+end
+
+
+% =========================================================================
+% Local helper functions
+% =========================================================================
+
+function [metadata_args, version, as_table] = split_load_args(varargin)
+%SPLIT_LOAD_ARGS  Separate 'version' and 'as_table' from metadata args.
+    version = "latest";
+    as_table = false;
+    metadata_args = {};
+
+    i = 1;
+    while i <= numel(varargin)
+        key = varargin{i};
+        if isstring(key), key = char(key); end
+
+        if strcmpi(key, 'version') && i < numel(varargin)
+            version = string(varargin{i+1});
+            i = i + 2;
+        elseif strcmpi(key, 'as_table') && i < numel(varargin)
+            as_table = logical(varargin{i+1});
+            i = i + 2;
+        else
+            metadata_args{end+1} = varargin{i};   %#ok<AGROW>
+            metadata_args{end+1} = varargin{i+1};  %#ok<AGROW>
+            i = i + 2;
+        end
+    end
+end
+
+
+function tbl = multi_result_to_table(results, type_name)
+%MULTI_RESULT_TO_TABLE  Convert an array of ThunkOutput to a MATLAB table.
+    n = numel(results);
+
+    % Build metadata columns
+    meta_fields = fieldnames(results(1).metadata);
+    tbl = table();
+    for f = 1:numel(meta_fields)
+        col_data = cell(n, 1);
+        for i = 1:n
+            if isfield(results(i).metadata, meta_fields{f})
+                col_data{i} = results(i).metadata.(meta_fields{f});
+            else
+                col_data{i} = missing;
+            end
+        end
+        % Try to convert to numeric if all values are numeric
+        all_numeric = true;
+        for i = 1:n
+            if ~isnumeric(col_data{i}) || ismissing(col_data{i})
+                all_numeric = false;
+                break;
+            end
+        end
+        if all_numeric
+            tbl.(meta_fields{f}) = cell2mat(col_data);
+        else
+            tbl.(meta_fields{f}) = col_data;
+        end
+    end
+
+    % version_id column
+    vid_data = zeros(n, 1);
+    for i = 1:n
+        if ~isempty(results(i).version_id)
+            vid_data(i) = results(i).version_id;
+        end
+    end
+    tbl.version_id = vid_data;
+
+    % Data column (named after the variable type)
+    % Strip package prefix (e.g. "mypackage.StepLength" → "StepLength")
+    parts = strsplit(type_name, '.');
+    col_name = parts{end};
+    data_col = cell(n, 1);
+    for i = 1:n
+        data_col{i} = results(i).data;
+    end
+    tbl.(col_name) = data_col;
 end

@@ -682,3 +682,100 @@ class TestBatchLoadingAPI:
         df = scalar_class.load_all(subject=1, trial=1, as_df=True, version_id="latest")
         assert len(df) == 1
         assert df.iloc[0]["data"] == 200
+
+
+class TestLoadAsTable:
+    """Test load(as_table=True) returning a DataFrame."""
+
+    def test_load_as_table_multi_result(self, db, scalar_class):
+        """load(as_table=True) with multiple matches returns DataFrame."""
+        scalar_class.save(10, subject=1, trial=1)
+        scalar_class.save(20, subject=1, trial=2)
+        scalar_class.save(30, subject=1, trial=3)
+
+        df = scalar_class.load(as_table=True, subject=1)
+        assert isinstance(df, pd.DataFrame)
+        assert len(df) == 3
+        # Check columns: schema keys + version_id + data column
+        assert "subject" in df.columns
+        assert "trial" in df.columns
+        assert "version_id" in df.columns
+        assert "ScalarValue" in df.columns
+        # Check data values
+        assert set(df["ScalarValue"].tolist()) == {10, 20, 30}
+
+    def test_load_as_table_single_result(self, db, scalar_class):
+        """load(as_table=True) with single match returns BaseVariable, not DataFrame."""
+        scalar_class.save(42, subject=1, trial=1)
+
+        result = scalar_class.load(as_table=True, subject=1, trial=1)
+        assert not isinstance(result, pd.DataFrame)
+        assert result.data == 42
+
+    def test_load_as_table_with_version_keys(self, db, scalar_class):
+        """load(as_table=True) includes parameter/version key columns."""
+        scalar_class.save(10, subject=1, trial=1, smoothing=0.2)
+        scalar_class.save(20, subject=1, trial=2, smoothing=0.2)
+
+        df = scalar_class.load(as_table=True, subject=1, smoothing=0.2)
+        assert isinstance(df, pd.DataFrame)
+        assert len(df) == 2
+        assert "smoothing" in df.columns
+
+    def test_load_as_table_array_data(self, db, array_class):
+        """load(as_table=True) with array data stores arrays in data column."""
+        array_class.save(np.array([1.0, 2.0]), subject=1, trial=1)
+        array_class.save(np.array([3.0, 4.0]), subject=1, trial=2)
+
+        df = array_class.load(as_table=True, subject=1)
+        assert isinstance(df, pd.DataFrame)
+        assert len(df) == 2
+        assert "ArrayValue" in df.columns
+        # Each entry should be an array
+        for val in df["ArrayValue"]:
+            assert isinstance(val, np.ndarray)
+
+    def test_load_as_table_false_returns_list(self, db, scalar_class):
+        """load(as_table=False) with multiple matches returns list (default behavior)."""
+        scalar_class.save(10, subject=1, trial=1)
+        scalar_class.save(20, subject=1, trial=2)
+
+        result = scalar_class.load(as_table=False, subject=1)
+        assert isinstance(result, list)
+        assert len(result) == 2
+
+    def test_load_as_table_version_id_populated(self, db, scalar_class):
+        """version_id should be populated in the DataFrame."""
+        scalar_class.save(10, subject=1, trial=1)
+        scalar_class.save(20, subject=1, trial=2)
+
+        df = scalar_class.load(as_table=True, subject=1)
+        assert all(df["version_id"].notna())
+        assert all(isinstance(v, (int, np.integer)) for v in df["version_id"])
+
+
+class TestVersionIdParameterId:
+    """Test that version_id and parameter_id are populated on loaded variables."""
+
+    def test_version_id_populated_single_load(self, db, scalar_class):
+        """version_id should be set after load()."""
+        scalar_class.save(42, subject=1, trial=1)
+        loaded = scalar_class.load(subject=1, trial=1)
+        assert loaded.version_id is not None
+        assert loaded.version_id == 1
+
+    def test_parameter_id_populated_single_load(self, db, scalar_class):
+        """parameter_id should be set after load()."""
+        scalar_class.save(42, subject=1, trial=1)
+        loaded = scalar_class.load(subject=1, trial=1)
+        assert loaded.parameter_id is not None
+        assert loaded.parameter_id == 1
+
+    def test_version_id_increments(self, db, scalar_class):
+        """version_id should increment with each save at same location."""
+        scalar_class.save(100, subject=1, trial=1)
+        scalar_class.save(200, subject=1, trial=1)
+
+        results = list(scalar_class.load_all(subject=1, trial=1))
+        version_ids = {r.version_id for r in results}
+        assert version_ids == {1, 2}

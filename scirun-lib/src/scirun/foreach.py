@@ -13,6 +13,7 @@ def for_each(
     dry_run: bool = False,
     save: bool = True,
     pass_metadata: bool | None = None,
+    as_table: list[str] | bool | None = None,
     **metadata_iterables: list[Any],
 ) -> None:
     """
@@ -43,6 +44,14 @@ def for_each(
         pass_metadata: If True, pass metadata values as keyword arguments
                       to the function. If None (default), auto-detect based
                       on fn's generates_file attribute.
+        as_table: Controls which multi-result loads are converted to
+                  pandas DataFrames. Can be:
+                  - True: convert all loadable inputs
+                  - list of input names: convert only those inputs
+                  - False/None/[]: no conversion (default)
+                  Only applies when load() returns a list (multiple
+                  matches). The DataFrame has columns for metadata keys,
+                  version_id, and a data column named after the variable type.
         **metadata_iterables: Iterables of metadata values to combine
 
     Example:
@@ -72,6 +81,14 @@ def for_each(
             loadable_inputs[param_name] = var_spec
         else:
             constant_inputs[param_name] = var_spec
+
+    # Build set of input names to convert to DataFrame
+    if as_table is True:
+        as_table_set = set(loadable_inputs.keys())
+    elif as_table:
+        as_table_set = set(as_table)
+    else:
+        as_table_set = set()
 
     keys = list(metadata_iterables.keys())
     value_lists = [metadata_iterables[k] for k in keys]
@@ -123,6 +140,12 @@ def for_each(
                 load_failed = True
                 break
 
+            # Convert multi-result to DataFrame if requested
+            if param_name in as_table_set and isinstance(loaded_inputs[param_name], list):
+                loaded_inputs[param_name] = _multi_result_to_dataframe(
+                    loaded_inputs[param_name], var_type
+                )
+
         if load_failed:
             skipped += 1
             continue
@@ -136,7 +159,8 @@ def for_each(
         # Thunks handle their own unwrapping internally.
         if not _is_thunk(fn):
             loaded_inputs = {
-                k: _unwrap(v) for k, v in loaded_inputs.items()
+                k: v if _is_dataframe(v) else _unwrap(v)
+                for k, v in loaded_inputs.items()
             }
 
         # Merge constants into function arguments
@@ -195,6 +219,31 @@ def _unwrap(value: Any) -> Any:
     if hasattr(value, 'data'):
         return value.data
     return value
+
+
+def _is_dataframe(value: Any) -> bool:
+    """Check if value is a pandas DataFrame."""
+    try:
+        import pandas as pd
+        return isinstance(value, pd.DataFrame)
+    except ImportError:
+        return False
+
+
+def _multi_result_to_dataframe(results: list, var_type: type):
+    """Convert a list of loaded variables to a pandas DataFrame.
+
+    Columns: metadata keys + version_id + data column (named after var_type).
+    """
+    import pandas as pd
+    view_name = var_type.view_name() if hasattr(var_type, 'view_name') else var_type.__name__
+    rows = []
+    for var in results:
+        row = dict(var.metadata) if var.metadata else {}
+        row["version_id"] = getattr(var, "version_id", None)
+        row[view_name] = var.data
+        rows.append(row)
+    return pd.DataFrame(rows)
 
 
 def _format_inputs(inputs: dict[str, Any]) -> str:

@@ -58,6 +58,7 @@ function for_each(fn, inputs, outputs, varargin)
 
     dry_run = opts.dry_run;
     do_save = opts.save;
+    as_table_raw = opts.as_table;
 
     % Auto-detect pass_metadata
     if isempty(opts.pass_metadata)
@@ -125,6 +126,15 @@ function for_each(fn, inputs, outputs, varargin)
             constant_nv{end+1} = input_names{p}; %#ok<AGROW>
             constant_nv{end+1} = var_spec; %#ok<AGROW>
         end
+    end
+
+    % Resolve as_table: true → all loadable input names, false/empty → none
+    if islogical(as_table_raw) && isscalar(as_table_raw) && as_table_raw
+        as_table_set = string(input_names(loadable_idx)');
+    elseif islogical(as_table_raw) && isscalar(as_table_raw) && ~as_table_raw
+        as_table_set = string.empty;
+    else
+        as_table_set = as_table_raw;
     end
 
     % Parse outputs cell array
@@ -215,6 +225,13 @@ function for_each(fn, inputs, outputs, varargin)
                 load_failed = true;
                 break;
             end
+
+            % Convert multi-result to table if requested
+            if ~isempty(as_table_set) && ismember(string(input_names{p}), as_table_set) ...
+                    && isa(loaded{p}, 'scidb.ThunkOutput') && numel(loaded{p}) > 1
+                type_name = class(var_inst);
+                loaded{p} = fe_multi_result_to_table(loaded{p}, type_name);
+            end
         end
 
         if load_failed
@@ -232,7 +249,7 @@ function for_each(fn, inputs, outputs, varargin)
         % Only unwrap loadable inputs, not constants.
         if ~isa(fn, 'scidb.Thunk')
             for p = 1:n_inputs
-                if loadable_idx(p)
+                if loadable_idx(p) && ~istable(loaded{p})
                     loaded{p} = scidb.internal.unwrap_input(loaded{p});
                 end
             end
@@ -317,6 +334,7 @@ function [meta_args, opts] = split_options(varargin)
     opts.dry_run = false;
     opts.save = true;
     opts.pass_metadata = [];
+    opts.as_table = string.empty;
 
     meta_args = {};
     i = 1;
@@ -334,6 +352,19 @@ function [meta_args, opts] = split_options(varargin)
                     continue;
                 case "pass_metadata"
                     opts.pass_metadata = logical(varargin{i+1});
+                    i = i + 2;
+                    continue;
+                case "as_table"
+                    val = varargin{i+1};
+                    if islogical(val)
+                        opts.as_table = val;
+                    elseif isstring(val)
+                        opts.as_table = val;
+                    elseif ischar(val)
+                        opts.as_table = string(val);
+                    elseif iscell(val)
+                        opts.as_table = string(val);
+                    end
                     i = i + 2;
                     continue;
             end
@@ -497,4 +528,43 @@ function print_dry_run_iteration(inputs, input_names, outputs, ...
     for o = 1:numel(outputs)
         fprintf('  save %s().save(..., %s)\n', class(outputs{o}), save_metadata_str);
     end
+end
+
+
+function tbl = fe_multi_result_to_table(results, type_name)
+%FE_MULTI_RESULT_TO_TABLE  Convert an array of ThunkOutput to a MATLAB table.
+    n = numel(results);
+
+    % Build metadata columns
+    meta_fields = fieldnames(results(1).metadata);
+    tbl = table();
+    for f = 1:numel(meta_fields)
+        col_data = cell(n, 1);
+        for i = 1:n
+            if isfield(results(i).metadata, meta_fields{f})
+                col_data{i} = results(i).metadata.(meta_fields{f});
+            else
+                col_data{i} = missing;
+            end
+        end
+        tbl.(meta_fields{f}) = col_data;
+    end
+
+    % version_id column
+    vid_data = zeros(n, 1);
+    for i = 1:n
+        if ~isempty(results(i).version_id)
+            vid_data(i) = results(i).version_id;
+        end
+    end
+    tbl.version_id = vid_data;
+
+    % Data column (named after the variable type)
+    parts = strsplit(type_name, '.');
+    col_name = parts{end};
+    data_col = cell(n, 1);
+    for i = 1:n
+        data_col{i} = results(i).data;
+    end
+    tbl.(col_name) = data_col;
 end

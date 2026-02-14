@@ -71,6 +71,8 @@ class BaseVariable:
         self.metadata: dict | None = None
         self.content_hash: str | None = None
         self.lineage_hash: str | None = None
+        self.version_id: int | None = None
+        self.parameter_id: int | None = None
 
     def to_db(self) -> pd.DataFrame:
         """
@@ -198,8 +200,9 @@ class BaseVariable:
         version: str = "latest",
         loc: Any | None = None,
         iloc: Any | None = None,
+        as_table: bool = False,
         **metadata,
-    ) -> Self | list[Self]:
+    ) -> "Self | list[Self] | pd.DataFrame":
         """
         Load variable(s) from the database.
 
@@ -207,17 +210,25 @@ class BaseVariable:
         of variables when multiple records match. This allows partial schema
         key queries to naturally return all matching rows.
 
+        When as_table=True and multiple results match, returns a pandas
+        DataFrame with schema key columns, version_id, parameter key columns,
+        and a data column named after the variable's class name.
+
         Args:
             version: "latest" for most recent, or specific record_id
             loc: Optional label-based index selection (like pandas df.loc[]).
                 Supports single values, lists, ranges, or slices.
             iloc: Optional integer position-based index selection (like pandas df.iloc[]).
                 Supports single values, lists, ranges, or slices.
+            as_table: If True, return a pd.DataFrame when multiple results
+                match instead of a list of variables. Single results still
+                return a single variable instance. Default is False.
             **metadata: Addressing metadata to match
 
         Returns:
             A single variable if one record matches, or
-            a list of variables if multiple records match.
+            a list of variables (or DataFrame if as_table=True) if multiple
+            records match.
 
         Raises:
             NotFoundError: If no matching data found
@@ -231,6 +242,9 @@ class BaseVariable:
 
             # Load multiple records (partial schema keys)
             vars = StepLength.load(subject=1)
+
+            # Load as DataFrame
+            df = StepLength.load(as_table=True, subject=1)
 
             # Load with indexing
             var = StepLength.load(subject=1, device="left", loc=5)
@@ -261,8 +275,25 @@ class BaseVariable:
                 return db.load(cls, metadata, version=version, loc=loc, iloc=iloc)
             return results[0]
         else:
-            # Multiple matches → return list
+            # Multiple matches
+            if as_table:
+                return cls._results_to_dataframe(results)
             return results
+
+    @classmethod
+    def _results_to_dataframe(cls, results: list["BaseVariable"]) -> pd.DataFrame:
+        """Convert a list of loaded variables to a DataFrame.
+
+        Columns: schema key columns + version_id + parameter key columns +
+        data column (named after cls.view_name()).
+        """
+        rows = []
+        for var in results:
+            row = dict(var.metadata) if var.metadata else {}
+            row["version_id"] = var.version_id
+            row[cls.view_name()] = var.data
+            rows.append(row)
+        return pd.DataFrame(rows)
 
     @classmethod
     def load_all(

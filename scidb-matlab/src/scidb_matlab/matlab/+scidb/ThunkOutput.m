@@ -28,6 +28,8 @@ classdef ThunkOutput < handle
         metadata     struct     % Metadata key-value pairs (populated after load)
         content_hash string     % Content hash (populated after load)
         lineage_hash string     % Lineage hash (populated after load)
+        version_id               % Version ID (populated after load)
+        parameter_id             % Parameter ID (populated after load)
     end
 
     methods
