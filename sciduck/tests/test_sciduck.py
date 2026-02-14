@@ -241,11 +241,11 @@ class TestVersioning:
         assert loaded == 30
 
     def test_load_specific_version(self, duck):
-        """Load a specific version by version_id."""
+        """Load a specific parameter set by parameter_id."""
         duck.save("versioned", 10, subject="S01", session="A", trial="1", force=True)
         duck.save("versioned", 20, subject="S01", session="A", trial="1", force=True)
 
-        loaded = duck.load("versioned", version_id=1, subject="S01", session="A", trial="1")
+        loaded = duck.load("versioned", parameter_id=1, subject="S01", session="A", trial="1")
         assert loaded == 10
 
     def test_list_versions(self, duck):
@@ -284,15 +284,15 @@ class TestDelete:
         assert len(var_list[var_list["variable_name"] == "to_delete"]) == 0
 
     def test_delete_specific_version(self, duck):
-        """Should delete only the specified version."""
+        """Should delete only the specified parameter set."""
         duck.save("multi_ver", 10, subject="S01", session="A", trial="1", force=True)
         duck.save("multi_ver", 20, subject="S01", session="A", trial="1", force=True)
 
-        duck.delete("multi_ver", version_id=1)
+        duck.delete("multi_ver", parameter_id=1)
 
         versions = duck.list_versions("multi_ver")
         assert len(versions) == 1
-        assert versions["version_id"].iloc[0] == 2
+        assert versions["parameter_id"].iloc[0] == 2
 
 
 # ---------------------------------------------------------------------------

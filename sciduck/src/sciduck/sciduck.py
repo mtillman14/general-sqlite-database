@@ -331,13 +331,13 @@ class SciDuck:
         self._execute("""
             CREATE TABLE IF NOT EXISTS _variables (
                 variable_name VARCHAR NOT NULL,
-                version_id INTEGER NOT NULL,
+                parameter_id INTEGER NOT NULL,
                 schema_level VARCHAR NOT NULL,
                 dtype VARCHAR,
                 version_keys VARCHAR DEFAULT '{}',
                 created_at TIMESTAMP DEFAULT current_timestamp,
                 description VARCHAR DEFAULT '',
-                PRIMARY KEY (variable_name, version_id)
+                PRIMARY KEY (variable_name, parameter_id)
             )
         """)
 
@@ -419,7 +419,7 @@ class SciDuck:
         name: str,
         data: Any,
         schema_level: Optional[str] = None,
-        version_id: Optional[int] = None,
+        parameter_id: Optional[int] = None,
         description: str = "",
         force: bool = False,
         **schema_keys,
@@ -438,8 +438,8 @@ class SciDuck:
             - dict mapping tuples → values (Mode C, batch)
         schema_level : str, optional
             Which schema level to store at.  Defaults to the lowest level.
-        version_id : int, optional
-            Explicit version number.  Auto-increments if omitted.
+        parameter_id : int, optional
+            Explicit parameter ID.  Auto-increments if omitted.
         description : str
             Optional description for this version.
         force : bool
@@ -453,7 +453,7 @@ class SciDuck:
         Returns
         -------
         int
-            The version_id that was saved.
+            The parameter_id that was saved.
         """
         if schema_level is None:
             schema_level = self.dataset_schema[-1]
@@ -501,9 +501,9 @@ class SciDuck:
                 "  (C) a dict mapping tuples to values."
             )
 
-        # --- Resolve version ---
-        if version_id is None:
-            version_id = self._next_version(name)
+        # --- Resolve parameter_id ---
+        if parameter_id is None:
+            parameter_id = self._next_parameter_id(name)
 
         # --- Determine column types from the first entry's data ---
         sample_value = entries[0][1]
@@ -513,27 +513,27 @@ class SciDuck:
         self._ensure_variable_table(name, data_col_types, schema_level)
 
         # --- Insert rows ---
-        col_names = ["schema_id", "version_id"] + list(data_col_types.keys())
+        col_names = ["schema_id", "parameter_id"] + list(data_col_types.keys())
         col_str = ", ".join(f'"{c}"' for c in col_names)
         placeholders = ", ".join(["?"] * len(col_names))
 
         for key_dict, value in entries:
             schema_id = self._get_or_create_schema_id(schema_level, key_dict)
             storage_values = self._value_to_storage_row(value, dtype_meta)
-            row = [schema_id, version_id] + storage_values
+            row = [schema_id, parameter_id] + storage_values
             self._execute(
                 f'INSERT INTO "{name}" ({col_str}) VALUES ({placeholders})', row
             )
 
         # --- Register in _variables ---
         self._execute(
-            "INSERT INTO _variables (variable_name, version_id, schema_level, "
+            "INSERT INTO _variables (variable_name, parameter_id, schema_level, "
             "dtype, description) VALUES (?, ?, ?, ?, ?)",
-            [name, version_id, schema_level, json.dumps(dtype_meta),
+            [name, parameter_id, schema_level, json.dumps(dtype_meta),
              description],
         )
 
-        return version_id
+        return parameter_id
 
     def _entries_from_dataframe(
         self, df: pd.DataFrame, key_cols: List[str], schema_level: str
@@ -617,14 +617,14 @@ class SciDuck:
         self._execute(f"""
             CREATE TABLE "{name}" (
                 schema_id INTEGER NOT NULL,
-                version_id INTEGER NOT NULL,
+                parameter_id INTEGER NOT NULL,
                 {data_cols_sql}
             )
         """)
 
-    def _next_version(self, name: str) -> int:
+    def _next_parameter_id(self, name: str) -> int:
         rows = self._fetchall(
-            "SELECT COALESCE(MAX(version_id), 0) FROM _variables "
+            "SELECT COALESCE(MAX(parameter_id), 0) FROM _variables "
             "WHERE variable_name = ?",
             [name],
         )
@@ -637,6 +637,7 @@ class SciDuck:
     def load(
         self,
         name: str,
+        parameter_id: Optional[int] = None,
         version_id: Optional[int] = None,
         raw: bool = True,
         **schema_keys,
@@ -648,8 +649,10 @@ class SciDuck:
         ----------
         name : str
             Variable name.
+        parameter_id : int, optional
+            Parameter set to load.  Defaults to the latest.
         version_id : int, optional
-            Version to load.  Defaults to the latest.
+            If provided, filter by this version_id column in the data table.
         raw : bool
             If True and the result is a single row, return the reconstructed
             Python object instead of a DataFrame.
@@ -663,19 +666,19 @@ class SciDuck:
         if not self._table_exists(name):
             raise KeyError(f"Variable '{name}' not found in database.")
 
-        # Resolve version
-        if version_id is None:
-            version_id = self._latest_version(name)
+        # Resolve parameter_id
+        if parameter_id is None:
+            parameter_id = self._latest_parameter_id(name)
 
         # Get metadata
         rows = self._fetchall(
             "SELECT schema_level, dtype FROM _variables "
-            "WHERE variable_name = ? AND version_id = ?",
-            [name, version_id],
+            "WHERE variable_name = ? AND parameter_id = ?",
+            [name, parameter_id],
         )
         if not rows:
             raise KeyError(
-                f"Version {version_id} of variable '{name}' not found."
+                f"Parameter {parameter_id} of variable '{name}' not found."
             )
         schema_level, dtype_json = rows[0]
         dtype_meta = json.loads(dtype_json)
@@ -690,9 +693,14 @@ class SciDuck:
             f'SELECT {schema_select}, {data_select} '
             f'FROM "{name}" v '
             f'JOIN _schema s ON v.schema_id = s.schema_id '
-            f'WHERE v.version_id = ?'
+            f'WHERE v.parameter_id = ?'
         )
-        params: list = [version_id]
+        params: list = [parameter_id]
+
+        # Optionally filter by version_id
+        if version_id is not None:
+            sql += ' AND v.version_id = ?'
+            params.append(version_id)
 
         # Apply schema key filters
         for col, val in schema_keys.items():
@@ -722,9 +730,9 @@ class SciDuck:
 
         return df
 
-    def _latest_version(self, name: str) -> int:
+    def _latest_parameter_id(self, name: str) -> int:
         rows = self._fetchall(
-            "SELECT MAX(version_id) FROM _variables WHERE variable_name = ?",
+            "SELECT MAX(parameter_id) FROM _variables WHERE variable_name = ?",
             [name],
         )
         if rows[0][0] is None:
@@ -767,9 +775,9 @@ class SciDuck:
         List all versions of a variable.
         """
         return self._fetchdf(
-            "SELECT version_id, schema_level, version_keys, created_at, description "
+            "SELECT parameter_id, schema_level, version_keys, created_at, description "
             "FROM _variables WHERE variable_name = ? "
-            "ORDER BY version_id",
+            "ORDER BY parameter_id",
             [name],
         )
 
@@ -777,13 +785,13 @@ class SciDuck:
     # Delete
     # ------------------------------------------------------------------
 
-    def delete(self, name: str, version_id: Optional[int] = None):
+    def delete(self, name: str, parameter_id: Optional[int] = None):
         """
-        Delete a variable or a specific version.
+        Delete a variable or a specific parameter set.
 
-        If version_id is None, drops the entire table and all version records.
+        If parameter_id is None, drops the entire table and all version records.
         """
-        if version_id is None:
+        if parameter_id is None:
             if self._table_exists(name):
                 self._execute(f'DROP TABLE "{name}"')
             self._execute(
@@ -794,12 +802,12 @@ class SciDuck:
             )
         else:
             self._execute(
-                f'DELETE FROM "{name}" WHERE version_id = ?', [version_id]
+                f'DELETE FROM "{name}" WHERE parameter_id = ?', [parameter_id]
             )
             self._execute(
                 "DELETE FROM _variables "
-                "WHERE variable_name = ? AND version_id = ?",
-                [name, version_id],
+                "WHERE variable_name = ? AND parameter_id = ?",
+                [name, parameter_id],
             )
 
     # ------------------------------------------------------------------

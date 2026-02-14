@@ -21,12 +21,18 @@ function py_dict = metadata_to_pydict(varargin)
         % Convert MATLAB values to Python-compatible types
         if isstring(val) && isscalar(val)
             py_dict{key} = char(val);
+        elseif isstring(val) && ~isscalar(val)
+            % String array (non-scalar) → Python list for "match any"
+            py_dict{key} = py.list(cellfun(@char, num2cell(val), 'UniformOutput', false));
         elseif isnumeric(val) && isscalar(val)
             if isfloat(val)
                 py_dict{key} = py.float(double(val));
             else
                 py_dict{key} = py.int(int64(val));
             end
+        elseif isnumeric(val) && ~isscalar(val)
+            % Numeric array (non-scalar) → Python list for "match any"
+            py_dict{key} = py.list(num2cell(val));
         elseif ischar(val)
             py_dict{key} = py.str(val);
         else

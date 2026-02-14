@@ -246,10 +246,10 @@ class BaseVariable:
         if version != "latest" and version is not None:
             return db.load(cls, metadata, version=version, loc=loc, iloc=iloc)
 
-        # Query all matching records
+        # Query all matching records (latest version per parameter set)
         from .exceptions import NotFoundError
 
-        results = list(db.load_all(cls, metadata))
+        results = list(db.load_all(cls, metadata, version_id="latest"))
 
         if not results:
             raise NotFoundError(
@@ -269,6 +269,7 @@ class BaseVariable:
         cls,
         as_df: bool = False,
         include_record_id: bool = False,
+        version_id: int | list[int] | str = "all",
         **metadata,
     ):
         """
@@ -281,7 +282,13 @@ class BaseVariable:
             as_df: If True, return a DataFrame instead of a generator.
                    The DataFrame has columns for each metadata key plus 'data'.
             include_record_id: If True and as_df=True, include record_id column.
-            **metadata: Addressing metadata to match (partial matching supported)
+            version_id: Which versions to return:
+                - "all" (default): return every version
+                - "latest": return only the latest version per parameter set
+                - int: return only that specific version_id
+                - list[int]: return only those version_ids
+            **metadata: Addressing metadata to match (partial matching supported).
+                List values are interpreted as "match any" (OR semantics).
 
         Returns:
             Generator of variable instances (default), or
@@ -299,6 +306,14 @@ class BaseVariable:
 
             # Load all as DataFrame for analysis
             df = ProcessedSignal.load_all(subject=1, as_df=True)
+
+            # Batch load: match any of several subjects
+            for var in ProcessedSignal.load_all(subject=[1, 2, 3]):
+                print(var.metadata)
+
+            # Control version selection
+            for var in ProcessedSignal.load_all(subject=1, version_id="latest"):
+                print(var.data)
         """
         import pandas as pd
         from .database import get_database
@@ -308,10 +323,10 @@ class BaseVariable:
 
         if not as_df:
             # Return generator via helper to avoid making this function a generator
-            return cls._load_all_generator(db, metadata)
+            return cls._load_all_generator(db, metadata, version_id=version_id)
         else:
             # Collect into DataFrame
-            results = list(db.load_all(cls, metadata))
+            results = list(db.load_all(cls, metadata, version_id=version_id))
 
             if not results:
                 raise NotFoundError(
@@ -329,9 +344,9 @@ class BaseVariable:
             return pd.DataFrame(rows)
 
     @classmethod
-    def _load_all_generator(cls, db, metadata: dict):
+    def _load_all_generator(cls, db, metadata: dict, version_id: int | list[int] | str = "all"):
         """Helper generator for load_all() to avoid making load_all a generator."""
-        yield from db.load_all(cls, metadata)
+        yield from db.load_all(cls, metadata, version_id=version_id)
 
     @classmethod
     def list_versions(

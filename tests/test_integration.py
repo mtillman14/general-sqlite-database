@@ -58,6 +58,10 @@ class TestEndToEndScalarWorkflow:
         versions = db.list_versions(scalar_class, subject=1, trial=1)
         assert len(versions) == 3
 
+        # load() without version should return latest
+        latest = scalar_class.load(subject=1, trial=1)
+        assert latest.data == 300
+
         # Should be able to load specific version
         loaded = scalar_class.load(version=record_id2)
         assert loaded.data == 200
@@ -545,3 +549,136 @@ class TestVariableViews:
         assert len(array_df) == 1
         assert scalar_df.iloc[0]["subject"] == "1"
         assert array_df.iloc[0]["subject"] == "1"
+
+
+class TestBatchLoadingAPI:
+    """Test the batch loading API with version_id and list-valued keys."""
+
+    # --- version_id parameter ---
+
+    def test_load_all_default_returns_all_versions(self, db, scalar_class):
+        """load_all() with default version_id='all' returns every version."""
+        scalar_class.save(100, subject=1, trial=1)
+        scalar_class.save(200, subject=1, trial=1)
+        scalar_class.save(300, subject=1, trial=1)
+
+        results = list(scalar_class.load_all(subject=1, trial=1))
+        assert len(results) == 3
+        assert {r.data for r in results} == {100, 200, 300}
+
+    def test_load_all_version_id_latest(self, db, scalar_class):
+        """load_all(version_id='latest') returns only latest per parameter set."""
+        scalar_class.save(100, subject=1, trial=1)
+        scalar_class.save(200, subject=1, trial=1)
+        scalar_class.save(300, subject=1, trial=1)
+
+        results = list(scalar_class.load_all(subject=1, trial=1, version_id="latest"))
+        assert len(results) == 1
+        assert results[0].data == 300
+
+    def test_load_all_version_id_int(self, db, scalar_class):
+        """load_all(version_id=2) returns only version 2."""
+        scalar_class.save(100, subject=1, trial=1)
+        scalar_class.save(200, subject=1, trial=1)
+        scalar_class.save(300, subject=1, trial=1)
+
+        results = list(scalar_class.load_all(subject=1, trial=1, version_id=2))
+        assert len(results) == 1
+        assert results[0].data == 200
+
+    def test_load_all_version_id_list(self, db, scalar_class):
+        """load_all(version_id=[1, 3]) returns versions 1 and 3."""
+        scalar_class.save(100, subject=1, trial=1)
+        scalar_class.save(200, subject=1, trial=1)
+        scalar_class.save(300, subject=1, trial=1)
+
+        results = list(scalar_class.load_all(subject=1, trial=1, version_id=[1, 3]))
+        assert len(results) == 2
+        assert {r.data for r in results} == {100, 300}
+
+    # --- List-valued schema keys ---
+
+    def test_load_all_list_schema_key(self, db, scalar_class):
+        """load_all(subject=[1, 2]) matches subject 1 OR 2."""
+        scalar_class.save(10, subject=1, trial=1)
+        scalar_class.save(20, subject=2, trial=1)
+        scalar_class.save(30, subject=3, trial=1)
+
+        results = list(scalar_class.load_all(subject=[1, 2], trial=1))
+        assert len(results) == 2
+        assert {r.data for r in results} == {10, 20}
+
+    def test_load_all_multiple_list_schema_keys(self, db, scalar_class):
+        """load_all(subject=[1, 2], trial=[1, 2]) returns cartesian product."""
+        for s in [1, 2, 3]:
+            for t in [1, 2, 3]:
+                scalar_class.save(s * 10 + t, subject=s, trial=t)
+
+        results = list(scalar_class.load_all(subject=[1, 2], trial=[1, 2]))
+        assert len(results) == 4
+        assert {r.data for r in results} == {11, 12, 21, 22}
+
+    # --- List-valued version keys ---
+
+    def test_load_all_list_version_key(self, db, scalar_class):
+        """load_all(algorithm=['v1', 'v2']) matches version key in list."""
+        scalar_class.save(10, subject=1, trial=1, algorithm="v1")
+        scalar_class.save(20, subject=1, trial=1, algorithm="v2")
+        scalar_class.save(30, subject=1, trial=1, algorithm="v3")
+
+        results = list(scalar_class.load_all(subject=1, trial=1, algorithm=["v1", "v2"]))
+        assert len(results) == 2
+        assert {r.data for r in results} == {10, 20}
+
+    # --- Cartesian product: list schema × list version × version_id ---
+
+    def test_cartesian_product(self, db, scalar_class):
+        """Full cartesian product: list schema keys × list version keys × version_id."""
+        # Save data: 2 subjects × 2 algorithms × 2 versions each
+        for s in [1, 2]:
+            for algo in ["v1", "v2"]:
+                scalar_class.save(s * 100 + hash(algo) % 10, subject=s, trial=1, algorithm=algo)
+                scalar_class.save(s * 100 + hash(algo) % 10 + 1, subject=s, trial=1, algorithm=algo)
+
+        # Query all versions for subjects [1,2] with algorithms ["v1","v2"]
+        results = list(scalar_class.load_all(
+            subject=[1, 2], trial=1, algorithm=["v1", "v2"], version_id="all"
+        ))
+        # 2 subjects × 2 algorithms × 2 versions = 8
+        assert len(results) == 8
+
+    def test_cartesian_product_with_latest(self, db, scalar_class):
+        """Cartesian product with version_id='latest' returns one per param set."""
+        for s in [1, 2]:
+            for algo in ["v1", "v2"]:
+                scalar_class.save(s * 100, subject=s, trial=1, algorithm=algo)
+                scalar_class.save(s * 200, subject=s, trial=1, algorithm=algo)
+
+        results = list(scalar_class.load_all(
+            subject=[1, 2], trial=1, algorithm=["v1", "v2"], version_id="latest"
+        ))
+        # 2 subjects × 2 algorithms × 1 (latest) = 4
+        assert len(results) == 4
+
+    # --- load() treats lists as scalar literals ---
+
+    def test_load_treats_list_as_literal(self, db):
+        """load(threshold=[0.3, 0.5]) should match the literal list value."""
+        class ListParam(BaseVariable):
+            schema_version = 1
+
+        ListParam.save([0.3, 0.5], subject=1, trial=1)
+
+        loaded = ListParam.load(subject=1, trial=1)
+        assert loaded.data == [0.3, 0.5]
+
+    # --- load_all with as_df=True ---
+
+    def test_load_all_as_df_with_version_id(self, db, scalar_class):
+        """load_all(as_df=True, version_id='latest') returns DataFrame."""
+        scalar_class.save(100, subject=1, trial=1)
+        scalar_class.save(200, subject=1, trial=1)
+
+        df = scalar_class.load_all(subject=1, trial=1, as_df=True, version_id="latest")
+        assert len(df) == 1
+        assert df.iloc[0]["data"] == 200

@@ -112,8 +112,8 @@ classdef BaseVariable < handle
                 return;
             end
 
-            % Query all matching records
-            py_gen = py_db.load_all(py_class, py_metadata);
+            % Query all matching records (latest version per parameter set)
+            py_gen = py_db.load_all(py_class, py_metadata, pyargs('version_id', 'latest'));
             py_list = py.list(py_gen);
             n = int64(py.builtins.len(py_list));
 
@@ -143,15 +143,26 @@ classdef BaseVariable < handle
         %
         %   Returns an array of scidb.ThunkOutput objects.
         %
+        %   Name-Value Arguments:
+        %       version_id - Which versions to return (default "all"):
+        %           "all"    : return every version
+        %           "latest" : return only the latest version per parameter set
+        %           integer  : return only that specific version_id
+        %       Any other name-value pairs are metadata filters.
+        %       Non-scalar numeric or string arrays are treated as "match any".
+        %
         %   Example:
         %       all_signals = RawSignal().load_all(subject=1);
+        %       latest_only = RawSignal().load_all(subject=1, version_id="latest");
 
             type_name = class(obj);
             py_class = scidb.internal.ensure_registered(type_name);
-            py_metadata = scidb.internal.metadata_to_pydict(varargin{:});
+
+            [metadata_args, py_version_id] = scidb.internal.split_load_all_args(varargin{:});
+            py_metadata = scidb.internal.metadata_to_pydict(metadata_args{:});
 
             py_db = py.scidb.database.get_database();
-            py_gen = py_db.load_all(py_class, py_metadata);
+            py_gen = py_db.load_all(py_class, py_metadata, pyargs('version_id', py_version_id));
 
             results = scidb.ThunkOutput.empty();
             py_iter = py.builtins.iter(py_gen);

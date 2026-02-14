@@ -203,7 +203,8 @@ class DatabaseManager:
             CREATE TABLE IF NOT EXISTS _record_metadata (
                 record_id VARCHAR PRIMARY KEY,
                 variable_name VARCHAR NOT NULL,
-                version_id INTEGER NOT NULL,
+                parameter_id INTEGER NOT NULL,
+                version_id INTEGER NOT NULL DEFAULT 1,
                 schema_id INTEGER NOT NULL,
                 content_hash VARCHAR,
                 lineage_hash VARCHAR,
@@ -228,7 +229,7 @@ class DatabaseManager:
             LEFT JOIN _schema s ON t.schema_id = s.schema_id
             LEFT JOIN _variables v
                 ON v.variable_name = '{table_name}'
-                AND t.version_id = v.version_id
+                AND t.parameter_id = v.parameter_id
         """)
 
     def _split_metadata(self, flat_metadata: dict) -> dict:
@@ -289,6 +290,7 @@ class DatabaseManager:
         self,
         record_id: str,
         variable_name: str,
+        parameter_id: int,
         version_id: int,
         schema_id: int,
         content_hash: str,
@@ -301,18 +303,67 @@ class DatabaseManager:
         self._duck._execute(
             """
             INSERT INTO _record_metadata (
-                record_id, variable_name, version_id, schema_id,
+                record_id, variable_name, parameter_id, version_id, schema_id,
                 content_hash, lineage_hash, schema_version,
                 user_id, created_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT (record_id) DO NOTHING
             """,
             [
-                record_id, variable_name, version_id, schema_id,
+                record_id, variable_name, parameter_id, version_id, schema_id,
                 content_hash, lineage_hash, schema_version,
                 user_id, created_at,
             ],
         )
+
+    def _resolve_parameter_slot(
+        self,
+        table_name: str,
+        schema_id: int,
+        version_keys: dict | None = None,
+    ) -> tuple[int, int, bool]:
+        """
+        Determine (parameter_id, version_id, is_new_parameter) for a save operation.
+
+        If a _variables row exists for (table_name, version_keys) JSON,
+        reuse that parameter_id and increment version_id from _record_metadata.
+        Otherwise, allocate a new parameter_id with version_id=1.
+
+        Returns:
+            (parameter_id, version_id, is_new_parameter) where is_new_parameter
+            is True only when a brand-new parameter_id was allocated (i.e. no
+            _variables row existed). Callers should only INSERT into _variables
+            when is_new_parameter is True.
+        """
+        vk_json = json.dumps(version_keys or {}, sort_keys=True)
+
+        # Check if _variables has a matching row for this variable + version_keys
+        existing = self._duck._fetchall(
+            "SELECT parameter_id FROM _variables "
+            "WHERE variable_name = ? AND version_keys = ?",
+            [table_name, vk_json],
+        )
+
+        if existing:
+            parameter_id = existing[0][0]
+            # Increment version_id for this parameter slot at this schema location
+            version_rows = self._duck._fetchall(
+                "SELECT COALESCE(MAX(version_id), 0) FROM _record_metadata "
+                "WHERE variable_name = ? AND parameter_id = ? AND schema_id = ?",
+                [table_name, parameter_id, schema_id],
+            )
+            version_id = version_rows[0][0] + 1
+            return parameter_id, version_id, False
+        else:
+            # Allocate new parameter_id
+            param_rows = self._duck._fetchall(
+                "SELECT COALESCE(MAX(parameter_id), 0) FROM _variables "
+                "WHERE variable_name = ?",
+                [table_name],
+            )
+            parameter_id = param_rows[0][0] + 1
+            version_id = 1
+            return parameter_id, version_id, True
 
     def _save_custom_to_sciduck(
         self,
@@ -323,14 +374,14 @@ class DatabaseManager:
         schema_keys: dict,
         content_hash: str,
         version_keys: dict | None = None,
-    ) -> tuple[int, int]:
+    ) -> tuple[int, int, int]:
         """
         Save a custom-serialized DataFrame into SciDuck's table format.
 
-        Creates a table with schema_id, version_id, and data columns.
+        Creates a table with schema_id, parameter_id, version_id, and data columns.
         Registers in _variables with dtype = {"custom": True}.
 
-        Returns (version_id, schema_id).
+        Returns (parameter_id, schema_id, version_id).
         """
         schema_id = (
             self._duck._get_or_create_schema_id(schema_level, schema_keys)
@@ -338,15 +389,10 @@ class DatabaseManager:
             else 0
         )
 
-        # Next version scoped to this schema entry (not global)
-        if self._duck._table_exists(table_name):
-            rows = self._duck._fetchall(
-                f'SELECT COALESCE(MAX(version_id), 0) FROM "{table_name}" WHERE schema_id = ?',
-                [schema_id]
-            )
-            version_id = rows[0][0] + 1
-        else:
-            version_id = 1
+        # Resolve parameter_id and version_id
+        parameter_id, version_id, is_new_parameter = self._resolve_parameter_slot(
+            table_name, schema_id, version_keys
+        )
 
         # Ensure table exists with SciDuck-compatible schema
         if not self._duck._table_exists(table_name):
@@ -369,18 +415,19 @@ class DatabaseManager:
             self._duck._execute(f"""
                 CREATE TABLE "{table_name}" (
                     schema_id INTEGER NOT NULL,
+                    parameter_id INTEGER NOT NULL,
                     version_id INTEGER NOT NULL,
                     {data_cols_sql}
                 )
             """)
             self._create_variable_view(variable_class)
 
-        # Insert all DataFrame rows with the same (schema_id, version_id)
+        # Insert all DataFrame rows with the same (schema_id, parameter_id, version_id)
         for _, row in df.iterrows():
-            col_names = ["schema_id", "version_id"] + list(df.columns)
+            col_names = ["schema_id", "parameter_id", "version_id"] + list(df.columns)
             col_str = ", ".join(f'"{c}"' for c in col_names)
             placeholders = ", ".join(["?"] * len(col_names))
-            values = [schema_id, version_id] + [
+            values = [schema_id, parameter_id, version_id] + [
                 row[c].item() if hasattr(row[c], 'item') else row[c]
                 for c in df.columns
             ]
@@ -389,23 +436,18 @@ class DatabaseManager:
                 values,
             )
 
-        # Register in _variables with custom dtype marker (skip if version exists
-        # from another schema entry — version_id is scoped per schema entry)
+        # Register in _variables only for truly new parameter slots
         effective_level = schema_level or self.dataset_schema_keys[-1]
-        existing_var = self._duck._fetchall(
-            "SELECT 1 FROM _variables WHERE variable_name = ? AND version_id = ?",
-            [table_name, version_id],
-        )
-        if not existing_var:
+        if is_new_parameter:
             self._duck._execute(
-                "INSERT INTO _variables (variable_name, version_id, schema_level, "
+                "INSERT INTO _variables (variable_name, parameter_id, schema_level, "
                 "dtype, version_keys, description) VALUES (?, ?, ?, ?, ?, ?)",
-                [table_name, version_id, effective_level,
+                [table_name, parameter_id, effective_level,
                  json.dumps({"custom": True}),
                  json.dumps(version_keys or {}, sort_keys=True), ""],
             )
 
-        return version_id, schema_id
+        return parameter_id, schema_id, version_id
 
     def _save_native_direct(
         self,
@@ -414,16 +456,18 @@ class DatabaseManager:
         data: Any,
         content_hash: str,
         version_keys: dict | None = None,
-    ) -> tuple[int, int]:
+    ) -> tuple[int, int, int]:
         """
         Save native data directly without SciDuck's schema-aware save.
 
         Used when schema keys are non-contiguous or absent. Creates a
-        SciDuck-compatible table with schema_id=0 and version_id.
+        SciDuck-compatible table with schema_id=0, parameter_id, and version_id.
 
-        Returns (version_id, schema_id=0).
+        Returns (parameter_id, schema_id=0, version_id).
         """
-        version_id = self._duck._next_version(table_name)
+        parameter_id, version_id, is_new_parameter = self._resolve_parameter_slot(
+            table_name, 0, version_keys
+        )
 
         ddb_type, col_meta = _infer_duckdb_type(data)
         storage_value = _python_to_storage(data, col_meta)
@@ -434,6 +478,7 @@ class DatabaseManager:
             self._duck._execute(f"""
                 CREATE TABLE "{table_name}" (
                     schema_id INTEGER NOT NULL,
+                    parameter_id INTEGER NOT NULL,
                     version_id INTEGER NOT NULL,
                     "value" {ddb_type}
                 )
@@ -442,20 +487,21 @@ class DatabaseManager:
 
         # Insert data
         self._duck._execute(
-            f'INSERT INTO "{table_name}" ("schema_id", "version_id", "value") VALUES (?, ?, ?)',
-            [0, version_id, storage_value],
+            f'INSERT INTO "{table_name}" ("schema_id", "parameter_id", "version_id", "value") VALUES (?, ?, ?, ?)',
+            [0, parameter_id, version_id, storage_value],
         )
 
-        # Register in _variables
-        self._duck._execute(
-            "INSERT INTO _variables (variable_name, version_id, schema_level, "
-            "dtype, version_keys, description) VALUES (?, ?, ?, ?, ?, ?)",
-            [table_name, version_id, self.dataset_schema_keys[-1],
-             json.dumps(dtype_meta),
-             json.dumps(version_keys or {}, sort_keys=True), ""],
-        )
+        # Register in _variables only for truly new parameter slots
+        if is_new_parameter:
+            self._duck._execute(
+                "INSERT INTO _variables (variable_name, parameter_id, schema_level, "
+                "dtype, version_keys, description) VALUES (?, ?, ?, ?, ?, ?)",
+                [table_name, parameter_id, self.dataset_schema_keys[-1],
+                 json.dumps(dtype_meta),
+                 json.dumps(version_keys or {}, sort_keys=True), ""],
+            )
 
-        return version_id, 0
+        return parameter_id, 0, version_id
 
     def _save_native_with_schema(
         self,
@@ -466,28 +512,23 @@ class DatabaseManager:
         schema_keys: dict,
         content_hash: str,
         version_keys: dict | None = None,
-    ) -> tuple[int, int]:
+    ) -> tuple[int, int, int]:
         """
         Save native data at a specific schema location.
 
         Like _save_native_direct but with schema-aware storage and
-        version_id scoped per schema entry rather than globally.
+        parameter_id/version_id tracking.
 
-        Returns (version_id, schema_id).
+        Returns (parameter_id, schema_id, version_id).
         """
         schema_id = self._duck._get_or_create_schema_id(
             schema_level, {k: str(v) for k, v in schema_keys.items()}
         )
 
-        # Next version scoped to this schema entry (not global)
-        if self._duck._table_exists(table_name):
-            rows = self._duck._fetchall(
-                f'SELECT COALESCE(MAX(version_id), 0) FROM "{table_name}" WHERE schema_id = ?',
-                [schema_id]
-            )
-            version_id = rows[0][0] + 1
-        else:
-            version_id = 1
+        # Resolve parameter_id and version_id
+        parameter_id, version_id, is_new_parameter = self._resolve_parameter_slot(
+            table_name, schema_id, version_keys
+        )
 
         ddb_type, col_meta = _infer_duckdb_type(data)
         storage_value = _python_to_storage(data, col_meta)
@@ -498,6 +539,7 @@ class DatabaseManager:
             self._duck._execute(f"""
                 CREATE TABLE "{table_name}" (
                     schema_id INTEGER NOT NULL,
+                    parameter_id INTEGER NOT NULL,
                     version_id INTEGER NOT NULL,
                     "value" {ddb_type}
                 )
@@ -506,26 +548,21 @@ class DatabaseManager:
 
         # Insert data
         self._duck._execute(
-            f'INSERT INTO "{table_name}" ("schema_id", "version_id", "value") VALUES (?, ?, ?)',
-            [schema_id, version_id, storage_value],
+            f'INSERT INTO "{table_name}" ("schema_id", "parameter_id", "version_id", "value") VALUES (?, ?, ?, ?)',
+            [schema_id, parameter_id, version_id, storage_value],
         )
 
-        # Register in _variables (skip if this version already registered
-        # by another schema entry — version_id is scoped per schema entry)
-        existing_var = self._duck._fetchall(
-            "SELECT 1 FROM _variables WHERE variable_name = ? AND version_id = ?",
-            [table_name, version_id],
-        )
-        if not existing_var:
+        # Register in _variables only for truly new parameter slots
+        if is_new_parameter:
             self._duck._execute(
-                "INSERT INTO _variables (variable_name, version_id, schema_level, "
+                "INSERT INTO _variables (variable_name, parameter_id, schema_level, "
                 "dtype, version_keys, description) VALUES (?, ?, ?, ?, ?, ?)",
-                [table_name, version_id, schema_level,
+                [table_name, parameter_id, schema_level,
                  json.dumps(dtype_meta),
                  json.dumps(version_keys or {}, sort_keys=True), ""],
             )
 
-        return version_id, schema_id
+        return parameter_id, schema_id, version_id
 
     @staticmethod
     def _has_custom_serialization(variable_class: type) -> bool:
@@ -537,6 +574,7 @@ class DatabaseManager:
         table_name: str,
         record_id: str | None = None,
         nested_metadata: dict | None = None,
+        version_id: int | list[int] | str = "all",
     ) -> pd.DataFrame:
         """
         Query _record_metadata to find matching records.
@@ -545,6 +583,15 @@ class DatabaseManager:
         - By record_id: direct primary key lookup (with JOINs for full row data)
         - By metadata: filter by schema keys via JOIN with _schema, optionally
           filter by version_keys JSON from _variables, order by created_at DESC
+
+        version_id controls which versions are returned:
+        - "all" (default): no version filtering (return every version)
+        - "latest": only the row with max version_id per (parameter_id, schema_id)
+        - int: only that specific version_id
+        - list[int]: only those version_ids
+
+        Schema key values and version key values may be lists, interpreted as
+        "match any" (SQL IN / Python in).
 
         Returns a DataFrame of matching rows including schema columns and version_keys.
         """
@@ -559,7 +606,7 @@ class DatabaseManager:
                 f"FROM _record_metadata rm "
                 f"LEFT JOIN _schema s ON rm.schema_id = s.schema_id "
                 f"LEFT JOIN _variables v ON rm.variable_name = v.variable_name "
-                f"AND rm.version_id = v.version_id "
+                f"AND rm.parameter_id = v.parameter_id "
                 f"WHERE rm.record_id = ? AND rm.variable_name = ?"
             )
             return self._duck._fetchdf(sql, [record_id, table_name])
@@ -571,30 +618,68 @@ class DatabaseManager:
         conditions = ["rm.variable_name = ?"]
         params: list[Any] = [table_name]
 
-        # Filter schema keys via _schema columns in SQL
+        # Filter schema keys via _schema columns in SQL (lists → IN)
         for key, value in schema_keys.items():
-            conditions.append(f's."{key}" = ?')
-            params.append(str(value))
+            if isinstance(value, (list, tuple)):
+                placeholders = ", ".join(["?"] * len(value))
+                conditions.append(f's."{key}" IN ({placeholders})')
+                params.extend([str(v) for v in value])
+            else:
+                conditions.append(f's."{key}" = ?')
+                params.append(str(value))
+
+        # Filter by specific version_id value(s) in SQL
+        if isinstance(version_id, int):
+            conditions.append("rm.version_id = ?")
+            params.append(version_id)
+        elif isinstance(version_id, (list, tuple)) and all(isinstance(v, int) for v in version_id):
+            placeholders = ", ".join(["?"] * len(version_id))
+            conditions.append(f"rm.version_id IN ({placeholders})")
+            params.extend(version_id)
 
         where = " AND ".join(conditions)
-        sql = (
-            f"SELECT rm.*, {schema_col_select}, v.version_keys "
-            f"FROM _record_metadata rm "
-            f"LEFT JOIN _schema s ON rm.schema_id = s.schema_id "
-            f"LEFT JOIN _variables v ON rm.variable_name = v.variable_name "
-            f"AND rm.version_id = v.version_id "
-            f"WHERE {where} "
-            f"ORDER BY rm.created_at DESC"
-        )
+
+        if version_id == "latest":
+            sql = (
+                f"WITH ranked AS ("
+                f"SELECT rm.*, {schema_col_select}, v.version_keys, "
+                f"ROW_NUMBER() OVER ("
+                f"PARTITION BY rm.variable_name, rm.parameter_id, rm.schema_id "
+                f"ORDER BY rm.version_id DESC"
+                f") as rn "
+                f"FROM _record_metadata rm "
+                f"LEFT JOIN _schema s ON rm.schema_id = s.schema_id "
+                f"LEFT JOIN _variables v ON rm.variable_name = v.variable_name "
+                f"AND rm.parameter_id = v.parameter_id "
+                f"WHERE {where}"
+                f") SELECT * FROM ranked WHERE rn = 1 "
+                f"ORDER BY created_at DESC"
+            )
+        else:
+            sql = (
+                f"SELECT rm.*, {schema_col_select}, v.version_keys "
+                f"FROM _record_metadata rm "
+                f"LEFT JOIN _schema s ON rm.schema_id = s.schema_id "
+                f"LEFT JOIN _variables v ON rm.variable_name = v.variable_name "
+                f"AND rm.parameter_id = v.parameter_id "
+                f"WHERE {where} "
+                f"ORDER BY rm.created_at DESC"
+            )
         df = self._duck._fetchdf(sql, params)
 
-        # Filter by version keys via Python-side JSON parsing
+        # Filter by version keys via Python-side JSON parsing (lists → in)
         if version_keys and len(df) > 0:
             for key, value in version_keys.items():
-                mask = df["version_keys"].apply(
-                    lambda vk, k=key, v=value: json.loads(vk).get(k) == v
-                    if vk is not None and isinstance(vk, str) else False
-                )
+                if isinstance(value, (list, tuple)):
+                    mask = df["version_keys"].apply(
+                        lambda vk, k=key, vals=value: json.loads(vk).get(k) in vals
+                        if vk is not None and isinstance(vk, str) else False
+                    )
+                else:
+                    mask = df["version_keys"].apply(
+                        lambda vk, k=key, v=value: json.loads(vk).get(k) == v
+                        if vk is not None and isinstance(vk, str) else False
+                    )
                 df = df[mask]
 
         return df
@@ -640,6 +725,7 @@ class DatabaseManager:
         loads data from SciDuck, and constructs the BaseVariable instance.
         """
         table_name = row["variable_name"]
+        parameter_id = int(row["parameter_id"])
         version_id = int(row["version_id"])
         schema_id = int(row["schema_id"])
         record_id = row["record_id"]
@@ -652,26 +738,26 @@ class DatabaseManager:
 
         # Get dtype from _variables to determine deserialization path
         dtype_rows = self._duck._fetchall(
-            "SELECT dtype FROM _variables WHERE variable_name = ? AND version_id = ?",
-            [table_name, version_id],
+            "SELECT dtype FROM _variables WHERE variable_name = ? AND parameter_id = ?",
+            [table_name, parameter_id],
         )
 
         if not dtype_rows:
             raise NotFoundError(
-                f"No version {version_id} found for {table_name} in _variables"
+                f"No parameter_id {parameter_id} found for {table_name} in _variables"
             )
 
         dtype_meta = json.loads(dtype_rows[0][0])
         is_custom = dtype_meta.get("custom", False)
 
         if is_custom:
-            # Custom path: direct query by version_id and schema_id
+            # Custom path: direct query by parameter_id, version_id, and schema_id
             df = self._duck._fetchdf(
-                f'SELECT * FROM "{table_name}" WHERE version_id = ? AND schema_id = ?',
-                [version_id, schema_id],
+                f'SELECT * FROM "{table_name}" WHERE parameter_id = ? AND version_id = ? AND schema_id = ?',
+                [parameter_id, version_id, schema_id],
             )
             # Drop SciDuck internal columns
-            df = df.drop(columns=["schema_id", "version_id"], errors="ignore")
+            df = df.drop(columns=["schema_id", "parameter_id", "version_id"], errors="ignore")
 
             if loc is not None:
                 if not isinstance(loc, (list, range, slice)):
@@ -688,18 +774,18 @@ class DatabaseManager:
                 # Native DataFrame: return raw DataFrame directly
                 data = df
         else:
-            # Native path: use SciDuck.load() with version_id and raw=True
+            # Native path: use SciDuck.load() with parameter_id, version_id and raw=True
             schema_keys = nested_metadata.get("schema", {})
             schema_level = self._infer_schema_level(schema_keys)
             if schema_level is not None and schema_keys:
                 data = self._duck.load(
-                    table_name, version_id=version_id, raw=True,
+                    table_name, parameter_id=parameter_id, version_id=version_id, raw=True,
                     **{k: str(v) for k, v in schema_keys.items()},
                 )
             else:
                 # Non-contiguous or no schema — load directly
                 data = self._duck.load(
-                    table_name, version_id=version_id, raw=True,
+                    table_name, parameter_id=parameter_id, version_id=version_id, raw=True,
                 )
 
         instance = variable_class(data)
@@ -959,7 +1045,7 @@ class DatabaseManager:
                     )
                 df.index = index
 
-            version_id, schema_id = self._save_custom_to_sciduck(
+            parameter_id, schema_id, version_id = self._save_custom_to_sciduck(
                 table_name, type(variable), df, schema_level, schema_keys, content_hash,
                 version_keys=version_keys,
             )
@@ -976,21 +1062,21 @@ class DatabaseManager:
                     )
                 df.index = index
 
-            version_id, schema_id = self._save_custom_to_sciduck(
+            parameter_id, schema_id, version_id = self._save_custom_to_sciduck(
                 table_name, type(variable), df, schema_level, schema_keys, content_hash,
                 version_keys=version_keys,
             )
         else:
             # Native storage
             if schema_level is not None and schema_keys:
-                # Contiguous keys — save with schema-scoped version_id
-                version_id, schema_id = self._save_native_with_schema(
+                # Contiguous keys — save with schema-scoped parameter_id
+                parameter_id, schema_id, version_id = self._save_native_with_schema(
                     table_name, type(variable), variable.data, schema_level, schema_keys, content_hash,
                     version_keys=version_keys,
                 )
             else:
                 # No schema or non-contiguous keys — direct insert
-                version_id, schema_id = self._save_native_direct(
+                parameter_id, schema_id, version_id = self._save_native_direct(
                     table_name, type(variable), variable.data, content_hash,
                     version_keys=version_keys,
                 )
@@ -998,6 +1084,7 @@ class DatabaseManager:
         self._save_record_metadata(
             record_id=record_id,
             variable_name=table_name,
+            parameter_id=parameter_id,
             version_id=version_id,
             schema_id=schema_id,
             content_hash=content_hash,
@@ -1092,9 +1179,9 @@ class DatabaseManager:
                 if len(records) == 0:
                     raise NotFoundError(f"No data found with record_id '{version}'")
             else:
-                # Load by metadata
+                # Load by metadata (latest version per parameter set)
                 nested_metadata = self._split_metadata(metadata)
-                records = self._find_record(table_name, nested_metadata=nested_metadata)
+                records = self._find_record(table_name, nested_metadata=nested_metadata, version_id="latest")
                 if len(records) == 0:
                     raise NotFoundError(
                         f"No {variable_class.__name__} found matching metadata: {metadata}"
@@ -1117,6 +1204,7 @@ class DatabaseManager:
         self,
         variable_class: Type[BaseVariable],
         metadata: dict,
+        version_id: int | list[int] | str = "all",
     ):
         """
         Load all variables matching the given metadata as a generator.
@@ -1124,6 +1212,11 @@ class DatabaseManager:
         Args:
             variable_class: The type to load
             metadata: Flat metadata dict
+            version_id: Which versions to return:
+                - "all" (default): return every version
+                - "latest": return only the latest version per parameter set
+                - int: return only that specific version_id
+                - list[int]: return only those version_ids
 
         Yields:
             BaseVariable instances matching the metadata
@@ -1132,7 +1225,7 @@ class DatabaseManager:
         nested_metadata = self._split_metadata(metadata)
 
         try:
-            records = self._find_record(table_name, nested_metadata=nested_metadata)
+            records = self._find_record(table_name, nested_metadata=nested_metadata, version_id=version_id)
         except Exception:
             return  # No data
 
@@ -1158,7 +1251,7 @@ class DatabaseManager:
         nested_metadata = self._split_metadata(metadata)
 
         try:
-            records = self._find_record(table_name, nested_metadata=nested_metadata)
+            records = self._find_record(table_name, nested_metadata=nested_metadata, version_id="all")
         except Exception:
             return []
 

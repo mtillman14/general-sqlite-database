@@ -134,12 +134,12 @@ classdef TestSaveLoad < matlab.unittest.TestCase
             testCase.verifyEqual(result.data, [1 2 3], 'AbsTol', 1e-10);
         end
 
-        function test_load_multiple_matches_returns_array(testCase)
+        function test_load_latest_version_returns_single(testCase)
             RawSignal().save([1 2 3], 'subject', 1, 'session', 'A');
             RawSignal().save([4 5 6], 'subject', 1, 'session', 'A');
             result = RawSignal().load('subject', 1, 'session', 'A');
-            % When multiple matches, load returns array of ThunkOutput
-            testCase.verifyGreaterThanOrEqual(numel(result), 2);
+            % load() returns latest version only
+            testCase.verifyEqual(result.data, [4 5 6], 'AbsTol', 1e-10);
         end
 
         % --- load_all ---
