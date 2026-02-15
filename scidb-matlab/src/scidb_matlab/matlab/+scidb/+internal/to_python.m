@@ -38,7 +38,7 @@ function py_obj = to_python(data)
         dtype = matlab_dtype_to_numpy(data);
 
         py_flat = py.numpy.array(flat(:)', pyargs('dtype', dtype));
-        py_shape = py.tuple(int64(size(data)));
+        py_shape = py.builtins.tuple(num2cell(int64(size(data))));
         py_obj = py_flat.reshape(py_shape, pyargs('order', 'C'));
         py_obj = py.numpy.ascontiguousarray(py_obj);
 

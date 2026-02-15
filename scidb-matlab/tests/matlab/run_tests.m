@@ -10,6 +10,12 @@ function results = run_tests()
 %       cd scidb-matlab/tests/matlab
 %       results = run_tests();
 
+    % clear functions;
+    % rehash path;
+    % 
+    % pythonPath = '/Users/mitchelltillman/Documents/test-project/.venv/bin/python3.11';
+    % pyenv('Version', pythonPath);
+
     this_dir = fileparts(mfilename('fullpath'));
 
     % Set up MATLAB and Python paths
