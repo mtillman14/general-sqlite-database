@@ -408,8 +408,10 @@ class SciDuck:
         if rows:
             return rows[0][0]
 
-        # Insert new entry
-        new_id = self._fetchall("SELECT nextval('_schema_id_seq')")[0][0]
+        # Insert new entry — use MAX+1 for consistency with batch path
+        new_id = self._fetchall(
+            "SELECT COALESCE(MAX(schema_id), 0) + 1 FROM _schema"
+        )[0][0]
         col_names = ["schema_id", "schema_level"] + key_cols
         placeholders = ", ".join(["?"] * len(col_names))
         col_str = ", ".join(f'"{c}"' for c in col_names)
@@ -510,15 +512,6 @@ class SciDuck:
                 self.con.execute(
                     f"INSERT INTO _schema ({col_str}) SELECT * FROM insert_df"
                 )
-
-                # Advance sequence past assigned IDs so single-row path stays correct
-                next_seq_val = first_id + len(missing)
-                try:
-                    self._execute(
-                        f"ALTER SEQUENCE _schema_id_seq RESTART WITH {next_seq_val}"
-                    )
-                except Exception:
-                    pass
 
         return result
 

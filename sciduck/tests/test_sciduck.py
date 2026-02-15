@@ -638,3 +638,51 @@ class TestNonContiguousSchemaKeys:
         )
         loaded = wide_duck.load("cohens_d", subject="S01", speed="FV")
         assert abs(loaded - 0.92) < 1e-10
+
+    def test_batch_then_single_schema_id_no_collision(self, wide_duck):
+        """Schema IDs must not collide when batch and single-row paths are interleaved.
+
+        Regression test: the batch path allocates IDs via MAX(schema_id)+1,
+        while the single-row path formerly used a DuckDB sequence.  If the
+        sequence fell out of sync, the single-row INSERT would hit a duplicate
+        primary-key error on _schema.
+        """
+        # 1. Batch-create several schema entries at once
+        combos = {
+            ("speed", ("S01", "RMT30", "SSV")): {"subject": "S01", "intervention": "RMT30", "speed": "SSV"},
+            ("speed", ("S01", "RMT30", "FV")):  {"subject": "S01", "intervention": "RMT30", "speed": "FV"},
+            ("speed", ("S02", "RMT30", "SSV")): {"subject": "S02", "intervention": "RMT30", "speed": "SSV"},
+        }
+        batch_ids = wide_duck.batch_get_or_create_schema_ids(combos)
+        assert len(batch_ids) == 3
+
+        # 2. Single-row create for a NEW combination — must not collide
+        new_id = wide_duck._get_or_create_schema_id(
+            "speed", {"subject": "S02", "intervention": "RMT30", "speed": "FV"},
+        )
+        assert new_id not in batch_ids.values()
+
+        # 3. Single-row lookup for an EXISTING combination — must return same ID
+        existing_id = wide_duck._get_or_create_schema_id(
+            "speed", {"subject": "S01", "intervention": "RMT30", "speed": "SSV"},
+        )
+        assert existing_id == batch_ids[("speed", ("S01", "RMT30", "SSV"))]
+
+    def test_single_then_batch_schema_id_no_collision(self, wide_duck):
+        """Schema IDs must not collide when single-row creates precede a batch."""
+        # 1. Single-row create
+        id1 = wide_duck._get_or_create_schema_id(
+            "speed", {"subject": "S01", "intervention": "RMT30", "speed": "SSV"},
+        )
+
+        # 2. Batch-create including an overlapping and a new combination
+        combos = {
+            ("speed", ("S01", "RMT30", "SSV")): {"subject": "S01", "intervention": "RMT30", "speed": "SSV"},
+            ("speed", ("S01", "RMT30", "FV")):  {"subject": "S01", "intervention": "RMT30", "speed": "FV"},
+        }
+        batch_ids = wide_duck.batch_get_or_create_schema_ids(combos)
+
+        # Overlapping combo should reuse the same ID
+        assert batch_ids[("speed", ("S01", "RMT30", "SSV"))] == id1
+        # New combo should have a distinct, non-colliding ID
+        assert batch_ids[("speed", ("S01", "RMT30", "FV"))] != id1
