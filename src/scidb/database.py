@@ -596,6 +596,98 @@ class DatabaseManager:
 
         timings["1_setup"] = time.perf_counter() - t0
 
+        # --- Early fast path: skip all per-row work for re-saves ---
+        t_fast = time.perf_counter()
+        vk_json = json.dumps(version_keys or {}, sort_keys=True)
+        existing_param = self._duck._fetchall(
+            "SELECT parameter_id FROM _variables "
+            "WHERE variable_name = ? AND version_keys = ?",
+            [table_name, vk_json],
+        )
+        if existing_param:
+            fast_parameter_id = existing_param[0][0]
+            existing_count = self._duck._fetchall(
+                "SELECT COUNT(*) FROM _record_metadata "
+                "WHERE variable_name = ? AND parameter_id = ?",
+                [table_name, fast_parameter_id],
+            )[0][0]
+
+            if existing_count >= len(data_items):
+                # Query existing records with their schema key values
+                schema_col_select = ", ".join(
+                    f's."{k}"' for k in self.dataset_schema_keys
+                )
+                existing_records = self._duck._fetchall(
+                    f"SELECT r.record_id, r.content_hash, {schema_col_select} "
+                    f"FROM _record_metadata r "
+                    f"LEFT JOIN _schema s ON r.schema_id = s.schema_id "
+                    f"WHERE r.variable_name = ? AND r.parameter_id = ? "
+                    f"ORDER BY r.version_id DESC",
+                    [table_name, fast_parameter_id],
+                )
+
+                # Build lookup: schema key values -> (record_id, content_hash)
+                # Latest version wins (ORDER BY version_id DESC + first-match)
+                existing_by_keys = {}
+                for row in existing_records:
+                    rid = row[0]
+                    chash = row[1]
+                    schema_vals = tuple(
+                        str(v) if v is not None else None for v in row[2:]
+                    )
+                    if schema_vals not in existing_by_keys:
+                        existing_by_keys[schema_vals] = (rid, chash)
+
+                # Map each input row by its schema key values
+                result_ids = []
+                input_keys = []
+                all_matched = True
+                for _, flat_meta in data_items:
+                    key = tuple(
+                        str(flat_meta[k]) if k in flat_meta else None
+                        for k in self.dataset_schema_keys
+                    )
+                    input_keys.append(key)
+                    if key in existing_by_keys:
+                        result_ids.append(existing_by_keys[key][0])
+                    else:
+                        all_matched = False
+                        break
+
+                # Verify input keys are unique (otherwise ambiguous mapping)
+                if all_matched and len(set(input_keys)) == len(input_keys):
+                    # Sample-verify content hashes
+                    sample_size = min(
+                        max(10, len(data_items) // 100), len(data_items)
+                    )
+                    sample_indices = random.sample(
+                        range(len(data_items)), sample_size
+                    )
+
+                    sample_ok = True
+                    for idx in sample_indices:
+                        data_val = data_items[idx][0]
+                        actual_hash = canonical_hash(data_val)
+                        expected_hash = existing_by_keys[input_keys[idx]][1]
+                        if actual_hash != expected_hash:
+                            sample_ok = False
+                            break
+
+                    if sample_ok:
+                        if profile:
+                            timings["fast_path"] = time.perf_counter() - t_fast
+                            timings["total"] = time.perf_counter() - t0
+                            print(
+                                f"\n--- save_batch() FAST PATH "
+                                f"({len(data_items)} items, all exist) ---"
+                            )
+                            for phase, elapsed in timings.items():
+                                print(f"  {phase:30s} {elapsed:8.3f}s")
+                            print()
+                        return result_ids
+
+        timings["1b_fast_path_miss"] = time.perf_counter() - t_fast
+
         # --- Batch schema_id resolution ---
         # Split all metadata and collect unique schema key combos
         t1 = time.perf_counter()
@@ -695,80 +787,6 @@ class DatabaseManager:
                 version_id_map[sid] = 1
 
         timings["4_parameter_resolution"] = time.perf_counter() - t3
-
-        # --- Fast path: skip hashing if all records already exist ---
-        if not is_new_parameter:
-            t_fast = time.perf_counter()
-            existing_count = self._duck._fetchall(
-                "SELECT COUNT(*) FROM _record_metadata "
-                "WHERE variable_name = ? AND parameter_id = ?",
-                [table_name, parameter_id],
-            )[0][0]
-
-            if existing_count >= len(data_items):
-                # Compute input schema_ids from already-resolved data
-                input_schema_ids = []
-                for nested in all_nested:
-                    schema_keys = nested.get("schema", {})
-                    schema_level = self._infer_schema_level(schema_keys)
-                    if schema_level is not None and schema_keys:
-                        key_tuple = tuple(
-                            str(schema_keys.get(k, "")) for k in self.dataset_schema_keys
-                            if k in schema_keys
-                        )
-                        input_schema_ids.append(schema_id_cache[(schema_level, key_tuple)])
-                    else:
-                        input_schema_ids.append(0)
-
-                # Only use fast path if schema_ids are unique per row
-                if len(set(input_schema_ids)) == len(input_schema_ids):
-                    # Query existing records (latest version per schema_id)
-                    existing_records = self._duck._fetchall(
-                        "SELECT schema_id, record_id, content_hash "
-                        "FROM _record_metadata "
-                        "WHERE variable_name = ? AND parameter_id = ? "
-                        "ORDER BY schema_id, version_id DESC",
-                        [table_name, parameter_id],
-                    )
-                    existing_by_schema = {}
-                    for sid, rid, chash in existing_records:
-                        if sid not in existing_by_schema:
-                            existing_by_schema[sid] = (rid, chash)
-
-                    # Map each input row to existing record
-                    result_ids = []
-                    all_matched = True
-                    for sid in input_schema_ids:
-                        if sid in existing_by_schema:
-                            result_ids.append(existing_by_schema[sid][0])
-                        else:
-                            all_matched = False
-                            break
-
-                    if all_matched:
-                        # Sample-verify content hashes
-                        sample_size = min(max(10, len(data_items) // 100), len(data_items))
-                        sample_indices = random.sample(range(len(data_items)), sample_size)
-
-                        sample_ok = True
-                        for idx in sample_indices:
-                            data_val = data_items[idx][0]
-                            actual_hash = canonical_hash(data_val)
-                            expected_hash = existing_by_schema[input_schema_ids[idx]][1]
-                            if actual_hash != expected_hash:
-                                sample_ok = False
-                                break
-
-                        if sample_ok:
-                            if profile:
-                                timings["fast_path"] = time.perf_counter() - t_fast
-                                timings["total"] = time.perf_counter() - t0
-                                print(f"\n--- save_batch() FAST PATH "
-                                      f"({len(data_items)} items, all exist) ---")
-                                for phase, elapsed in timings.items():
-                                    print(f"  {phase:30s} {elapsed:8.3f}s")
-                                print()
-                            return result_ids
 
         # --- Per-row Python computation (no SQL) ---
         t4 = time.perf_counter()

@@ -138,10 +138,10 @@ classdef BaseVariable < dynamicprops
             % Separate db option from common metadata
             [common_nv, db_val] = extract_db(varargin);
 
-            % --- Convert data column to Python list ---
+            % --- Convert data column to Python (numpy for numeric) ---
             data_col = tbl.(data_column);
             if isnumeric(data_col)
-                py_data = py.list(num2cell(data_col(:)'));
+                py_data = py.numpy.array(data_col(:)');
             elseif isstring(data_col)
                 py_data = py.list(cellfun(@char, num2cell(data_col(:)'), ...
                     'UniformOutput', false));
@@ -155,7 +155,7 @@ classdef BaseVariable < dynamicprops
                 end
             end
 
-            % --- Convert metadata columns (columnar) ---
+            % --- Convert metadata columns (numpy for numeric) ---
             py_meta_keys = py.list(metadata_columns);
             py_meta_cols = py.list();
             for j = 1:numel(metadata_columns)
@@ -164,7 +164,7 @@ classdef BaseVariable < dynamicprops
                     col = string(col); % Can't convert categorical to Python
                 end
                 if isnumeric(col)
-                    py_meta_cols.append(py.list(num2cell(col(:)')));
+                    py_meta_cols.append(py.numpy.array(col(:)'));
                 elseif isstring(col)
                     py_meta_cols.append(py.list(cellfun(@char, ...
                         num2cell(col(:)'), 'UniformOutput', false)));
@@ -195,11 +195,7 @@ classdef BaseVariable < dynamicprops
                 py_common, py_db);
 
             % --- Convert result to MATLAB string array ---
-            n = int64(py.builtins.len(py_result));
-            record_ids = strings(n, 1);
-            for i = 1:n
-                record_ids(i) = string(py_result{i});
-            end
+            record_ids = string(cell(py_result))';
 
         end
 

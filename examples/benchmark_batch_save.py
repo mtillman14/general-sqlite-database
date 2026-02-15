@@ -56,7 +56,7 @@ def build_dataframe():
 def main():
     df = build_dataframe()
     print(f"DataFrame: {len(df)} rows, {len(df.columns)} columns")
-    print(f"Unique schema combos: {df.drop(columns='value').drop_duplicates().shape[0]}")
+    print(f"Unique schema combos: {df.drop(columns='value1').drop_duplicates().shape[0]}")
 
     # root_dir = "/Users/mitchelltillman/Documents/ICNR-2026-analysis/tmp_data"
     # df_csv = os.path.join(root_dir, "value1.csv")
@@ -80,7 +80,7 @@ def main():
         t_start = time.perf_counter()
         record_ids = BenchScalar.save_from_dataframe(
             df=df,
-            data_column="value",
+            data_column="value1",
             metadata_columns=metadata_cols,
             db=db,
         )
@@ -96,11 +96,25 @@ def main():
             meta = {col: df2[col].iloc[i] for col in metadata_cols}
             # Convert numpy types
             meta = {k: v.item() if hasattr(v, "item") else v for k, v in meta.items()}
-            data = df2["value"].iloc[i].item()
+            data = df2["value1"].iloc[i].item()
             data_items.append((data, meta))
 
         record_ids2 = db.save_batch(BenchScalar, data_items, profile=True)
         print(f"Records saved: {len(record_ids2)}")
+
+        # --- Benchmark re-saving the data with profile=True ---
+        print("\n=== save_batch with profiling (same data to activate idempotency skip) ===")
+        data_items = []
+        for i in range(len(df2)):
+            meta = {col: df2[col].iloc[i] for col in metadata_cols}
+            # Convert numpy types
+            meta = {k: v.item() if hasattr(v, "item") else v for k, v in meta.items()}
+            data = df2["value1"].iloc[i].item()
+            data_items.append((data, meta))
+
+        record_ids2 = db.save_batch(BenchScalar, data_items, profile=True)
+        print(f"Records saved: {len(record_ids2)}")
+
 
         db.close()
 

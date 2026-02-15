@@ -186,12 +186,12 @@ def save_batch_bridge(type_name, data_values, metadata_keys, metadata_columns, c
     ----------
     type_name : str
         Variable class name (e.g. "StepLength").
-    data_values : list
+    data_values : list or numpy array
         One data value per row.
     metadata_keys : list of str
         Metadata column names, same order as metadata_columns.
-    metadata_columns : list of list
-        One inner list per metadata key, each with one value per row.
+    metadata_columns : list of (list or numpy array)
+        One inner list/array per metadata key, each with one value per row.
     common_metadata : dict or None
         Extra metadata applied to every row.
     db : DatabaseManager or None
@@ -215,21 +215,29 @@ def save_batch_bridge(type_name, data_values, metadata_keys, metadata_columns, c
     _db = db if db is not None and not isinstance(db, type(None)) else get_database()
     common = dict(common_metadata) if common_metadata else {}
     keys = list(metadata_keys)
-    n = len(data_values)
 
+    # Bulk-convert numpy arrays to native Python lists (one call instead of
+    # N per-element .item() calls).  Plain Python lists pass through unchanged.
+    if hasattr(data_values, 'tolist'):
+        data_list = data_values.tolist()
+    else:
+        data_list = [v.item() if hasattr(v, 'item') else v for v in data_values]
+
+    meta_lists = []
+    for j in range(len(keys)):
+        col = metadata_columns[j]
+        if hasattr(col, 'tolist'):
+            meta_lists.append(col.tolist())
+        else:
+            meta_lists.append([v.item() if hasattr(v, 'item') else v for v in col])
+
+    n = len(data_list)
     data_items = []
     for i in range(n):
         meta = dict(common)
         for j, key in enumerate(keys):
-            val = metadata_columns[j][i]
-            if hasattr(val, 'item'):
-                val = val.item()
-            meta[key] = val
-
-        data = data_values[i]
-        if hasattr(data, 'item'):
-            data = data.item()
-        data_items.append((data, meta))
+            meta[key] = meta_lists[j][i]
+        data_items.append((data_list[i], meta))
 
     return _db.save_batch(cls, data_items)
 
