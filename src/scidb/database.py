@@ -1589,8 +1589,128 @@ class DatabaseManager:
         except Exception:
             return  # No data
 
+        if len(records) == 0:
+            return
+
+        # Fall back to per-record loading for custom serialization
+        if self._has_custom_serialization(variable_class):
+            for _, row in records.iterrows():
+                yield self._load_by_record_row(variable_class, row)
+            return
+
+        # --- Bulk loading path ---
+
+        # 1. Bulk dtype lookup: one query per unique parameter_id
+        unique_pids = records["parameter_id"].unique()
+        dtype_by_pid = {}
+        for pid in unique_pids:
+            pid = int(pid)
+            dtype_rows = self._duck._fetchall(
+                "SELECT dtype FROM _variables WHERE variable_name = ? AND parameter_id = ?",
+                [table_name, pid],
+            )
+            if dtype_rows:
+                dtype_by_pid[pid] = json.loads(dtype_rows[0][0])
+
+        if not dtype_by_pid:
+            return
+
+        # Check if any parameter_id uses custom dtype — fall back if so
+        if any(dm.get("custom", False) for dm in dtype_by_pid.values()):
+            for _, row in records.iterrows():
+                yield self._load_by_record_row(variable_class, row)
+            return
+
+        # 2. Bulk data fetch: one query for all data rows
+        # Use the first dtype_meta to determine data columns (all parameter_ids
+        # for the same table share the same column structure)
+        first_dtype = next(iter(dtype_by_pid.values()))
+        data_cols = list(first_dtype["columns"].keys())
+        data_select = ", ".join(f'"{c}"' for c in data_cols)
+
+        # Build WHERE clause for all (parameter_id, version_id, schema_id) combos
+        pid_list = [int(r["parameter_id"]) for _, r in records.iterrows()]
+        vid_list = [int(r["version_id"]) for _, r in records.iterrows()]
+        sid_list = [int(r["schema_id"]) for _, r in records.iterrows()]
+
+        # Use unique (pid, vid, sid) tuples to avoid duplicate fetches
+        unique_keys = list(set(zip(pid_list, vid_list, sid_list)))
+        if not unique_keys:
+            return
+
+        # Build a single query with OR conditions for each unique key tuple
+        conditions = []
+        params = []
+        for pid, vid, sid in unique_keys:
+            conditions.append("(parameter_id = ? AND version_id = ? AND schema_id = ?)")
+            params.extend([pid, vid, sid])
+
+        where_clause = " OR ".join(conditions)
+        sql = (
+            f'SELECT parameter_id, version_id, schema_id, {data_select} '
+            f'FROM "{table_name}" '
+            f'WHERE {where_clause}'
+        )
+        all_data_df = self._duck._fetchdf(sql, params)
+
+        # 3. Restore types per parameter_id group
+        # Group data rows and apply type restoration
+        data_lookup = {}
+        for pid in dtype_by_pid:
+            pid_mask = all_data_df["parameter_id"] == pid
+            pid_df = all_data_df[pid_mask]
+            if len(pid_df) == 0:
+                continue
+            dtype_meta = dtype_by_pid[pid]
+            # Restore types on data columns only
+            restored = pid_df[data_cols].copy()
+            restored = self._duck._restore_types(restored, dtype_meta)
+            # Index each row by (pid, vid, sid)
+            for idx in restored.index:
+                key = (
+                    int(all_data_df.at[idx, "parameter_id"]),
+                    int(all_data_df.at[idx, "version_id"]),
+                    int(all_data_df.at[idx, "schema_id"]),
+                )
+                data_lookup[key] = (restored.loc[idx], dtype_meta)
+
+        # 4. Construct instances for each metadata row
         for _, row in records.iterrows():
-            yield self._load_by_record_row(variable_class, row)
+            pid = int(row["parameter_id"])
+            vid = int(row["version_id"])
+            sid = int(row["schema_id"])
+            record_id = row["record_id"]
+            content_hash = row["content_hash"]
+            lineage_hash = row["lineage_hash"]
+            # Normalize NaN to None
+            if lineage_hash is not None and not isinstance(lineage_hash, str):
+                lineage_hash = None
+
+            flat_metadata, _ = self._reconstruct_metadata_from_row(row)
+
+            key = (pid, vid, sid)
+            if key not in data_lookup:
+                continue  # Data not found, skip gracefully
+
+            data_row, dtype_meta = data_lookup[key]
+            mode = dtype_meta.get("mode", "single_column")
+            columns_meta = dtype_meta.get("columns", {})
+
+            if mode == "single_column":
+                col_name = next(iter(columns_meta))
+                data = data_row[col_name]
+            else:
+                data = {c: data_row[c] for c in columns_meta}
+
+            instance = variable_class(data)
+            instance.record_id = record_id
+            instance.metadata = flat_metadata
+            instance.content_hash = content_hash
+            instance.lineage_hash = lineage_hash
+            instance.version_id = vid
+            instance.parameter_id = pid
+
+            yield instance
 
     def list_versions(
         self,

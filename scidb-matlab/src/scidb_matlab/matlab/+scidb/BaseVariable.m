@@ -251,23 +251,20 @@ classdef BaseVariable < dynamicprops
             end
 
             % Query all matching records (latest version per parameter set)
-            py_gen = py_db.load_all(py_class, py_metadata, pyargs('version_id', 'latest'));
-            py_list = py.list(py_gen);
-            n = int64(py.builtins.len(py_list));
+            % load_and_extract keeps generator materialization in Python
+            bulk = py.scidb_matlab.bridge.load_and_extract( ...
+                py_class, py_metadata, ...
+                pyargs('version_id', 'latest', 'db', py_db));
+            n = int64(bulk{'n'});
 
             if n == 0
                 error('scidb:NotFoundError', 'No %s found matching the given metadata.', type_name);
-            elseif n == 1
-                % Single match → return single ThunkOutput
-                result = scidb.BaseVariable.wrap_py_var(py_list{1});
             else
-                % Multiple matches
-                results_arr = scidb.ThunkOutput.empty();
-                for i = 1:n
-                    results_arr(end+1) = scidb.BaseVariable.wrap_py_var(py_list{i}); %#ok<AGROW>
-                end
+                results_arr = scidb.BaseVariable.wrap_py_vars_batch(bulk);
 
-                if as_table
+                if n == 1
+                    result = results_arr(1);
+                elseif as_table
                     result = multi_result_to_table(results_arr, type_name);
                 else
                     result = results_arr;
@@ -313,19 +310,11 @@ classdef BaseVariable < dynamicprops
             else
                 py_db = db_val;
             end
-            py_gen = py_db.load_all(py_class, py_metadata, pyargs('version_id', py_version_id));
-
-            results_arr = scidb.ThunkOutput.empty();
-            py_iter = py.builtins.iter(py_gen);
-
-            while true
-                try
-                    py_var = py.builtins.next(py_iter);
-                catch
-                    break;
-                end
-                results_arr(end+1) = scidb.BaseVariable.wrap_py_var(py_var); %#ok<AGROW>
-            end
+            % load_and_extract keeps generator materialization in Python
+            bulk = py.scidb_matlab.bridge.load_and_extract( ...
+                py_class, py_metadata, ...
+                pyargs('version_id', py_version_id, 'db', py_db));
+            results_arr = scidb.BaseVariable.wrap_py_vars_batch(bulk);
 
             if as_table && numel(results_arr) > 1
                 results = multi_result_to_table(results_arr, type_name);
@@ -510,6 +499,79 @@ classdef BaseVariable < dynamicprops
             if ~isa(py_pid, 'py.NoneType')
                 v.parameter_id = int64(py_pid);
             end
+        end
+
+        function results = wrap_py_vars_batch(bulk)
+        %WRAP_PY_VARS_BATCH  Batch-convert Python BaseVariables to ThunkOutputs.
+        %   Accepts the bulk dict returned by bridge.load_and_extract() or
+        %   bridge.wrap_batch_bridge().  Parses newline-joined strings and
+        %   JSON metadata with minimal MATLAB-Python boundary crossings.
+        %
+        %   Data and py_var objects are stored in a Python-side cache
+        %   (never returned to MATLAB en masse) and accessed one at a
+        %   time via get_batch_item(batch_id, index).
+        %
+        %   results = scidb.BaseVariable.wrap_py_vars_batch(bulk)
+        %
+        %   Returns a ThunkOutput array.
+            n = int64(bulk{'n'});
+
+            if n == 0
+                results = scidb.ThunkOutput.empty();
+                return;
+            end
+
+            % Extract scalar fields from newline-joined strings (1 crossing each)
+            record_ids     = splitlines(string(bulk{'record_ids'}));
+            content_hashes = splitlines(string(bulk{'content_hashes'}));
+            lineage_hashes = splitlines(string(bulk{'lineage_hashes'}));
+            vid_strs       = splitlines(string(bulk{'version_ids'}));
+            pid_strs       = splitlines(string(bulk{'parameter_ids'}));
+
+            % Parse all metadata at once via JSON (native C decoder, no crossings)
+            json_str = char(bulk{'json_meta'});
+            meta_arr = jsondecode(json_str);
+            % Convert char fields to string for consistency with pydict_to_struct
+            for mi = 1:n
+                flds = fieldnames(meta_arr(mi));
+                for fi = 1:numel(flds)
+                    val = meta_arr(mi).(flds{fi});
+                    if ischar(val)
+                        meta_arr(mi).(flds{fi}) = string(val);
+                    end
+                end
+            end
+
+            % Batch ID for accessing cached data/py_vars one at a time
+            batch_id = int64(bulk{'batch_id'});
+
+            % Build ThunkOutput array
+            results = scidb.ThunkOutput.empty();
+            for i = 1:n
+                item = py.scidb_matlab.bridge.get_batch_item(batch_id, int64(i-1));
+                matlab_data = scidb.internal.from_python(item{1});
+                v = scidb.ThunkOutput(matlab_data, item{2});
+                v.record_id    = record_ids(i);
+                v.content_hash = content_hashes(i);
+
+                if lineage_hashes(i) ~= ""
+                    v.lineage_hash = lineage_hashes(i);
+                end
+
+                v.metadata = meta_arr(i);
+
+                if vid_strs(i) ~= ""
+                    v.version_id = int64(str2double(vid_strs(i)));
+                end
+                if pid_strs(i) ~= ""
+                    v.parameter_id = int64(str2double(pid_strs(i)));
+                end
+
+                results(end+1) = v; %#ok<AGROW>
+            end
+
+            % Release Python-side cache
+            py.scidb_matlab.bridge.free_batch(batch_id);
         end
     end
 end

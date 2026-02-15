@@ -25,6 +25,10 @@ function for_each(fn, inputs, outputs, varargin)
 %   Name-Value Arguments:
 %       dry_run       - If true, preview without executing (default: false)
 %       save          - If true, save outputs (default: true)
+%       preload       - If true, pre-load all input data for each variable
+%                       type in a single query before iterating. Much faster
+%                       but uses more memory. Set to false for very large
+%                       datasets that may not fit in memory. (default: true)
 %       pass_metadata - If true, pass metadata as trailing name-value
 %                       arguments to fn. If not specified, auto-detects
 %                       based on fn.generates_file when fn is a Thunk.
@@ -60,6 +64,7 @@ function for_each(fn, inputs, outputs, varargin)
 
     dry_run = opts.dry_run;
     do_save = opts.save;
+    do_preload = opts.preload;
     as_table_raw = opts.as_table;
 
     % Build db name-value pair for passthrough to load/save
@@ -165,6 +170,120 @@ function for_each(fn, inputs, outputs, varargin)
         combos = cartesian_product(meta_values);
     end
 
+    % --- Pre-load phase (optimization: 1 query per input instead of N) ---
+    % Resolve database once for preloading and main loop
+    if isempty(opts.db)
+        py_db = py.scidb.database.get_database();
+    else
+        py_db = opts.db;
+    end
+
+    preloaded_results = cell(1, n_inputs);  % ThunkOutput arrays
+    preloaded_maps    = cell(1, n_inputs);  % containers.Map: key_str → indices
+    preloaded_keys    = cell(1, n_inputs);  % query key names per input
+
+    if do_preload && ~dry_run && ~isempty(meta_keys)
+        for p = 1:n_inputs
+            if ~loadable_idx(p)
+                continue;
+            end
+
+            var_spec = inputs.(input_names{p});
+
+            % PathInput is not a database load — skip preloading
+            if isa(var_spec, 'scidb.PathInput')
+                continue;
+            end
+
+            % Determine variable type and fixed overrides
+            if isa(var_spec, 'scidb.Fixed')
+                var_inst = var_spec.var_type;
+                fixed_meta = var_spec.fixed_metadata;
+            else
+                var_inst = var_spec;
+                fixed_meta = struct();
+            end
+
+            type_name = class(var_inst);
+            py_class = scidb.internal.ensure_registered(type_name);
+
+            fprintf('Bulk preloading variable %s\n', type_name);
+
+            % Build query metadata: iteration values as arrays + fixed overrides
+            query_nv = {};
+            for k = 1:numel(meta_keys)
+                query_nv{end+1} = char(meta_keys(k)); %#ok<AGROW>
+                vals = meta_values{k};
+                if numel(vals) == 1
+                    query_nv{end+1} = vals{1}; %#ok<AGROW>
+                else
+                    % Convert cell back to array for metadata_to_pydict
+                    if isnumeric(vals{1})
+                        query_nv{end+1} = cell2mat(vals); %#ok<AGROW>
+                    else
+                        query_nv{end+1} = string(vals); %#ok<AGROW>
+                    end
+                end
+            end
+
+            % Apply fixed overrides (scalar values replace array values)
+            fixed_fields = fieldnames(fixed_meta);
+            for f = 1:numel(fixed_fields)
+                fn = fixed_fields{f};
+                fval = fixed_meta.(fn);
+                replaced = false;
+                for k = 1:2:numel(query_nv)
+                    if strcmp(query_nv{k}, fn)
+                        query_nv{k+1} = fval;
+                        replaced = true;
+                        break;
+                    end
+                end
+                if ~replaced
+                    query_nv{end+1} = fn;   %#ok<AGROW>
+                    query_nv{end+1} = fval;  %#ok<AGROW>
+                end
+            end
+
+            % Track query keys for lookup (sorted)
+            q_keys = string.empty;
+            for k = 1:2:numel(query_nv)
+                q_keys(end+1) = string(query_nv{k}); %#ok<AGROW>
+            end
+            preloaded_keys{p} = sort(q_keys);
+
+            % Single query for all combinations — load_and_extract keeps
+            % generator materialization in Python (no proxy overhead)
+            py_metadata = scidb.internal.metadata_to_pydict(query_nv{:});
+            bulk = py.scidb_matlab.bridge.load_and_extract( ...
+                py_class, py_metadata, ...
+                pyargs('version_id', 'latest', 'db', py_db));
+            n_results = int64(bulk{'n'});
+
+            if n_results == 0
+                preloaded_results{p} = scidb.ThunkOutput.empty();
+                preloaded_maps{p} = containers.Map();
+                continue;
+            end
+
+            % Batch-wrap all results
+            results = scidb.BaseVariable.wrap_py_vars_batch(bulk);
+            preloaded_results{p} = results;
+
+            % Build lookup map: metadata key string → array of indices
+            lookup = containers.Map('KeyType', 'char', 'ValueType', 'any');
+            for i = 1:numel(results)
+                key_str = result_meta_key(results(i).metadata, preloaded_keys{p});
+                if lookup.isKey(key_str)
+                    lookup(key_str) = [lookup(key_str), i];
+                else
+                    lookup(key_str) = i;
+                end
+            end
+            preloaded_maps{p} = lookup;
+        end
+    end
+
     completed = 0;
     skipped = 0;
 
@@ -212,27 +331,56 @@ function for_each(fn, inputs, outputs, varargin)
 
             var_spec = inputs.(input_names{p});
 
+            % Determine var_inst for table conversion
             if isa(var_spec, 'scidb.Fixed')
-                % Merge iteration metadata with fixed overrides
-                load_nv = meta_nv;
-                fixed_fields = fieldnames(var_spec.fixed_metadata);
-                for f = 1:numel(fixed_fields)
-                    load_nv{end+1} = fixed_fields{f}; %#ok<AGROW>
-                    load_nv{end+1} = var_spec.fixed_metadata.(fixed_fields{f}); %#ok<AGROW>
-                end
                 var_inst = var_spec.var_type;
             else
-                load_nv = meta_nv;
                 var_inst = var_spec;
             end
 
-            try
-                loaded{p} = var_inst.load(load_nv{:}, db_nv{:});
-            catch err
-                fprintf('[skip] %s: failed to load %s (%s): %s\n', ...
-                    metadata_str, input_names{p}, class(var_inst), err.message);
-                load_failed = true;
-                break;
+            % Use preloaded data if available for this input
+            if ~isempty(preloaded_maps{p})
+                fixed_meta = struct();
+                if isa(var_spec, 'scidb.Fixed')
+                    fixed_meta = var_spec.fixed_metadata;
+                end
+                key_str = combo_meta_key(meta_keys, combo, fixed_meta, preloaded_keys{p});
+
+                if preloaded_maps{p}.isKey(key_str)
+                    idx = preloaded_maps{p}(key_str);
+                    if numel(idx) == 1
+                        loaded{p} = preloaded_results{p}(idx);
+                    else
+                        loaded{p} = preloaded_results{p}(idx);
+                    end
+                else
+                    fprintf('[skip] %s: no data found for %s (%s)\n', ...
+                        metadata_str, input_names{p}, class(var_inst));
+                    load_failed = true;
+                    break;
+                end
+            else
+                % Fallback: per-iteration load (PathInput, preload=false,
+                % or no metadata keys)
+                if isa(var_spec, 'scidb.Fixed')
+                    load_nv = meta_nv;
+                    fixed_fields = fieldnames(var_spec.fixed_metadata);
+                    for f = 1:numel(fixed_fields)
+                        load_nv{end+1} = fixed_fields{f}; %#ok<AGROW>
+                        load_nv{end+1} = var_spec.fixed_metadata.(fixed_fields{f}); %#ok<AGROW>
+                    end
+                else
+                    load_nv = meta_nv;
+                end
+
+                try
+                    loaded{p} = var_inst.load(load_nv{:}, db_nv{:});
+                catch err
+                    fprintf('[skip] %s: failed to load %s (%s): %s\n', ...
+                        metadata_str, input_names{p}, class(var_inst), err.message);
+                    load_failed = true;
+                    break;
+                end
             end
 
             % Convert multi-result to table if requested
@@ -342,6 +490,7 @@ function [meta_args, opts] = split_options(varargin)
 %SPLIT_OPTIONS  Separate known option flags from metadata name-value pairs.
     opts.dry_run = false;
     opts.save = true;
+    opts.preload = true;
     opts.pass_metadata = [];
     opts.as_table = string.empty;
     opts.db = [];
@@ -358,6 +507,10 @@ function [meta_args, opts] = split_options(varargin)
                     continue;
                 case "save"
                     opts.save = logical(varargin{i+1});
+                    i = i + 2;
+                    continue;
+                case "preload"
+                    opts.preload = logical(varargin{i+1});
                     i = i + 2;
                     continue;
                 case "pass_metadata"
@@ -581,4 +734,55 @@ function tbl = fe_multi_result_to_table(results, type_name)
         data_col{i} = results(i).data;
     end
     tbl.(col_name) = data_col;
+end
+
+
+function key = build_meta_key(keys, vals)
+%BUILD_META_KEY  Build a sorted lookup key from metadata key-value pairs.
+%   keys: string array, vals: cell array of corresponding values.
+%   Returns a string like "session=A|subject=1" (sorted by key name).
+    parts = cell(1, numel(keys));
+    for k = 1:numel(keys)
+        v = vals{k};
+        if isnumeric(v)
+            parts{k} = sprintf('%s=%g', keys(k), v);
+        else
+            parts{k} = sprintf('%s=%s', keys(k), string(v));
+        end
+    end
+    key = char(strjoin(sort(string(parts)), '|'));
+end
+
+
+function key = result_meta_key(metadata_struct, query_keys)
+%RESULT_META_KEY  Build lookup key from a loaded result's metadata struct.
+    vals = cell(1, numel(query_keys));
+    for k = 1:numel(query_keys)
+        vals{k} = metadata_struct.(char(query_keys(k)));
+    end
+    key = build_meta_key(query_keys, vals);
+end
+
+
+function key = combo_meta_key(meta_keys, combo, fixed_meta, query_keys)
+%COMBO_META_KEY  Build lookup key for a specific iteration combo.
+%   Applies fixed metadata overrides and uses only query_keys for the key.
+    % Start with iteration metadata
+    effective = containers.Map('KeyType', 'char', 'ValueType', 'any');
+    for k = 1:numel(meta_keys)
+        effective(char(meta_keys(k))) = combo{k};
+    end
+
+    % Apply fixed overrides
+    ff = fieldnames(fixed_meta);
+    for f = 1:numel(ff)
+        effective(ff{f}) = fixed_meta.(ff{f});
+    end
+
+    % Extract values for query_keys only
+    vals = cell(1, numel(query_keys));
+    for k = 1:numel(query_keys)
+        vals{k} = effective(char(query_keys(k)));
+    end
+    key = build_meta_key(query_keys, vals);
 end

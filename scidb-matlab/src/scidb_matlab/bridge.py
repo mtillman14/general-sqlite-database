@@ -245,6 +245,142 @@ def save_batch_bridge(type_name, data_values, metadata_keys, metadata_columns, c
     return "\n".join(_db.save_batch(cls, data_items))
 
 
+# ---------------------------------------------------------------------------
+# Batch cache — keeps data/py_vars in Python so they never cross to MATLAB's
+# proxy layer.  MATLAB accesses individual items via get_batch_item().
+# ---------------------------------------------------------------------------
+
+_batch_cache = {}
+_batch_id_counter = 0
+
+
+def _cache_batch(data_list, py_vars_list):
+    """Store data and py_vars lists server-side, return an integer handle."""
+    global _batch_id_counter
+    bid = _batch_id_counter
+    _batch_id_counter += 1
+    _batch_cache[bid] = (data_list, py_vars_list)
+    return bid
+
+
+def get_batch_item(batch_id, index):
+    """Return (data, py_var) for one element from a cached batch."""
+    data_list, py_vars_list = _batch_cache[int(batch_id)]
+    i = int(index)
+    return data_list[i], py_vars_list[i]
+
+
+def free_batch(batch_id):
+    """Release a cached batch."""
+    _batch_cache.pop(int(batch_id), None)
+
+
+def wrap_batch_bridge(py_vars_list):
+    """Extract all fields from a list of BaseVariables into bulk format.
+
+    Scalar fields are packed into newline-joined strings and metadata into
+    a single JSON string.  The heavy ``data`` and ``py_vars`` lists are
+    stored in a Python-side cache (never returned to MATLAB) and accessed
+    one element at a time via ``get_batch_item(batch_id, index)``.
+
+    Parameters
+    ----------
+    py_vars_list : list of BaseVariable
+        Python BaseVariable instances to extract.
+
+    Returns
+    -------
+    dict with keys:
+        n              : int
+        batch_id       : int  — handle for get_batch_item / free_batch
+        record_ids     : str  — newline-joined
+        content_hashes : str  — newline-joined
+        lineage_hashes : str  — newline-joined ('' for None)
+        version_ids    : str  — newline-joined int strings ('' for None)
+        parameter_ids  : str  — newline-joined int strings ('' for None)
+        json_meta      : str  — JSON array of metadata dicts
+    """
+    import json
+
+    py_vars = list(py_vars_list) if not isinstance(py_vars_list, list) else py_vars_list
+    n = len(py_vars)
+
+    record_ids = []
+    content_hashes = []
+    lineage_hashes = []
+    version_ids = []
+    parameter_ids = []
+    meta_dicts = []
+    data = []
+
+    for v in py_vars:
+        record_ids.append(v.record_id or '')
+        content_hashes.append(v.content_hash or '')
+        lh = v.lineage_hash
+        lineage_hashes.append(lh if lh is not None else '')
+        vid = getattr(v, 'version_id', None)
+        version_ids.append(str(vid) if vid is not None else '')
+        pid = getattr(v, 'parameter_id', None)
+        parameter_ids.append(str(pid) if pid is not None else '')
+        meta = v.metadata
+        meta_dicts.append(dict(meta) if meta is not None else {})
+        data.append(v.data)
+
+    batch_id = _cache_batch(data, py_vars)
+
+    return {
+        'n': n,
+        'batch_id': batch_id,
+        'record_ids': '\n'.join(record_ids),
+        'content_hashes': '\n'.join(content_hashes),
+        'lineage_hashes': '\n'.join(lineage_hashes),
+        'version_ids': '\n'.join(version_ids),
+        'parameter_ids': '\n'.join(parameter_ids),
+        'json_meta': json.dumps(meta_dicts),
+    }
+
+
+def load_and_extract(py_class, metadata_dict, version_id='latest', db=None):
+    """Load all matching variables and extract fields in bulk.
+
+    Combines load_all -> list -> wrap_batch_bridge in one Python call.
+    The intermediate BaseVariable list and data arrays stay in Python
+    (accessed later via get_batch_item).  Only lightweight strings/JSON
+    cross back to MATLAB.
+
+    Parameters
+    ----------
+    py_class : type
+        BaseVariable subclass to load.
+    metadata_dict : dict
+        Metadata filter (values can be lists for "match any").
+    version_id : str or int
+        Version filter ('latest', 'all', or an integer).
+    db : DatabaseManager or None
+        Optional database; uses global default when None.
+
+    Returns
+    -------
+    dict
+        Same format as wrap_batch_bridge (with batch_id, no data/py_vars).
+    """
+    import time
+    from scidb.database import get_database
+
+    _db = db if db is not None and not isinstance(db, type(None)) else get_database()
+
+    t0 = time.time()
+    gen = _db.load_all(py_class, dict(metadata_dict), version_id=version_id)
+    py_vars = list(gen)  # materializes entirely in Python
+    t1 = time.time()
+    result = wrap_batch_bridge(py_vars)
+    t2 = time.time()
+
+    print(f"[load_and_extract] query+materialize: {t1-t0:.2f}s, "
+          f"extract: {t2-t1:.2f}s, n={len(py_vars)}")
+    return result
+
+
 def get_surrogate_class(type_name: str):
     """Retrieve the Python surrogate class for a MATLAB variable type.
 
