@@ -2,6 +2,7 @@
 
 import json
 import os
+import random
 import threading
 import time
 import warnings
@@ -694,6 +695,80 @@ class DatabaseManager:
                 version_id_map[sid] = 1
 
         timings["4_parameter_resolution"] = time.perf_counter() - t3
+
+        # --- Fast path: skip hashing if all records already exist ---
+        if not is_new_parameter:
+            t_fast = time.perf_counter()
+            existing_count = self._duck._fetchall(
+                "SELECT COUNT(*) FROM _record_metadata "
+                "WHERE variable_name = ? AND parameter_id = ?",
+                [table_name, parameter_id],
+            )[0][0]
+
+            if existing_count >= len(data_items):
+                # Compute input schema_ids from already-resolved data
+                input_schema_ids = []
+                for nested in all_nested:
+                    schema_keys = nested.get("schema", {})
+                    schema_level = self._infer_schema_level(schema_keys)
+                    if schema_level is not None and schema_keys:
+                        key_tuple = tuple(
+                            str(schema_keys.get(k, "")) for k in self.dataset_schema_keys
+                            if k in schema_keys
+                        )
+                        input_schema_ids.append(schema_id_cache[(schema_level, key_tuple)])
+                    else:
+                        input_schema_ids.append(0)
+
+                # Only use fast path if schema_ids are unique per row
+                if len(set(input_schema_ids)) == len(input_schema_ids):
+                    # Query existing records (latest version per schema_id)
+                    existing_records = self._duck._fetchall(
+                        "SELECT schema_id, record_id, content_hash "
+                        "FROM _record_metadata "
+                        "WHERE variable_name = ? AND parameter_id = ? "
+                        "ORDER BY schema_id, version_id DESC",
+                        [table_name, parameter_id],
+                    )
+                    existing_by_schema = {}
+                    for sid, rid, chash in existing_records:
+                        if sid not in existing_by_schema:
+                            existing_by_schema[sid] = (rid, chash)
+
+                    # Map each input row to existing record
+                    result_ids = []
+                    all_matched = True
+                    for sid in input_schema_ids:
+                        if sid in existing_by_schema:
+                            result_ids.append(existing_by_schema[sid][0])
+                        else:
+                            all_matched = False
+                            break
+
+                    if all_matched:
+                        # Sample-verify content hashes
+                        sample_size = min(max(10, len(data_items) // 100), len(data_items))
+                        sample_indices = random.sample(range(len(data_items)), sample_size)
+
+                        sample_ok = True
+                        for idx in sample_indices:
+                            data_val = data_items[idx][0]
+                            actual_hash = canonical_hash(data_val)
+                            expected_hash = existing_by_schema[input_schema_ids[idx]][1]
+                            if actual_hash != expected_hash:
+                                sample_ok = False
+                                break
+
+                        if sample_ok:
+                            if profile:
+                                timings["fast_path"] = time.perf_counter() - t_fast
+                                timings["total"] = time.perf_counter() - t0
+                                print(f"\n--- save_batch() FAST PATH "
+                                      f"({len(data_items)} items, all exist) ---")
+                                for phase, elapsed in timings.items():
+                                    print(f"  {phase:30s} {elapsed:8.3f}s")
+                                print()
+                            return result_ids
 
         # --- Per-row Python computation (no SQL) ---
         t4 = time.perf_counter()
