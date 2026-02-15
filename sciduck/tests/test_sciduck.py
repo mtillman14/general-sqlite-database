@@ -391,11 +391,11 @@ class TestErrorHandling:
         with pytest.raises(ValueError, match="not in"):
             duck.save("bad_level", 42, schema_level="nonexistent", subject="S01")
 
-    def test_missing_schema_keys_raises(self, duck):
-        """Missing required schema keys should raise ValueError."""
-        with pytest.raises(ValueError, match="Missing schema keys"):
-            duck.save("incomplete", 42, subject="S01")
-            # session and trial missing for the default (lowest) level
+    def test_partial_schema_keys_saves_at_deepest_provided(self, duck):
+        """Providing a subset of schema keys should save at the deepest provided level."""
+        pid = duck.save("partial", 42, subject="S01")
+        loaded = duck.load("partial", subject="S01")
+        assert loaded == 42
 
 
 # ---------------------------------------------------------------------------
@@ -497,3 +497,144 @@ class TestDirectQuery:
         result = duck.query('SELECT * FROM "qvar"')
         assert isinstance(result, pd.DataFrame)
         assert len(result) >= 1
+
+
+# ---------------------------------------------------------------------------
+# Non-Contiguous Schema Keys
+# ---------------------------------------------------------------------------
+
+@pytest.fixture
+def wide_duck():
+    """Provide a SciDuck with a wider schema for non-contiguous key tests."""
+    db = SciDuck(
+        ":memory:",
+        dataset_schema=["subject", "intervention", "timepoint", "speed", "trial"],
+    )
+    yield db
+    db.close()
+
+
+class TestNonContiguousSchemaKeys:
+    """Test saving/loading with non-contiguous subsets of schema keys."""
+
+    def test_save_with_non_contiguous_keys(self, wide_duck):
+        """Should save with keys that skip intermediate levels."""
+        pid = wide_duck.save(
+            "cohens_d", 0.85,
+            subject="S01", intervention="RMT30", speed="SSV",
+        )
+        assert pid == 1
+
+    def test_load_non_contiguous_round_trip(self, wide_duck):
+        """Should round-trip data saved with non-contiguous keys."""
+        wide_duck.save(
+            "cohens_d", 0.85,
+            subject="S01", intervention="RMT30", speed="SSV",
+        )
+        loaded = wide_duck.load(
+            "cohens_d",
+            subject="S01", intervention="RMT30", speed="SSV",
+        )
+        assert abs(loaded - 0.85) < 1e-10
+
+    def test_schema_row_has_nulls_for_skipped_keys(self, wide_duck):
+        """Skipped schema keys should be NULL in _schema table."""
+        wide_duck.save(
+            "cohens_d", 0.85,
+            subject="S01", intervention="RMT30", speed="SSV",
+        )
+        row = wide_duck.query(
+            'SELECT * FROM _schema WHERE schema_level = ?',
+            params=["speed"],
+        )
+        # timepoint and trial should be NULL
+        assert row["timepoint"].iloc[0] is None
+        assert row["trial"].iloc[0] is None
+        # provided keys should be populated
+        assert row["subject"].iloc[0] == "S01"
+        assert row["intervention"].iloc[0] == "RMT30"
+        assert row["speed"].iloc[0] == "SSV"
+
+    def test_schema_level_is_deepest_provided_key(self, wide_duck):
+        """schema_level should be the deepest provided key in the hierarchy."""
+        wide_duck.save(
+            "cohens_d", 0.85,
+            subject="S01", intervention="RMT30", speed="SSV",
+        )
+        row = wide_duck.query(
+            "SELECT schema_level FROM _variables WHERE variable_name = 'cohens_d'"
+        )
+        assert row["schema_level"].iloc[0] == "speed"
+
+    def test_contiguous_keys_still_work(self, wide_duck):
+        """Contiguous prefix keys should still work identically."""
+        wide_duck.save(
+            "contiguous_var", 99,
+            subject="S01", intervention="RMT30",
+        )
+        loaded = wide_duck.load(
+            "contiguous_var",
+            subject="S01", intervention="RMT30",
+        )
+        assert loaded == 99
+
+    def test_multiple_non_contiguous_saves_create_distinct_schema_entries(self, wide_duck):
+        """Separate saves with different non-contiguous keys create distinct _schema rows."""
+        wide_duck.save(
+            "cohens_d", 0.85,
+            subject="S01", intervention="RMT30", speed="SSV",
+        )
+        wide_duck.save(
+            "cohens_d", 0.92,
+            subject="S01", intervention="RMT30", speed="FV",
+        )
+        # Verify two distinct _schema rows were created
+        schema_rows = wide_duck.query(
+            "SELECT * FROM _schema WHERE schema_level = 'speed'"
+        )
+        assert len(schema_rows) == 2
+        speeds = set(schema_rows["speed"])
+        assert speeds == {"SSV", "FV"}
+
+    def test_load_resolves_latest_parameter_id_per_schema_keys(self, wide_duck):
+        """load() should find the latest parameter_id that matches the given schema keys."""
+        wide_duck.save(
+            "cohens_d", 0.85,
+            subject="S01", intervention="RMT30", speed="SSV",
+        )
+        wide_duck.save(
+            "cohens_d", 0.92,
+            subject="S01", intervention="RMT30", speed="FV",
+        )
+        # Each save has a different parameter_id, but load should resolve
+        # to the one whose schema_id matches the requested keys
+        v1 = wide_duck.load("cohens_d", subject="S01", speed="SSV")
+        v2 = wide_duck.load("cohens_d", subject="S01", speed="FV")
+        assert abs(v1 - 0.85) < 1e-10
+        assert abs(v2 - 0.92) < 1e-10
+
+    def test_partial_key_load_filtering(self, wide_duck):
+        """Loading with a filter on a non-contiguous key should work."""
+        wide_duck.save(
+            "cohens_d", 0.85,
+            subject="S01", intervention="RMT30", speed="SSV",
+        )
+        # Load filtering by subject
+        loaded = wide_duck.load("cohens_d", subject="S01")
+        assert abs(loaded - 0.85) < 1e-10
+        # Load filtering by non-contiguous key (speed)
+        loaded = wide_duck.load("cohens_d", speed="SSV")
+        assert abs(loaded - 0.85) < 1e-10
+
+    def test_load_filter_on_non_contiguous_key(self, wide_duck):
+        """Should filter on a non-contiguous key during load."""
+        wide_duck.save(
+            "cohens_d", 0.85,
+            subject="S01", intervention="RMT30", speed="SSV",
+        )
+        wide_duck.save(
+            "cohens_d", 0.92,
+            subject="S01", intervention="RMT30", speed="FV",
+        )
+        loaded = wide_duck.load("cohens_d", subject="S01", speed="FV")
+        assert abs(loaded - 0.92) < 1e-10

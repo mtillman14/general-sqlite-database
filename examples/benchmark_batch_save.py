@@ -48,7 +48,8 @@ def build_dataframe():
     df = pd.DataFrame(rows, columns=[
         "subject", "intervention", "speed", "timepoint", "trial", "cycle"
     ])
-    df["value"] = np.random.randn(len(df))
+    df["value1"] = np.random.randn(len(df))
+    df["value2"] = np.random.randn(len(df))
     return df
 
 
@@ -56,6 +57,10 @@ def main():
     df = build_dataframe()
     print(f"DataFrame: {len(df)} rows, {len(df.columns)} columns")
     print(f"Unique schema combos: {df.drop(columns='value').drop_duplicates().shape[0]}")
+
+    # root_dir = "/Users/mitchelltillman/Documents/ICNR-2026-analysis/tmp_data"
+    # df_csv = os.path.join(root_dir, "value1.csv")
+    # df.to_csv(df_csv, index=False)    
 
     with tempfile.TemporaryDirectory() as tmpdir:
         db_path = os.path.join(tmpdir, "bench.duckdb")

@@ -386,7 +386,7 @@ class SciDuck:
 
     def _get_or_create_schema_id(self, schema_level: str, key_values: dict) -> int:
         """Look up or insert a row in _schema.  Return the schema_id."""
-        key_cols = self._schema_key_columns(schema_level)
+        key_cols = [k for k in self.dataset_schema if k in key_values]
 
         # Build WHERE clause
         conditions = []
@@ -442,15 +442,16 @@ class SciDuck:
 
         result = {}
 
-        # Group combos by schema_level for efficient querying
-        by_level = {}  # {schema_level: [(combo_key, key_values), ...]}
+        # Group combos by (schema_level, key set) for efficient querying
+        by_level_and_keys = {}
         for (schema_level, key_tuple), key_values in combos.items():
-            by_level.setdefault(schema_level, []).append(
+            group_key = (schema_level, frozenset(key_values.keys()))
+            by_level_and_keys.setdefault(group_key, []).append(
                 ((schema_level, key_tuple), key_values)
             )
 
-        for schema_level, entries in by_level.items():
-            key_cols = self._schema_key_columns(schema_level)
+        for (schema_level, key_set), entries in by_level_and_keys.items():
+            key_cols = [k for k in self.dataset_schema if k in key_set]
             null_cols = [c for c in self.dataset_schema if c not in key_cols]
 
             # Build a single query to find all existing matches at this level
@@ -566,51 +567,56 @@ class SciDuck:
         int
             The parameter_id that was saved.
         """
-        if schema_level is None:
-            schema_level = self.dataset_schema[-1]
-        if schema_level not in self.dataset_schema:
-            raise ValueError(
-                f"schema_level '{schema_level}' not in {self.dataset_schema}"
-            )
-
-        key_cols = self._schema_key_columns(schema_level)
-
         # --- Determine save mode ---
         data_col_name = None  # Override for single-column name preservation
 
-        # Mode A: DataFrame with schema columns
-        if isinstance(data, pd.DataFrame) and all(c in data.columns for c in key_cols):
-            entries, data_col_name = self._entries_from_dataframe(data, key_cols, schema_level)
-
         # Mode B: single entry via kwargs
-        elif schema_keys:
-            missing = [k for k in key_cols if k not in schema_keys]
-            if missing:
-                raise ValueError(f"Missing schema keys: {missing}")
+        if schema_keys:
+            provided_schema_cols = [k for k in self.dataset_schema if k in schema_keys]
+            if schema_level is None:
+                schema_level = provided_schema_cols[-1] if provided_schema_cols else self.dataset_schema[-1]
+            if schema_level not in self.dataset_schema:
+                raise ValueError(
+                    f"schema_level '{schema_level}' not in {self.dataset_schema}"
+                )
+            key_cols = provided_schema_cols
             entries = [(
                 {k: schema_keys[k] for k in key_cols},
                 data,
             )]
 
-        # Mode C: dict with tuple keys
-        elif isinstance(data, dict) and data and isinstance(next(iter(data.keys())), tuple):
-            entries = []
-            for key_tuple, value in data.items():
-                if len(key_tuple) != len(key_cols):
-                    raise ValueError(
-                        f"Key tuple length {len(key_tuple)} != "
-                        f"expected {len(key_cols)} for level '{schema_level}'"
-                    )
-                key_dict = dict(zip(key_cols, key_tuple))
-                entries.append((key_dict, value))
-
         else:
-            raise ValueError(
-                "Cannot determine save mode.  Provide either:\n"
-                "  (A) a DataFrame with schema-level columns,\n"
-                "  (B) schema key kwargs (e.g. subject='S01', session=1), or\n"
-                "  (C) a dict mapping tuples to values."
-            )
+            if schema_level is None:
+                schema_level = self.dataset_schema[-1]
+            if schema_level not in self.dataset_schema:
+                raise ValueError(
+                    f"schema_level '{schema_level}' not in {self.dataset_schema}"
+                )
+            key_cols = self._schema_key_columns(schema_level)
+
+            # Mode A: DataFrame with schema columns
+            if isinstance(data, pd.DataFrame) and all(c in data.columns for c in key_cols):
+                entries, data_col_name = self._entries_from_dataframe(data, key_cols, schema_level)
+
+            # Mode C: dict with tuple keys
+            elif isinstance(data, dict) and data and isinstance(next(iter(data.keys())), tuple):
+                entries = []
+                for key_tuple, value in data.items():
+                    if len(key_tuple) != len(key_cols):
+                        raise ValueError(
+                            f"Key tuple length {len(key_tuple)} != "
+                            f"expected {len(key_cols)} for level '{schema_level}'"
+                        )
+                    key_dict = dict(zip(key_cols, key_tuple))
+                    entries.append((key_dict, value))
+
+            else:
+                raise ValueError(
+                    "Cannot determine save mode.  Provide either:\n"
+                    "  (A) a DataFrame with schema-level columns,\n"
+                    "  (B) schema key kwargs (e.g. subject='S01', session=1), or\n"
+                    "  (C) a dict mapping tuples to values."
+                )
 
         # --- Resolve parameter_id ---
         if parameter_id is None:
@@ -779,7 +785,7 @@ class SciDuck:
 
         # Resolve parameter_id
         if parameter_id is None:
-            parameter_id = self._latest_parameter_id(name)
+            parameter_id = self._latest_parameter_id(name, schema_keys or None)
 
         # Get metadata
         rows = self._fetchall(
@@ -793,10 +799,9 @@ class SciDuck:
             )
         schema_level, dtype_json = rows[0]
         dtype_meta = json.loads(dtype_json)
-        key_cols = self._schema_key_columns(schema_level)
-
-        # Build query with JOIN to _schema
-        schema_select = ", ".join(f's."{c}"' for c in key_cols)
+        # Select all schema columns so non-contiguous keys appear in results
+        all_schema_cols = self.dataset_schema
+        schema_select = ", ".join(f's."{c}"' for c in all_schema_cols)
         data_cols = list(dtype_meta["columns"].keys())
         data_select = ", ".join(f'v."{c}"' for c in data_cols)
 
@@ -813,9 +818,9 @@ class SciDuck:
             sql += ' AND v.version_id = ?'
             params.append(version_id)
 
-        # Apply schema key filters
+        # Apply schema key filters (any valid schema column)
         for col, val in schema_keys.items():
-            if col in key_cols:
+            if col in all_schema_cols:
                 sql += f' AND s."{col}" = ?'
                 params.append(str(val))
 
@@ -841,11 +846,35 @@ class SciDuck:
 
         return df
 
-    def _latest_parameter_id(self, name: str) -> int:
-        rows = self._fetchall(
-            "SELECT MAX(parameter_id) FROM _variables WHERE variable_name = ?",
-            [name],
-        )
+    def _latest_parameter_id(self, name: str, schema_keys: dict | None = None) -> int:
+        if schema_keys:
+            # Find latest parameter_id that has data matching the given schema keys
+            conditions = []
+            params: list = [name]
+            for col, val in schema_keys.items():
+                if col in self.dataset_schema:
+                    conditions.append(f's."{col}" = ?')
+                    params.append(str(val))
+            if conditions:
+                where = " AND ".join(conditions)
+                rows = self._fetchall(
+                    f'SELECT MAX(v.parameter_id) FROM "{name}" v '
+                    f'JOIN _schema s ON v.schema_id = s.schema_id '
+                    f'JOIN _variables var ON var.variable_name = ? '
+                    f'AND var.parameter_id = v.parameter_id '
+                    f'WHERE {where}',
+                    params,
+                )
+            else:
+                rows = self._fetchall(
+                    "SELECT MAX(parameter_id) FROM _variables WHERE variable_name = ?",
+                    [name],
+                )
+        else:
+            rows = self._fetchall(
+                "SELECT MAX(parameter_id) FROM _variables WHERE variable_name = ?",
+                [name],
+            )
         if rows[0][0] is None:
             raise KeyError(f"No versions found for variable '{name}'.")
         return rows[0][0]

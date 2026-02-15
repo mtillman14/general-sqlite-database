@@ -247,41 +247,20 @@ class DatabaseManager:
 
     def _infer_schema_level(self, schema_keys: dict) -> str | None:
         """
-        Infer the schema level from contiguous keys starting at the top.
+        Infer the schema level from provided keys.
 
-        Walks dataset_schema_keys top-down. Returns the deepest key where all
-        keys from the top are contiguously present.
+        Walks dataset_schema_keys top-down. Returns the deepest provided key.
+        Keys need not be contiguous — any subset of schema keys is valid.
 
         Returns None if no schema keys are provided.
-
-        Raises ValueError if schema keys are non-contiguous (e.g. providing
-        "subject" and "stage" but not "trial" when the hierarchy is
-        ["subject", "trial", "stage"]).
         """
         if not schema_keys:
             return None
 
         level = None
-        found_gap = False
         for key in self.dataset_schema_keys:
             if key in schema_keys:
-                if found_gap:
-                    # Determine the expected keys for a helpful error message
-                    level_idx = self.dataset_schema_keys.index(key)
-                    missing = [
-                        k for k in self.dataset_schema_keys[:level_idx]
-                        if k not in schema_keys
-                    ]
-                    raise ValueError(
-                        f"Non-contiguous schema keys: '{key}' was provided but "
-                        f"{missing} are missing. Schema keys must be provided "
-                        f"as a contiguous prefix of the hierarchy: "
-                        f"{self.dataset_schema_keys}"
-                    )
                 level = key
-            else:
-                if level is not None:
-                    found_gap = True
         return level
 
     def _save_record_metadata(
