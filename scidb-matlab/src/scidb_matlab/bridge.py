@@ -175,6 +175,65 @@ def register_matlab_variable(type_name: str, schema_version: int = 1):
     return surrogate
 
 
+def save_batch_bridge(type_name, data_values, metadata_keys, metadata_columns, common_metadata=None, db=None):
+    """Bridge function for MATLAB save_from_table.
+
+    Accepts columnar data (one list per column) from MATLAB and assembles
+    the (data_value, metadata_dict) tuples that DatabaseManager.save_batch()
+    expects.  This avoids per-row MATLAB↔Python round-trips.
+
+    Parameters
+    ----------
+    type_name : str
+        Variable class name (e.g. "StepLength").
+    data_values : list
+        One data value per row.
+    metadata_keys : list of str
+        Metadata column names, same order as metadata_columns.
+    metadata_columns : list of list
+        One inner list per metadata key, each with one value per row.
+    common_metadata : dict or None
+        Extra metadata applied to every row.
+    db : DatabaseManager or None
+        Optional database; uses global default when None.
+
+    Returns
+    -------
+    list of str
+        Record IDs for each saved row.
+    """
+    from scidb.variable import BaseVariable
+    from scidb.database import get_database
+
+    cls = BaseVariable.get_subclass_by_name(type_name)
+    if cls is None:
+        raise ValueError(
+            f"Variable type '{type_name}' is not registered. "
+            f"Call scidb.register_variable('{type_name}') first."
+        )
+
+    _db = db if db is not None and not isinstance(db, type(None)) else get_database()
+    common = dict(common_metadata) if common_metadata else {}
+    keys = list(metadata_keys)
+    n = len(data_values)
+
+    data_items = []
+    for i in range(n):
+        meta = dict(common)
+        for j, key in enumerate(keys):
+            val = metadata_columns[j][i]
+            if hasattr(val, 'item'):
+                val = val.item()
+            meta[key] = val
+
+        data = data_values[i]
+        if hasattr(data, 'item'):
+            data = data.item()
+        data_items.append((data, meta))
+
+    return _db.save_batch(cls, data_items)
+
+
 def get_surrogate_class(type_name: str):
     """Retrieve the Python surrogate class for a MATLAB variable type.
 

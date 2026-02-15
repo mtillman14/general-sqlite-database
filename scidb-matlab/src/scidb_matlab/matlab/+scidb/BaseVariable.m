@@ -90,6 +90,120 @@ classdef BaseVariable < dynamicprops
         end
 
         % -----------------------------------------------------------------
+        % save_from_table
+        % -----------------------------------------------------------------
+        function record_ids = save_from_table(obj, tbl, data_column, metadata_columns, varargin)
+        %SAVE_FROM_TABLE  Bulk-save each row of a MATLAB table as a separate record.
+        %
+        %   RECORD_IDS = TypeClass().save_from_table(TBL, DATA_COL, META_COLS, ...)
+        %
+        %   Uses a batched code path (~100x faster than looping save()).
+        %
+        %   Arguments:
+        %       TBL              - MATLAB table where each row is a record
+        %       DATA_COL         - Name of the column containing data values
+        %                          (string or char)
+        %       META_COLS        - Column names to use as per-row metadata
+        %                          (string array or cell array of char)
+        %
+        %   Name-Value Arguments:
+        %       db - Optional DatabaseManager to use instead of the global
+        %            database (returned by scidb.configure_database).
+        %       Any other name-value pairs are common metadata applied to
+        %       every row (e.g. experiment="exp1").
+        %
+        %   Returns:
+        %       String array of record_ids, one per row.
+        %
+        %   Example:
+        %       % Table with 10 rows (2 subjects x 5 trials)
+        %       %   Subject  Trial  MyVar
+        %       %   1        1      0.5
+        %       %   1        2      0.6
+        %       %   ...
+        %
+        %       ids = ScalarValue().save_from_table( ...
+        %           results_tbl, "MyVar", ["Subject", "Trial"], ...
+        %           experiment="exp1");
+
+            type_name = class(obj);
+            scidb.internal.ensure_registered(type_name);
+
+            % Normalise inputs
+            if isstring(data_column), data_column = char(data_column); end
+            if isstring(metadata_columns)
+                metadata_columns = cellstr(metadata_columns);
+            end
+
+            % Separate db option from common metadata
+            [common_nv, db_val] = extract_db(varargin);
+
+            % --- Convert data column to Python list ---
+            data_col = tbl.(data_column);
+            if isnumeric(data_col)
+                py_data = py.list(num2cell(data_col(:)'));
+            elseif isstring(data_col)
+                py_data = py.list(cellfun(@char, num2cell(data_col(:)'), ...
+                    'UniformOutput', false));
+            elseif iscellstr(data_col) %#ok<ISCLSTR>
+                py_data = py.list(data_col(:)');
+            else
+                % Generic fallback: convert each element individually
+                py_data = py.list();
+                for i = 1:height(tbl)
+                    py_data.append(scidb.internal.to_python(data_col(i)));
+                end
+            end
+
+            % --- Convert metadata columns (columnar) ---
+            py_meta_keys = py.list(metadata_columns);
+            py_meta_cols = py.list();
+            for j = 1:numel(metadata_columns)
+                col = tbl.(metadata_columns{j});
+                if iscategorical(col)
+                    col = string(col); % Can't convert categorical to Python
+                end
+                if isnumeric(col)
+                    py_meta_cols.append(py.list(num2cell(col(:)')));
+                elseif isstring(col)
+                    py_meta_cols.append(py.list(cellfun(@char, ...
+                        num2cell(col(:)'), 'UniformOutput', false)));
+                elseif iscellstr(col) %#ok<ISCLSTR>
+                    py_meta_cols.append(py.list(col(:)'));
+                else
+                    py_col = py.list();
+                    for i = 1:height(tbl)
+                        py_col.append(scidb.internal.to_python(col(i)));
+                    end
+                    py_meta_cols.append(py_col);
+                end
+            end
+
+            % --- Build common metadata dict ---
+            py_common = scidb.internal.metadata_to_pydict(common_nv{:});
+
+            % --- Database ---
+            if isempty(db_val)
+                py_db = py.None;
+            else
+                py_db = db_val;
+            end
+
+            % --- Call Python bridge ---
+            py_result = py.scidb_matlab.bridge.save_batch_bridge( ...
+                type_name, py_data, py_meta_keys, py_meta_cols, ...
+                py_common, py_db);
+
+            % --- Convert result to MATLAB string array ---
+            n = int64(py.builtins.len(py_result));
+            record_ids = strings(n, 1);
+            for i = 1:n
+                record_ids(i) = string(py_result{i});
+            end
+
+        end
+
+        % -----------------------------------------------------------------
         % load
         % -----------------------------------------------------------------
         function result = load(obj, varargin)

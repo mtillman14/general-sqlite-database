@@ -294,6 +294,15 @@ class SciDuck:
             return self.con.execute(sql, params)
         return self.con.execute(sql)
 
+    def _executemany(self, sql: str, params_list):
+        return self.con.executemany(sql, params_list)
+
+    def _begin(self):
+        self.con.execute("BEGIN TRANSACTION")
+
+    def _commit(self):
+        self.con.execute("COMMIT")
+
     def _fetchall(self, sql: str, params=None) -> list:
         return self._execute(sql, params).fetchall()
 

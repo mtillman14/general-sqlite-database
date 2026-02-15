@@ -561,6 +561,251 @@ class DatabaseManager:
 
         return parameter_id, schema_id, version_id
 
+    def save_batch(
+        self,
+        variable_class: Type[BaseVariable],
+        data_items: list[tuple[Any, dict]],
+    ) -> list[str]:
+        """
+        Bulk-save a list of (data_value, metadata_dict) pairs for a single variable type.
+
+        Amortizes setup work (registration, table creation, parameter slot resolution)
+        and batches SQL operations using executemany for ~100x speedup over per-row save().
+
+        Args:
+            variable_class: The BaseVariable subclass to save as
+            data_items: List of (data_value, flat_metadata_dict) tuples
+
+        Returns:
+            List of record_ids for each saved item (in input order)
+        """
+        if not data_items:
+            return []
+
+        table_name = self._ensure_registered(variable_class)
+        type_name = variable_class.__name__
+        schema_version = variable_class.schema_version
+        user_id = get_user_id()
+
+        # --- One-time setup from first item ---
+        first_data, first_meta = data_items[0]
+        nested_first = self._split_metadata(first_meta)
+        version_keys = nested_first.get("version", {})
+
+        # Infer DuckDB type from first data value
+        ddb_type, col_meta = _infer_duckdb_type(first_data)
+        dtype_meta = {"mode": "single_column", "columns": {"value": col_meta}}
+
+        # Ensure table exists
+        if not self._duck._table_exists(table_name):
+            self._duck._execute(f"""
+                CREATE TABLE "{table_name}" (
+                    schema_id INTEGER NOT NULL,
+                    parameter_id INTEGER NOT NULL,
+                    version_id INTEGER NOT NULL,
+                    "value" {ddb_type}
+                )
+            """)
+            self._create_variable_view(variable_class)
+
+        # --- Batch schema_id resolution ---
+        # Split all metadata and collect unique schema key combos
+        all_nested = []
+        unique_schema_combos = {}  # {tuple_of_values: schema_keys_dict}
+        for data_val, flat_meta in data_items:
+            nested = self._split_metadata(flat_meta)
+            all_nested.append(nested)
+            schema_keys = nested.get("schema", {})
+            schema_level = self._infer_schema_level(schema_keys)
+            if schema_level is not None and schema_keys:
+                key_tuple = tuple(
+                    str(schema_keys.get(k, "")) for k in self.dataset_schema_keys
+                    if k in schema_keys
+                )
+                combo_key = (schema_level, key_tuple)
+                if combo_key not in unique_schema_combos:
+                    unique_schema_combos[combo_key] = schema_keys
+            # else: schema_id = 0 (no schema keys)
+
+        # Resolve schema_ids for all unique combos
+        schema_id_cache = {}  # {(schema_level, key_tuple): schema_id}
+        for (schema_level, key_tuple), schema_keys in unique_schema_combos.items():
+            schema_id = self._duck._get_or_create_schema_id(
+                schema_level, {k: str(v) for k, v in schema_keys.items()}
+            )
+            schema_id_cache[(schema_level, key_tuple)] = schema_id
+
+        # --- Resolve parameter_id (shared across all rows) ---
+        # Use the first item's schema_id to resolve the parameter slot
+        first_schema_keys = all_nested[0].get("schema", {})
+        first_schema_level = self._infer_schema_level(first_schema_keys)
+        if first_schema_level is not None and first_schema_keys:
+            first_key_tuple = tuple(
+                str(first_schema_keys.get(k, "")) for k in self.dataset_schema_keys
+                if k in first_schema_keys
+            )
+            first_schema_id = schema_id_cache[(first_schema_level, first_key_tuple)]
+        else:
+            first_schema_id = 0
+
+        vk_json = json.dumps(version_keys or {}, sort_keys=True)
+        existing = self._duck._fetchall(
+            "SELECT parameter_id FROM _variables "
+            "WHERE variable_name = ? AND version_keys = ?",
+            [table_name, vk_json],
+        )
+
+        if existing:
+            parameter_id = existing[0][0]
+            is_new_parameter = False
+        else:
+            param_rows = self._duck._fetchall(
+                "SELECT COALESCE(MAX(parameter_id), 0) FROM _variables "
+                "WHERE variable_name = ?",
+                [table_name],
+            )
+            parameter_id = param_rows[0][0] + 1
+            is_new_parameter = True
+
+        # Get current max version_id per schema_id for this parameter
+        all_schema_ids = set()
+        for nested in all_nested:
+            schema_keys = nested.get("schema", {})
+            schema_level = self._infer_schema_level(schema_keys)
+            if schema_level is not None and schema_keys:
+                key_tuple = tuple(
+                    str(schema_keys.get(k, "")) for k in self.dataset_schema_keys
+                    if k in schema_keys
+                )
+                all_schema_ids.add(schema_id_cache[(schema_level, key_tuple)])
+            else:
+                all_schema_ids.add(0)
+
+        # Batch query current max version_ids
+        version_id_map = {}  # {schema_id: next_version_id}
+        if all_schema_ids and not is_new_parameter:
+            placeholders = ", ".join(["?"] * len(all_schema_ids))
+            sid_list = list(all_schema_ids)
+            version_rows = self._duck._fetchall(
+                f"SELECT schema_id, COALESCE(MAX(version_id), 0) "
+                f"FROM _record_metadata "
+                f"WHERE variable_name = ? AND parameter_id = ? "
+                f"AND schema_id IN ({placeholders}) "
+                f"GROUP BY schema_id",
+                [table_name, parameter_id] + sid_list,
+            )
+            for sid, max_vid in version_rows:
+                version_id_map[sid] = max_vid + 1
+
+        # Default version_id for schema_ids with no existing records
+        for sid in all_schema_ids:
+            if sid not in version_id_map:
+                version_id_map[sid] = 1
+
+        # --- Per-row Python computation (no SQL) ---
+        created_at = datetime.now().isoformat()
+        record_ids = []
+        data_table_rows = []  # (schema_id, parameter_id, version_id, storage_value)
+        metadata_rows = []    # tuples for _record_metadata
+
+        for i, (data_val, flat_meta) in enumerate(data_items):
+            nested = all_nested[i]
+            schema_keys = nested.get("schema", {})
+            schema_level = self._infer_schema_level(schema_keys)
+
+            if schema_level is not None and schema_keys:
+                key_tuple = tuple(
+                    str(schema_keys.get(k, "")) for k in self.dataset_schema_keys
+                    if k in schema_keys
+                )
+                schema_id = schema_id_cache[(schema_level, key_tuple)]
+            else:
+                schema_id = 0
+
+            version_id = version_id_map[schema_id]
+
+            content_hash = canonical_hash(data_val)
+            record_id = generate_record_id(
+                class_name=type_name,
+                schema_version=schema_version,
+                content_hash=content_hash,
+                metadata=nested,
+            )
+            record_ids.append(record_id)
+
+            storage_value = _python_to_storage(data_val, col_meta)
+
+            data_table_rows.append(
+                (schema_id, parameter_id, version_id, storage_value)
+            )
+            metadata_rows.append((
+                record_id, table_name, parameter_id, version_id, schema_id,
+                content_hash, None, schema_version, user_id, created_at,
+            ))
+
+        # --- Batch idempotency check ---
+        existing_ids = set()
+        # Query in chunks to avoid SQL parameter limits
+        chunk_size = 500
+        for start in range(0, len(record_ids), chunk_size):
+            chunk = record_ids[start:start + chunk_size]
+            placeholders = ", ".join(["?"] * len(chunk))
+            rows = self._duck._fetchall(
+                f"SELECT record_id FROM _record_metadata "
+                f"WHERE record_id IN ({placeholders})",
+                chunk,
+            )
+            existing_ids.update(r[0] for r in rows)
+
+        # Filter out already-existing records
+        new_data_rows = []
+        new_meta_rows = []
+        for i, rid in enumerate(record_ids):
+            if rid not in existing_ids:
+                new_data_rows.append(data_table_rows[i])
+                new_meta_rows.append(metadata_rows[i])
+
+        # --- Batch inserts ---
+        if new_data_rows:
+            self._duck._begin()
+            try:
+                self._duck._executemany(
+                    f'INSERT INTO "{table_name}" '
+                    f'("schema_id", "parameter_id", "version_id", "value") '
+                    f'VALUES (?, ?, ?, ?)',
+                    new_data_rows,
+                )
+                self._duck._executemany(
+                    "INSERT INTO _record_metadata ("
+                    "record_id, variable_name, parameter_id, version_id, schema_id, "
+                    "content_hash, lineage_hash, schema_version, user_id, created_at"
+                    ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    new_meta_rows,
+                )
+                self._duck._commit()
+            except Exception:
+                try:
+                    self._duck._execute("ROLLBACK")
+                except Exception:
+                    pass
+                raise
+
+        # Register in _variables for new parameter slots
+        if is_new_parameter:
+            effective_level = (
+                self._infer_schema_level(all_nested[0].get("schema", {}))
+                or self.dataset_schema_keys[-1]
+            )
+            self._duck._execute(
+                "INSERT INTO _variables (variable_name, parameter_id, schema_level, "
+                "dtype, version_keys, description) VALUES (?, ?, ?, ?, ?, ?)",
+                [table_name, parameter_id, effective_level,
+                 json.dumps(dtype_meta),
+                 vk_json, ""],
+            )
+
+        return record_ids
+
     @staticmethod
     def _has_custom_serialization(variable_class: type) -> bool:
         """Check if a BaseVariable subclass overrides to_db or from_db."""

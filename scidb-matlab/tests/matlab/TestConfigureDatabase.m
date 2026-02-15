@@ -113,5 +113,52 @@ classdef TestConfigureDatabase < matlab.unittest.TestCase
             testCase.verifyError(@() RawSignal().load('subject', 1), ...
                 'scidb:NotFoundError');
         end
+
+        function test_multiple_simultaneous_databases(testCase)
+            % Configuring twice should work (replaces global singleton)
+            db_path1 = fullfile(testCase.test_dir, 'test1.duckdb');
+            pl_path1 = fullfile(testCase.test_dir, 'pipeline1.db');
+            db1 = scidb.configure_database(db_path1, ["subject"], pl_path1);
+            RawSignal().save([1 2 3], 'subject', 1);
+
+            db_path2 = fullfile(testCase.test_dir, 'test2.duckdb');
+            pl_path2 = fullfile(testCase.test_dir, 'pipeline2.db');
+            db2 = scidb.configure_database(db_path2, ["subject"], pl_path2);
+            % Old data should not be accessible in new database
+            testCase.verifyError(@() RawSignal().load('subject', 1), ...
+                'scidb:NotFoundError');
+            % New data should be accessible in new database
+            RawSignal().save([4 5 6], 'subject', 1);
+            loaded = RawSignal().load('subject', 1);
+
+            db1.close();
+            db2.close();
+
+        end
+
+        function test_swapping_multiple_simultaneous_databases(testCase)
+            % Configuring twice should work (replaces global singleton)
+            db_path1 = fullfile(testCase.test_dir, 'test1.duckdb');
+            pl_path1 = fullfile(testCase.test_dir, 'pipeline1.db');
+            db1 = scidb.configure_database(db_path1, ["subject"], pl_path1);
+            RawSignal().save([1 2 3], 'subject', 1);
+
+            db_path2 = fullfile(testCase.test_dir, 'test2.duckdb');
+            pl_path2 = fullfile(testCase.test_dir, 'pipeline2.db');
+            db2 = scidb.configure_database(db_path2, ["subject"], pl_path2);
+            RawSignal().save([4 5 6], 'subject', 1);
+
+            db1.set_current_db();
+            loaded = RawSignal().load('subject', 1);
+            testCase.verifyEqual(loaded.data, [1 2 3]);
+
+            db2.set_current_db();
+            loaded = RawSignal().load('subject', 1);
+            testCase.verifyEqual(loaded.data, [4 5 6]);
+
+            db1.close();
+            db2.close();
+
+        end
     end
 end

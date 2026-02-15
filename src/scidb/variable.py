@@ -478,28 +478,37 @@ class BaseVariable:
                 experiment="exp1"  # Applied to all rows
             )
         """
-        record_ides = []
+        from .exceptions import ReservedMetadataKeyError
 
+        # Validate metadata keys
+        all_keys = set(metadata_columns) | set(common_metadata.keys())
+        reserved_used = all_keys & cls._reserved_keys
+        if reserved_used:
+            raise ReservedMetadataKeyError(
+                f"Cannot use reserved metadata keys: {reserved_used}"
+            )
+
+        from .database import get_database
+        _db = db or get_database()
+
+        # Build data_items list: [(data_value, flat_metadata_dict), ...]
+        data_items = []
         for _, row in df.iterrows():
-            # Extract row-specific metadata from columns
-            # Convert numpy types to native Python types for JSON serialization
             row_metadata = {}
             for col in metadata_columns:
                 val = row[col]
-                # Convert numpy types to native Python types
                 if hasattr(val, "item"):
                     val = val.item()
                 row_metadata[col] = val
 
-            # Combine with common metadata
             full_metadata = {**common_metadata, **row_metadata}
 
-            # Extract data and save
             data = row[data_column]
-            record_id = cls.save(data, db=db, **full_metadata)
-            record_ides.append(record_id)
+            if hasattr(data, "item"):
+                data = data.item()
+            data_items.append((data, full_metadata))
 
-        return record_ides
+        return _db.save_batch(cls, data_items)
 
     def to_csv(self, path: str) -> None:
         """
