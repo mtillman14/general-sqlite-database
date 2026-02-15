@@ -492,21 +492,28 @@ class BaseVariable:
         _db = db or get_database()
 
         # Build data_items list: [(data_value, flat_metadata_dict), ...]
+        # Extract columns as Python lists for fast iteration (avoids iterrows overhead)
+        meta_lists = {}
+        for col in metadata_columns:
+            series = df[col]
+            # Convert numpy scalars to Python natives in bulk
+            if hasattr(series.dtype, 'kind') and series.dtype.kind in ('i', 'u', 'f', 'b'):
+                meta_lists[col] = series.tolist()
+            else:
+                meta_lists[col] = list(series)
+
+        data_series = df[data_column]
+        if hasattr(data_series.dtype, 'kind') and data_series.dtype.kind in ('i', 'u', 'f', 'b'):
+            data_list = data_series.tolist()
+        else:
+            data_list = list(data_series)
+
+        n = len(df)
         data_items = []
-        for _, row in df.iterrows():
-            row_metadata = {}
-            for col in metadata_columns:
-                val = row[col]
-                if hasattr(val, "item"):
-                    val = val.item()
-                row_metadata[col] = val
-
+        for i in range(n):
+            row_metadata = {col: meta_lists[col][i] for col in metadata_columns}
             full_metadata = {**common_metadata, **row_metadata}
-
-            data = row[data_column]
-            if hasattr(data, "item"):
-                data = data.item()
-            data_items.append((data, full_metadata))
+            data_items.append((data_list[i], full_metadata))
 
         return _db.save_batch(cls, data_items)
 

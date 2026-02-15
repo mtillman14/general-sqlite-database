@@ -3,6 +3,7 @@
 import json
 import os
 import threading
+import time
 import warnings
 from datetime import datetime
 from pathlib import Path
@@ -565,6 +566,7 @@ class DatabaseManager:
         self,
         variable_class: Type[BaseVariable],
         data_items: list[tuple[Any, dict]],
+        profile: bool = False,
     ) -> list[str]:
         """
         Bulk-save a list of (data_value, metadata_dict) pairs for a single variable type.
@@ -575,12 +577,16 @@ class DatabaseManager:
         Args:
             variable_class: The BaseVariable subclass to save as
             data_items: List of (data_value, flat_metadata_dict) tuples
+            profile: If True, print phase-by-phase timing summary
 
         Returns:
             List of record_ids for each saved item (in input order)
         """
         if not data_items:
             return []
+
+        timings = {}
+        t0 = time.perf_counter()
 
         table_name = self._ensure_registered(variable_class)
         type_name = variable_class.__name__
@@ -608,8 +614,11 @@ class DatabaseManager:
             """)
             self._create_variable_view(variable_class)
 
+        timings["1_setup"] = time.perf_counter() - t0
+
         # --- Batch schema_id resolution ---
         # Split all metadata and collect unique schema key combos
+        t1 = time.perf_counter()
         all_nested = []
         unique_schema_combos = {}  # {tuple_of_values: schema_keys_dict}
         for data_val, flat_meta in data_items:
@@ -627,15 +636,18 @@ class DatabaseManager:
                     unique_schema_combos[combo_key] = schema_keys
             # else: schema_id = 0 (no schema keys)
 
-        # Resolve schema_ids for all unique combos
-        schema_id_cache = {}  # {(schema_level, key_tuple): schema_id}
-        for (schema_level, key_tuple), schema_keys in unique_schema_combos.items():
-            schema_id = self._duck._get_or_create_schema_id(
-                schema_level, {k: str(v) for k, v in schema_keys.items()}
-            )
-            schema_id_cache[(schema_level, key_tuple)] = schema_id
+        timings["2_split_metadata"] = time.perf_counter() - t1
+
+        # Resolve schema_ids for all unique combos (batch)
+        t2 = time.perf_counter()
+        schema_id_cache = self._duck.batch_get_or_create_schema_ids(
+            {k: {col: str(v) for col, v in vals.items()}
+             for k, vals in unique_schema_combos.items()}
+        )
+        timings["3_schema_resolution"] = time.perf_counter() - t2
 
         # --- Resolve parameter_id (shared across all rows) ---
+        t3 = time.perf_counter()
         # Use the first item's schema_id to resolve the parameter slot
         first_schema_keys = all_nested[0].get("schema", {})
         first_schema_level = self._infer_schema_level(first_schema_keys)
@@ -702,7 +714,10 @@ class DatabaseManager:
             if sid not in version_id_map:
                 version_id_map[sid] = 1
 
+        timings["4_parameter_resolution"] = time.perf_counter() - t3
+
         # --- Per-row Python computation (no SQL) ---
+        t4 = time.perf_counter()
         created_at = datetime.now().isoformat()
         record_ids = []
         data_table_rows = []  # (schema_id, parameter_id, version_id, storage_value)
@@ -743,7 +758,10 @@ class DatabaseManager:
                 content_hash, None, schema_version, user_id, created_at,
             ))
 
+        timings["5_per_row_hashing"] = time.perf_counter() - t4
+
         # --- Batch idempotency check ---
+        t5 = time.perf_counter()
         existing_ids = set()
         # Query in chunks to avoid SQL parameter limits
         chunk_size = 500
@@ -765,23 +783,39 @@ class DatabaseManager:
                 new_data_rows.append(data_table_rows[i])
                 new_meta_rows.append(metadata_rows[i])
 
+        timings["6_idempotency_check"] = time.perf_counter() - t5
+
         # --- Batch inserts ---
+        t6 = time.perf_counter()
         if new_data_rows:
             self._duck._begin()
             try:
-                self._duck._executemany(
+                # Use DataFrame-based insertion for speed (DuckDB native ingestion)
+                data_df = pd.DataFrame(
+                    new_data_rows,
+                    columns=["schema_id", "parameter_id", "version_id", "value"],
+                )
+                self._duck.con.execute(
                     f'INSERT INTO "{table_name}" '
                     f'("schema_id", "parameter_id", "version_id", "value") '
-                    f'VALUES (?, ?, ?, ?)',
-                    new_data_rows,
+                    f'SELECT * FROM data_df'
                 )
-                self._duck._executemany(
+
+                meta_df = pd.DataFrame(
+                    new_meta_rows,
+                    columns=[
+                        "record_id", "variable_name", "parameter_id",
+                        "version_id", "schema_id", "content_hash",
+                        "lineage_hash", "schema_version", "user_id", "created_at",
+                    ],
+                )
+                self._duck.con.execute(
                     "INSERT INTO _record_metadata ("
                     "record_id, variable_name, parameter_id, version_id, schema_id, "
                     "content_hash, lineage_hash, schema_version, user_id, created_at"
-                    ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                    new_meta_rows,
+                    ") SELECT * FROM meta_df"
                 )
+
                 self._duck._commit()
             except Exception:
                 try:
@@ -803,6 +837,16 @@ class DatabaseManager:
                  json.dumps(dtype_meta),
                  vk_json, ""],
             )
+
+        timings["7_batch_inserts"] = time.perf_counter() - t6
+        timings["total"] = time.perf_counter() - t0
+
+        if profile:
+            print(f"\n--- save_batch() profile ({len(data_items)} items, "
+                  f"{len(unique_schema_combos)} unique schemas) ---")
+            for phase, elapsed in timings.items():
+                print(f"  {phase:30s} {elapsed:8.3f}s")
+            print()
 
         return record_ids
 

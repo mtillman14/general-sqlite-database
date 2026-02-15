@@ -419,6 +419,108 @@ class SciDuck:
         )
         return new_id
 
+    def batch_get_or_create_schema_ids(
+        self,
+        combos: dict,  # {(schema_level, key_tuple): key_values_dict}
+    ) -> dict:
+        """
+        Batch-resolve schema IDs for multiple (schema_level, key_values) combos.
+
+        Instead of N individual SELECT+INSERT round-trips, does:
+        1. One SELECT to fetch all existing schema entries
+        2. Batch INSERT for missing entries
+        3. One SELECT to get IDs for newly inserted entries
+
+        Args:
+            combos: dict mapping (schema_level, key_tuple) -> key_values dict
+
+        Returns:
+            dict mapping (schema_level, key_tuple) -> schema_id
+        """
+        if not combos:
+            return {}
+
+        result = {}
+
+        # Group combos by schema_level for efficient querying
+        by_level = {}  # {schema_level: [(combo_key, key_values), ...]}
+        for (schema_level, key_tuple), key_values in combos.items():
+            by_level.setdefault(schema_level, []).append(
+                ((schema_level, key_tuple), key_values)
+            )
+
+        for schema_level, entries in by_level.items():
+            key_cols = self._schema_key_columns(schema_level)
+            null_cols = [c for c in self.dataset_schema if c not in key_cols]
+
+            # Build a single query to find all existing matches at this level
+            # We fetch all rows for this schema_level and match in Python
+            null_conditions = " AND ".join(
+                f'"{col}" IS NULL' for col in null_cols
+            )
+            where_clause = f'schema_level = ?'
+            if null_conditions:
+                where_clause += f' AND {null_conditions}'
+
+            col_select = ", ".join(f'"{c}"' for c in key_cols)
+            rows = self._fetchall(
+                f'SELECT schema_id, {col_select} FROM _schema WHERE {where_clause}',
+                [schema_level],
+            )
+
+            # Build lookup: tuple of col values -> schema_id
+            existing_lookup = {}
+            for row in rows:
+                sid = row[0]
+                row_key = tuple(str(v) if v is not None else "" for v in row[1:])
+                existing_lookup[row_key] = sid
+
+            # Match entries against existing rows
+            missing = []  # [(combo_key, key_values), ...]
+            for combo_key, key_values in entries:
+                match_key = tuple(str(key_values.get(c, "")) for c in key_cols)
+                if match_key in existing_lookup:
+                    result[combo_key] = existing_lookup[match_key]
+                else:
+                    missing.append((combo_key, key_values, match_key))
+
+            # Batch insert missing entries
+            if missing:
+                # Allocate a block of IDs from current max instead of N nextval() calls
+                max_row = self._fetchall(
+                    "SELECT COALESCE(MAX(schema_id), 0) FROM _schema"
+                )
+                first_id = max_row[0][0] + 1
+
+                col_names = ["schema_id", "schema_level"] + key_cols
+                col_str = ", ".join(f'"{c}"' for c in col_names)
+
+                insert_rows = []
+                for idx, (combo_key, key_values, _) in enumerate(missing):
+                    new_id = first_id + idx
+                    row = [new_id, schema_level] + [
+                        str(key_values[c]) for c in key_cols
+                    ]
+                    insert_rows.append(row)
+                    result[combo_key] = new_id
+
+                # Use DataFrame-based insert for speed
+                insert_df = pd.DataFrame(insert_rows, columns=col_names)
+                self.con.execute(
+                    f"INSERT INTO _schema ({col_str}) SELECT * FROM insert_df"
+                )
+
+                # Advance sequence past assigned IDs so single-row path stays correct
+                next_seq_val = first_id + len(missing)
+                try:
+                    self._execute(
+                        f"ALTER SEQUENCE _schema_id_seq RESTART WITH {next_seq_val}"
+                    )
+                except Exception:
+                    pass
+
+        return result
+
     # ------------------------------------------------------------------
     # Save
     # ------------------------------------------------------------------
