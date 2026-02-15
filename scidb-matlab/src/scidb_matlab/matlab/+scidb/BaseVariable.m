@@ -166,10 +166,10 @@ classdef BaseVariable < dynamicprops
                 if isnumeric(col)
                     py_meta_cols.append(py.numpy.array(col(:)'));
                 elseif isstring(col)
-                    py_meta_cols.append(py.list(cellfun(@char, ...
-                        num2cell(col(:)'), 'UniformOutput', false)));
+                    % Join into single string (1 boundary crossing vs N)
+                    py_meta_cols.append(strjoin(col(:)', char(30)));
                 elseif iscellstr(col) %#ok<ISCLSTR>
-                    py_meta_cols.append(py.list(col(:)'));
+                    py_meta_cols.append(strjoin(string(col(:)'), char(30)));
                 else
                     py_col = py.list();
                     for i = 1:height(tbl)
@@ -195,7 +195,7 @@ classdef BaseVariable < dynamicprops
                 py_common, py_db);
 
             % --- Convert result to MATLAB string array ---
-            record_ids = string(cell(py_result))';
+            record_ids = splitlines(string(py_result));
 
         end
 

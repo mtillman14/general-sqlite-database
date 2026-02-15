@@ -226,7 +226,10 @@ def save_batch_bridge(type_name, data_values, metadata_keys, metadata_columns, c
     meta_lists = []
     for j in range(len(keys)):
         col = metadata_columns[j]
-        if hasattr(col, 'tolist'):
+        if isinstance(col, str):
+            # Joined string from MATLAB (record-separator delimited)
+            meta_lists.append(col.split('\x1e'))
+        elif hasattr(col, 'tolist'):
             meta_lists.append(col.tolist())
         else:
             meta_lists.append([v.item() if hasattr(v, 'item') else v for v in col])
@@ -239,7 +242,7 @@ def save_batch_bridge(type_name, data_values, metadata_keys, metadata_columns, c
             meta[key] = meta_lists[j][i]
         data_items.append((data_list[i], meta))
 
-    return _db.save_batch(cls, data_items)
+    return "\n".join(_db.save_batch(cls, data_items))
 
 
 def get_surrogate_class(type_name: str):
