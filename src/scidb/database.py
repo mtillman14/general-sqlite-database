@@ -1963,6 +1963,97 @@ class DatabaseManager:
         """
         return self._duck.distinct_schema_values(key)
 
+    # -------------------------------------------------------------------------
+    # Variable Groups
+    # -------------------------------------------------------------------------
+
+    @staticmethod
+    def _resolve_var_name(v) -> str:
+        """Resolve a single variable to its name string.
+
+        Accepts a Python str, a BaseVariable subclass (class object),
+        or a MATLAB BaseVariable instance (matlab.object with class name).
+        """
+        if isinstance(v, str):
+            return v
+        if isinstance(v, type) and issubclass(v, BaseVariable):
+            return v.table_name()
+        # MATLAB objects cross the bridge as matlab.object; try str()
+        # to extract the class name (e.g. "StepLength").
+        s = str(v)
+        if s:
+            return s
+        raise TypeError(
+            f"Expected a string or BaseVariable subclass, got {type(v)}"
+        )
+
+    @staticmethod
+    def _resolve_var_names(variables) -> list:
+        """Resolve a single or list/iterable of variables to name strings.
+
+        Each element can be a string, a BaseVariable subclass, or a MATLAB
+        object.  Accepts Python lists, MATLAB cell arrays, and MATLAB string
+        arrays (any iterable).
+        """
+        # Scalar: single string or single class
+        if isinstance(variables, (str, type)):
+            return [DatabaseManager._resolve_var_name(variables)]
+        # Any iterable (Python list, MATLAB cell array, MATLAB string array)
+        try:
+            return [DatabaseManager._resolve_var_name(v) for v in variables]
+        except TypeError:
+            # Not iterable — treat as a single item
+            return [DatabaseManager._resolve_var_name(variables)]
+
+    def add_to_var_group(self, group_name: str, variables):
+        """Add one or more variables to a variable group.
+
+        Args:
+            group_name: Name of the group.
+            variables: A BaseVariable subclass, a variable name string,
+                or a list of either.
+        """
+        self._duck.add_to_group(group_name, self._resolve_var_names(variables))
+
+    def remove_from_var_group(self, group_name: str, variables):
+        """Remove one or more variables from a variable group.
+
+        Args:
+            group_name: Name of the group.
+            variables: A BaseVariable subclass, a variable name string,
+                or a list of either.
+        """
+        self._duck.remove_from_group(group_name, self._resolve_var_names(variables))
+
+    def list_var_groups(self) -> list:
+        """List all variable group names.
+
+        Returns:
+            Sorted list of distinct group names.
+        """
+        return self._duck.list_groups()
+
+    def get_var_group(self, group_name: str) -> list:
+        """Get all variable classes in a variable group.
+
+        Args:
+            group_name: Name of the group.
+
+        Returns:
+            Sorted list of BaseVariable subclasses in the group.
+        """
+        names = self._duck.get_group(group_name)
+        classes = []
+        for name in names:
+            cls = BaseVariable.get_subclass_by_name(name)
+            if cls is None:
+                raise NotRegisteredError(
+                    f"Variable '{name}' in group '{group_name}' has no "
+                    f"registered BaseVariable subclass."
+                )
+            classes.append(cls)
+        return classes
+
     def close(self):
         """Close the database connections and reset Thunk.query if it points to self."""
         from .thunk import Thunk

@@ -277,3 +277,89 @@ These keys cannot be used in metadata:
 - `iloc` - Reserved for integer-position indexing parameter
 
 Using these raises `ReservedMetadataKeyError`.
+
+## Variable Groups
+
+Variable groups let you organize variable types into named collections. Groups are stored in the database and persist across sessions.
+
+### Creating / Adding to a Group
+
+You can pass either variable classes or name strings (or a mix):
+
+```python
+db = get_database()
+
+# Using classes
+db.add_to_var_group("kinematics", StepLength)
+db.add_to_var_group("kinematics", [StepLength, StepWidth, StepTime])
+
+# Using name strings
+db.add_to_var_group("kinematics", "StepLength")
+db.add_to_var_group("kinematics", ["StepLength", "StepWidth", "StepTime"])
+```
+
+Adding the same variable to the same group twice is idempotent (no duplicates).
+
+### Listing Groups
+
+```python
+# List all group names
+groups = db.list_var_groups()
+# ["kinematics", "emg", "demographics"]
+```
+
+### Getting Variables in a Group
+
+```python
+# Get all variable classes in a group
+variables = db.get_var_group("kinematics")
+# [<class 'StepLength'>, <class 'StepTime'>, <class 'StepWidth'>]
+
+# Use them directly
+for var_class in db.get_var_group("raw_signals"):
+    for var in var_class.load_all(subject=1):
+        process(var.data)
+```
+
+The returned list is sorted alphabetically by class name.
+
+### Removing from a Group
+
+Accepts classes or strings, same as `add_to_var_group`:
+
+```python
+# Remove a single variable
+db.remove_from_var_group("kinematics", StepTime)
+
+# Remove multiple variables
+db.remove_from_var_group("kinematics", ["StepLength", "StepWidth"])
+```
+
+### MATLAB Usage
+
+Use the `scidb.*` wrapper functions. `add_to_var_group` and `remove_from_var_group` accept a cell array of BaseVariable objects, a cell array of chars, or a string array:
+
+```matlab
+% Cell array of BaseVariable objects
+scidb.add_to_var_group("kinematics", {StepLength(), StepWidth(), StepTime()})
+
+% Cell array of chars
+scidb.add_to_var_group("kinematics", {'StepLength', 'StepWidth', 'StepTime'})
+
+% String array
+scidb.add_to_var_group("kinematics", ["StepLength", "StepWidth", "StepTime"])
+
+% Single variable
+scidb.add_to_var_group("kinematics", "StepLength")
+
+% Get returns a cell array of BaseVariable instances
+vars = scidb.get_var_group("kinematics");
+% {[StepLength], [StepTime], [StepWidth]}
+for i = 1:numel(vars)
+    data = vars{i}.load(subject=1);
+end
+
+% List group names and remove
+groups = scidb.list_var_groups();
+scidb.remove_from_var_group("kinematics", "StepTime")
+```

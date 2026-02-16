@@ -154,6 +154,7 @@ SciDB uses two databases:
 | `_registered_types` | Type registry               |
 | `_schema`           | Dataset schema entries      |
 | `_variables`        | Variable version metadata   |
+| `_variable_groups`  | Named groups of variables   |
 | `{VariableName}`    | One per registered type     |
 
 **SQLite (lineage storage via PipelineDB):**
