@@ -115,6 +115,31 @@ function for_each(fn, inputs, outputs, varargin)
         end
     end
 
+    % Resolve empty arrays to all distinct values from the database
+    needs_resolve = false(1, numel(meta_keys));
+    for i = 1:numel(meta_values)
+        needs_resolve(i) = isempty(meta_values{i});
+    end
+    if any(needs_resolve)
+        if isempty(opts.db)
+            resolve_db = py.scidb.database.get_database();
+        else
+            resolve_db = opts.db;
+        end
+        for i = find(needs_resolve)
+            py_vals = resolve_db.distinct_schema_values(char(meta_keys(i)));
+            mat_vals = cell(py_vals);
+            for j = 1:numel(mat_vals)
+                mat_vals{j} = scidb.internal.from_python(mat_vals{j});
+            end
+            if isempty(mat_vals)
+                fprintf('[warn] no values found for ''%s'' in database, 0 iterations\n', ...
+                    meta_keys(i));
+            end
+            meta_values{i} = mat_vals;
+        end
+    end
+
     % Compute total iterations
     total = 1;
     for i = 1:numel(meta_values)

@@ -76,6 +76,27 @@ def for_each(
             ...
         )
     """
+    # Resolve empty lists to all distinct values from the database
+    needs_resolve = [k for k, v in metadata_iterables.items()
+                     if isinstance(v, list) and len(v) == 0]
+    if needs_resolve:
+        resolved_db = db
+        if resolved_db is None:
+            try:
+                from scidb.database import get_database
+                resolved_db = get_database()
+            except Exception:
+                raise ValueError(
+                    f"Empty list [] was passed for {needs_resolve}, which means "
+                    f"'use all levels', but no database is available. Either pass "
+                    f"db= to for_each or call configure_database() first."
+                )
+        for key in needs_resolve:
+            values = resolved_db.distinct_schema_values(key)
+            if not values:
+                print(f"[warn] no values found for '{key}' in database, 0 iterations")
+            metadata_iterables[key] = values
+
     # Separate loadable inputs from constants
     loadable_inputs = {}
     constant_inputs = {}

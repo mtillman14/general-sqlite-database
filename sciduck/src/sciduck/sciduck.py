@@ -986,6 +986,24 @@ class SciDuck:
         return [r[0] for r in rows]
 
     # ------------------------------------------------------------------
+    # Schema introspection
+    # ------------------------------------------------------------------
+
+    def distinct_schema_values(self, key: str) -> List:
+        """Return all distinct non-null values for a schema column, sorted."""
+        if key not in self.dataset_schema:
+            raise ValueError(
+                f"'{key}' is not a schema column. "
+                f"Available: {self.dataset_schema}"
+            )
+        rows = self._fetchall(
+            f'SELECT DISTINCT "{key}" FROM _schema '
+            f'WHERE "{key}" IS NOT NULL '
+            f'ORDER BY "{key}"'
+        )
+        return [r[0] for r in rows]
+
+    # ------------------------------------------------------------------
     # Direct query access
     # ------------------------------------------------------------------
 

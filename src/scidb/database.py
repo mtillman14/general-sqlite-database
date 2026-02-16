@@ -1903,6 +1903,17 @@ class DatabaseManager:
 
         return BaseVariable.get_subclass_by_name(type_name)
 
+    def distinct_schema_values(self, key: str) -> list:
+        """Return all distinct values stored for a schema key.
+
+        Args:
+            key: A schema key name (e.g. "subject", "session")
+
+        Returns:
+            Sorted list of distinct non-null values for that key
+        """
+        return self._duck.distinct_schema_values(key)
+
     def close(self):
         """Close the database connections and reset Thunk.query if it points to self."""
         from .thunk import Thunk

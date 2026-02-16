@@ -768,3 +768,146 @@ class TestForEachAsTable:
 
         assert isinstance(received["a"], pd.DataFrame)
         assert received["factor"] == 2.5
+
+
+class TestForEachAllLevels:
+    """Tests for empty list [] meaning 'all levels'."""
+
+    def _make_mock_db(self, schema_values):
+        """Create a mock db with distinct_schema_values support."""
+
+        class MockDB:
+            def __init__(self, values_by_key):
+                self._values = values_by_key
+
+            def distinct_schema_values(self, key):
+                if key not in self._values:
+                    raise ValueError(f"'{key}' is not a schema column.")
+                return self._values[key]
+
+        return MockDB(schema_values)
+
+    def test_empty_list_resolves_to_all_values(self):
+        """subject=[] should iterate over all subjects from the database."""
+
+        def process(x):
+            return "result"
+
+        db = self._make_mock_db({"subject": [1, 2, 3]})
+
+        for_each(
+            process,
+            inputs={"x": MockVariableA},
+            outputs=[MockOutput],
+            db=db,
+            subject=[],
+        )
+
+        assert len(MockOutput.saved_data) == 3
+        saved_subjects = [d["metadata"]["subject"] for d in MockOutput.saved_data]
+        assert saved_subjects == [1, 2, 3]
+
+    def test_multiple_empty_lists(self):
+        """subject=[], session=[] should resolve both from the database."""
+
+        def process(x):
+            return "result"
+
+        db = self._make_mock_db({"subject": [1, 2], "session": ["A", "B"]})
+
+        for_each(
+            process,
+            inputs={"x": MockVariableA},
+            outputs=[MockOutput],
+            db=db,
+            subject=[],
+            session=[],
+        )
+
+        # 2 subjects * 2 sessions = 4 iterations
+        assert len(MockOutput.saved_data) == 4
+
+    def test_mixed_explicit_and_empty(self):
+        """Can mix explicit values with [] for different keys."""
+
+        def process(x):
+            return "result"
+
+        db = self._make_mock_db({"subject": [1, 2, 3], "session": ["A", "B", "C"]})
+
+        for_each(
+            process,
+            inputs={"x": MockVariableA},
+            outputs=[MockOutput],
+            db=db,
+            subject=[1],       # explicit single subject
+            session=[],         # all sessions from db
+        )
+
+        # 1 subject * 3 sessions = 3 iterations
+        assert len(MockOutput.saved_data) == 3
+        # All should have subject=1
+        for d in MockOutput.saved_data:
+            assert d["metadata"]["subject"] == 1
+        # Sessions should be A, B, C
+        saved_sessions = [d["metadata"]["session"] for d in MockOutput.saved_data]
+        assert sorted(saved_sessions) == ["A", "B", "C"]
+
+    def test_empty_db_results_in_zero_iterations(self, capsys):
+        """If the database has no values for a key, 0 iterations should run."""
+
+        def process(x):
+            return "result"
+
+        db = self._make_mock_db({"subject": []})
+
+        for_each(
+            process,
+            inputs={"x": MockVariableA},
+            outputs=[MockOutput],
+            db=db,
+            subject=[],
+        )
+
+        assert len(MockOutput.saved_data) == 0
+        captured = capsys.readouterr()
+        assert "[warn]" in captured.out
+
+    def test_no_db_raises_helpful_error(self):
+        """If no db is available, should raise a clear error."""
+        import unittest.mock as mock
+
+        def process(x):
+            return "result"
+
+        # Patch get_database to raise (simulating no configured database)
+        with mock.patch.dict("sys.modules", {"scidb": None, "scidb.database": None}):
+            with pytest.raises(ValueError, match="no database is available"):
+                for_each(
+                    process,
+                    inputs={"x": MockVariableA},
+                    outputs=[MockOutput],
+                    subject=[],
+                )
+
+    def test_dry_run_with_empty_list(self, capsys):
+        """dry_run should work after resolving [] to all values."""
+
+        def process(x):
+            raise RuntimeError("Should not be called")
+
+        db = self._make_mock_db({"subject": [10, 20]})
+
+        for_each(
+            process,
+            inputs={"x": MockVariableA},
+            outputs=[MockOutput],
+            db=db,
+            dry_run=True,
+            subject=[],
+        )
+
+        assert len(MockOutput.saved_data) == 0
+        captured = capsys.readouterr()
+        assert "[dry-run]" in captured.out
+        assert "2 iterations" in captured.out
