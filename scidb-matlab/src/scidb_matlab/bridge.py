@@ -301,9 +301,13 @@ def wrap_batch_bridge(py_vars_list):
         json_meta      : str  — JSON array of metadata dicts
     """
     import json
+    import time
+
+    t0 = time.time()
 
     py_vars = list(py_vars_list) if not isinstance(py_vars_list, list) else py_vars_list
     n = len(py_vars)
+    t1 = time.time()
 
     record_ids = []
     content_hashes = []
@@ -325,10 +329,12 @@ def wrap_batch_bridge(py_vars_list):
         meta = v.metadata
         meta_dicts.append(dict(meta) if meta is not None else {})
         data.append(v.data)
+    t2 = time.time()
 
     batch_id = _cache_batch(data, py_vars)
+    t3 = time.time()
 
-    return {
+    result = {
         'n': n,
         'batch_id': batch_id,
         'record_ids': '\n'.join(record_ids),
@@ -338,6 +344,15 @@ def wrap_batch_bridge(py_vars_list):
         'parameter_ids': '\n'.join(parameter_ids),
         'json_meta': json.dumps(meta_dicts),
     }
+    t4 = time.time()
+
+    print(f"[wrap_batch_bridge] materialize list: {t1-t0:.3f}s, "
+          f"extract fields: {t2-t1:.3f}s, "
+          f"cache: {t3-t2:.3f}s, "
+          f"serialize: {t4-t3:.3f}s, "
+          f"total: {t4-t0:.3f}s, n={n}")
+
+    return result
 
 
 def load_and_extract(py_class, metadata_dict, version_id='latest', db=None):

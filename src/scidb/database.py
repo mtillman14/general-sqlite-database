@@ -1581,13 +1581,18 @@ class DatabaseManager:
         Yields:
             BaseVariable instances matching the metadata
         """
+        import time as _time
+
         table_name = self._ensure_registered(variable_class, auto_register=True)
         nested_metadata = self._split_metadata(metadata)
 
+        _t0 = _time.time()
         try:
             records = self._find_record(table_name, nested_metadata=nested_metadata, version_id=version_id)
         except Exception:
             return  # No data
+        _t1 = _time.time()
+        print(f"[load_all] _find_record: {_t1-_t0:.3f}s, {len(records)} rows")
 
         if len(records) == 0:
             return
@@ -1601,6 +1606,7 @@ class DatabaseManager:
         # --- Bulk loading path ---
 
         # 1. Bulk dtype lookup: one query per unique parameter_id
+        _t2 = _time.time()
         unique_pids = records["parameter_id"].unique()
         dtype_by_pid = {}
         for pid in unique_pids:
@@ -1611,6 +1617,8 @@ class DatabaseManager:
             )
             if dtype_rows:
                 dtype_by_pid[pid] = json.loads(dtype_rows[0][0])
+        _t3 = _time.time()
+        print(f"[load_all] dtype lookup ({len(unique_pids)} pids): {_t3-_t2:.3f}s")
 
         if not dtype_by_pid:
             return
@@ -1622,39 +1630,59 @@ class DatabaseManager:
             return
 
         # 2. Bulk data fetch: one query for all data rows
-        # Use the first dtype_meta to determine data columns (all parameter_ids
-        # for the same table share the same column structure)
         first_dtype = next(iter(dtype_by_pid.values()))
         data_cols = list(first_dtype["columns"].keys())
         data_select = ", ".join(f'"{c}"' for c in data_cols)
 
-        # Build WHERE clause for all (parameter_id, version_id, schema_id) combos
-        pid_list = [int(r["parameter_id"]) for _, r in records.iterrows()]
-        vid_list = [int(r["version_id"]) for _, r in records.iterrows()]
-        sid_list = [int(r["schema_id"]) for _, r in records.iterrows()]
-
-        # Use unique (pid, vid, sid) tuples to avoid duplicate fetches
-        unique_keys = list(set(zip(pid_list, vid_list, sid_list)))
+        # Vectorized key extraction (avoids 3x iterrows)
+        _t4 = _time.time()
+        pids_arr = records["parameter_id"].values.astype(int)
+        vids_arr = records["version_id"].values.astype(int)
+        sids_arr = records["schema_id"].values.astype(int)
+        unique_keys = set(zip(pids_arr.tolist(), vids_arr.tolist(), sids_arr.tolist()))
         if not unique_keys:
             return
+        _t4b = _time.time()
+        print(f"[load_all] build key lists ({len(unique_keys)} unique keys): {_t4b-_t4:.3f}s")
 
-        # Build a single query with OR conditions for each unique key tuple
-        conditions = []
-        params = []
-        for pid, vid, sid in unique_keys:
-            conditions.append("(parameter_id = ? AND version_id = ? AND schema_id = ?)")
-            params.extend([pid, vid, sid])
+        # Build efficient WHERE clause using per-dimension IN when possible
+        _t5 = _time.time()
+        unique_pids_set = set(p for p, _, _ in unique_keys)
+        unique_vids_set = set(v for _, v, _ in unique_keys)
+        unique_sids_set = set(s for _, _, s in unique_keys)
+        cross_product_size = len(unique_pids_set) * len(unique_vids_set) * len(unique_sids_set)
 
-        where_clause = " OR ".join(conditions)
+        if cross_product_size == len(unique_keys):
+            # Cross product is exact — use per-dimension IN clauses (very fast)
+            pid_placeholders = ", ".join("?" for _ in unique_pids_set)
+            vid_placeholders = ", ".join("?" for _ in unique_vids_set)
+            sid_placeholders = ", ".join("?" for _ in unique_sids_set)
+            where_clause = (
+                f"parameter_id IN ({pid_placeholders}) "
+                f"AND version_id IN ({vid_placeholders}) "
+                f"AND schema_id IN ({sid_placeholders})"
+            )
+            params = list(unique_pids_set) + list(unique_vids_set) + list(unique_sids_set)
+        else:
+            # Partial cross product — use tuple-IN with VALUES
+            values_list = ", ".join(f"({p}, {v}, {s})" for p, v, s in unique_keys)
+            where_clause = (
+                f"(parameter_id, version_id, schema_id) IN "
+                f"(VALUES {values_list})"
+            )
+            params = []
+
         sql = (
             f'SELECT parameter_id, version_id, schema_id, {data_select} '
             f'FROM "{table_name}" '
             f'WHERE {where_clause}'
         )
         all_data_df = self._duck._fetchdf(sql, params)
+        _t6 = _time.time()
+        print(f"[load_all] bulk data fetch ({len(all_data_df)} rows): {_t6-_t5:.3f}s")
 
-        # 3. Restore types per parameter_id group
-        # Group data rows and apply type restoration
+        # 3. Restore types per parameter_id group, then build lookup vectorized
+        _t7 = _time.time()
         data_lookup = {}
         for pid in dtype_by_pid:
             pid_mask = all_data_df["parameter_id"] == pid
@@ -1662,55 +1690,76 @@ class DatabaseManager:
             if len(pid_df) == 0:
                 continue
             dtype_meta = dtype_by_pid[pid]
-            # Restore types on data columns only
             restored = pid_df[data_cols].copy()
             restored = self._duck._restore_types(restored, dtype_meta)
-            # Index each row by (pid, vid, sid)
-            for idx in restored.index:
-                key = (
-                    int(all_data_df.at[idx, "parameter_id"]),
-                    int(all_data_df.at[idx, "version_id"]),
-                    int(all_data_df.at[idx, "schema_id"]),
-                )
-                data_lookup[key] = (restored.loc[idx], dtype_meta)
 
-        # 4. Construct instances for each metadata row
-        for _, row in records.iterrows():
-            pid = int(row["parameter_id"])
-            vid = int(row["version_id"])
-            sid = int(row["schema_id"])
-            record_id = row["record_id"]
-            content_hash = row["content_hash"]
-            lineage_hash = row["lineage_hash"]
-            # Normalize NaN to None
-            if lineage_hash is not None and not isinstance(lineage_hash, str):
-                lineage_hash = None
+            # Vectorized lookup building — avoid per-row .loc[]
+            pid_keys_p = pid_df["parameter_id"].values.astype(int)
+            pid_keys_v = pid_df["version_id"].values.astype(int)
+            pid_keys_s = pid_df["schema_id"].values.astype(int)
 
-            flat_metadata, _ = self._reconstruct_metadata_from_row(row)
-
-            key = (pid, vid, sid)
-            if key not in data_lookup:
-                continue  # Data not found, skip gracefully
-
-            data_row, dtype_meta = data_lookup[key]
             mode = dtype_meta.get("mode", "single_column")
             columns_meta = dtype_meta.get("columns", {})
 
             if mode == "single_column":
                 col_name = next(iter(columns_meta))
-                data = data_row[col_name]
+                col_values = restored[col_name].tolist()
+                for i in range(len(col_values)):
+                    key = (int(pid_keys_p[i]), int(pid_keys_v[i]), int(pid_keys_s[i]))
+                    data_lookup[key] = (col_values[i], dtype_meta)
             else:
-                data = {c: data_row[c] for c in columns_meta}
+                # Multi-column: extract each column as a list
+                col_lists = {c: restored[c].tolist() for c in columns_meta}
+                for i in range(len(pid_df)):
+                    key = (int(pid_keys_p[i]), int(pid_keys_v[i]), int(pid_keys_s[i]))
+                    data_lookup[key] = ({c: col_lists[c][i] for c in columns_meta}, dtype_meta)
+        _t8 = _time.time()
+        print(f"[load_all] restore types + build lookup: {_t8-_t7:.3f}s")
 
-            instance = variable_class(data)
+        # 4. Construct instances using itertuples + inline metadata
+        _t9 = _time.time()
+        _count = 0
+        schema_keys = self.dataset_schema_keys
+        for row in records.itertuples(index=False):
+            pid = int(row.parameter_id)
+            vid = int(row.version_id)
+            sid = int(row.schema_id)
+
+            key = (pid, vid, sid)
+            if key not in data_lookup:
+                continue
+
+            record_id = row.record_id
+            content_hash = row.content_hash
+            lineage_hash = row.lineage_hash
+            if lineage_hash is not None and not isinstance(lineage_hash, str):
+                lineage_hash = None
+
+            # Inline metadata reconstruction (avoids _reconstruct_metadata_from_row overhead)
+            flat_metadata = {}
+            for sk in schema_keys:
+                val = getattr(row, sk, None)
+                if val is not None and not (isinstance(val, float) and pd.isna(val)):
+                    flat_metadata[sk] = str(val)
+            vk_raw = getattr(row, 'version_keys', None)
+            if vk_raw is not None and isinstance(vk_raw, str):
+                flat_metadata.update(json.loads(vk_raw))
+
+            data_value, dtype_meta = data_lookup[key]
+
+            instance = variable_class(data_value)
             instance.record_id = record_id
             instance.metadata = flat_metadata
             instance.content_hash = content_hash
             instance.lineage_hash = lineage_hash
             instance.version_id = vid
             instance.parameter_id = pid
+            _count += 1
 
             yield instance
+        _t10 = _time.time()
+        print(f"[load_all] construct {_count} instances: {_t10-_t9:.3f}s")
+        print(f"[load_all] TOTAL: {_t10-_t0:.3f}s")
 
     def list_versions(
         self,
