@@ -135,6 +135,12 @@ classdef BaseVariable < dynamicprops
                 metadata_columns = cellstr(metadata_columns);
             end
 
+            % Handle empty table
+            if height(tbl) == 0
+                record_ids = string.empty;
+                return;
+            end
+
             % Separate db option from common metadata
             [common_nv, db_val] = extract_db(varargin);
 

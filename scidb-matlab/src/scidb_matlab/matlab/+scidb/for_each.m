@@ -32,6 +32,12 @@ function for_each(fn, inputs, outputs, varargin)
 %       pass_metadata - If true, pass metadata as trailing name-value
 %                       arguments to fn. If not specified, auto-detects
 %                       based on fn.generates_file when fn is a Thunk.
+%       parallel      - If true, use 3-phase parallel execution:
+%                       (1) serial pre-resolve, (2) parfor compute,
+%                       (3) serial batch save. Requires pure MATLAB fn
+%                       (no Thunks or PathInputs). With Parallel Computing
+%                       Toolbox, parfor runs in parallel; without it,
+%                       parfor silently runs serially. (default: false)
 %       db            - Optional DatabaseManager to use for all load/save
 %                       operations instead of the global database
 %       (any other)   - Metadata iterables (numeric or string arrays)
@@ -254,18 +260,18 @@ function for_each(fn, inputs, outputs, varargin)
             % Apply fixed overrides (scalar values replace array values)
             fixed_fields = fieldnames(fixed_meta);
             for f = 1:numel(fixed_fields)
-                fn = fixed_fields{f};
-                fval = fixed_meta.(fn);
+                fld_name = fixed_fields{f};
+                fval = fixed_meta.(fld_name);
                 replaced = false;
                 for k = 1:2:numel(query_nv)
-                    if strcmp(query_nv{k}, fn)
+                    if strcmp(query_nv{k}, fld_name)
                         query_nv{k+1} = fval;
                         replaced = true;
                         break;
                     end
                 end
                 if ~replaced
-                    query_nv{end+1} = fn;   %#ok<AGROW>
+                    query_nv{end+1} = fld_name;   %#ok<AGROW>
                     query_nv{end+1} = fval;  %#ok<AGROW>
                 end
             end
@@ -307,6 +313,22 @@ function for_each(fn, inputs, outputs, varargin)
             end
             preloaded_maps{p} = lookup;
         end
+    end
+
+    % --- Parallel branch ---
+    if opts.parallel && ~dry_run
+        if isa(fn, 'scidb.Thunk')
+            error('scidb:for_each', ...
+                'parallel=true is not supported with Thunk functions (parfor workers cannot call Python).');
+        end
+        [completed, skipped] = run_parallel(fn, combos, n_inputs, n_outputs, ...
+            input_names, loadable_idx, preloaded_results, preloaded_maps, ...
+            preloaded_keys, inputs, meta_keys, outputs, ...
+            constant_names, constant_values, constant_nv, ...
+            as_table_set, should_pass_metadata, fn_name, do_save, db_nv, py_db);
+        fprintf('\n[done] completed=%d, skipped=%d, total=%d\n', ...
+            completed, skipped, total);
+        return;
     end
 
     completed = 0;
@@ -498,6 +520,236 @@ end
 
 
 % =========================================================================
+% Parallel execution (3-phase: pre-resolve → parfor → batch save)
+% =========================================================================
+
+function [completed, skipped] = run_parallel(fn, combos, n_inputs, n_outputs, ...
+    input_names, loadable_idx, preloaded_results, preloaded_maps, ...
+    preloaded_keys, inputs, meta_keys, outputs, ...
+    constant_names, constant_values, constant_nv, ...
+    as_table_set, should_pass_metadata, fn_name, do_save, db_nv, py_db)
+%RUN_PARALLEL  Three-phase parallel execution for for_each.
+%   Phase A: pre-resolve all inputs from preloaded maps (serial, uses py.)
+%   Phase B: parfor compute (pure MATLAB, no py. calls)
+%   Phase C: batch save results (serial, uses py.)
+
+    n_combos = numel(combos);
+
+    % Pre-allocate per-combo storage
+    all_inputs = cell(1, n_combos);    % each: cell array of fn arguments
+    all_meta_nv = cell(1, n_combos);   % each: cell array of meta name-value pairs
+    all_save_nv = cell(1, n_combos);   % each: cell array of save name-value pairs
+    resolve_ok = false(1, n_combos);
+
+    % ---- Phase A: Pre-resolve all inputs (serial) ----
+    fprintf('[parallel] Phase A: pre-resolving %d combinations...\n', n_combos);
+
+    for c = 1:n_combos
+        combo = combos{c};
+
+        % Build metadata name-value pairs for this combo
+        meta_nv = {};
+        meta_parts = {};
+        for k = 1:numel(meta_keys)
+            val = combo{k};
+            meta_nv{end+1} = char(meta_keys(k)); %#ok<AGROW>
+            meta_nv{end+1} = val; %#ok<AGROW>
+            if isnumeric(val)
+                meta_parts{end+1} = sprintf('%s=%g', meta_keys(k), val); %#ok<AGROW>
+            else
+                meta_parts{end+1} = sprintf('%s=%s', meta_keys(k), string(val)); %#ok<AGROW>
+            end
+        end
+        metadata_str = strjoin(meta_parts, ', ');
+        all_meta_nv{c} = meta_nv;
+        all_save_nv{c} = [meta_nv, constant_nv];
+
+        % Resolve each input
+        loaded = cell(1, n_inputs);
+        load_failed = false;
+
+        for p = 1:n_inputs
+            if ~loadable_idx(p)
+                % Constant — use value directly
+                loaded{p} = inputs.(input_names{p});
+                continue;
+            end
+
+            var_spec = inputs.(input_names{p});
+
+            % PathInput not supported in parallel mode
+            if isa(var_spec, 'scidb.PathInput')
+                error('scidb:for_each', ...
+                    'parallel=true is not supported with PathInput (path resolution may need Python).');
+            end
+
+            % Determine var_inst for table conversion
+            if isa(var_spec, 'scidb.Fixed')
+                var_inst = var_spec.var_type;
+            else
+                var_inst = var_spec;
+            end
+
+            % Use preloaded data
+            if ~isempty(preloaded_maps{p})
+                fixed_meta = struct();
+                if isa(var_spec, 'scidb.Fixed')
+                    fixed_meta = var_spec.fixed_metadata;
+                end
+                key_str = combo_meta_key(meta_keys, combo, fixed_meta, preloaded_keys{p});
+
+                if preloaded_maps{p}.isKey(key_str)
+                    idx = preloaded_maps{p}(key_str);
+                    if numel(idx) == 1
+                        loaded{p} = preloaded_results{p}(idx);
+                    else
+                        loaded{p} = preloaded_results{p}(idx);
+                    end
+                else
+                    fprintf('[skip] %s: no data found for %s (%s)\n', ...
+                        metadata_str, input_names{p}, class(var_inst));
+                    load_failed = true;
+                    break;
+                end
+            else
+                % Fallback: per-iteration load (preload=false or no metadata)
+                if isa(var_spec, 'scidb.Fixed')
+                    load_nv = meta_nv;
+                    fixed_fields = fieldnames(var_spec.fixed_metadata);
+                    for f = 1:numel(fixed_fields)
+                        load_nv{end+1} = fixed_fields{f}; %#ok<AGROW>
+                        load_nv{end+1} = var_spec.fixed_metadata.(fixed_fields{f}); %#ok<AGROW>
+                    end
+                else
+                    load_nv = meta_nv;
+                end
+                try
+                    loaded{p} = var_inst.load(load_nv{:}, db_nv{:});
+                catch err
+                    fprintf('[skip] %s: failed to load %s (%s): %s\n', ...
+                        metadata_str, input_names{p}, class(var_inst), err.message);
+                    load_failed = true;
+                    break;
+                end
+            end
+
+            % Convert multi-result to table if requested
+            if ~isempty(as_table_set) && ismember(string(input_names{p}), as_table_set) ...
+                    && isa(loaded{p}, 'scidb.ThunkOutput') && numel(loaded{p}) > 1
+                type_name = class(var_inst);
+                loaded{p} = fe_multi_result_to_table(loaded{p}, type_name);
+            end
+        end
+
+        if load_failed
+            continue;
+        end
+
+        % Unwrap ThunkOutput/BaseVariable inputs to raw data (same as serial path)
+        for p = 1:n_inputs
+            if loadable_idx(p) && ~istable(loaded{p})
+                loaded{p} = scidb.internal.unwrap_input(loaded{p});
+            end
+        end
+
+        all_inputs{c} = loaded;
+        resolve_ok(c) = true;
+    end
+
+    n_resolved = sum(resolve_ok);
+    fprintf('[parallel] Phase A done: %d resolved, %d skipped\n', ...
+        n_resolved, n_combos - n_resolved);
+
+    % ---- Phase B: Parallel compute (parfor) ----
+    fprintf('[parallel] Phase B: computing %d items with parfor...\n', n_resolved);
+
+    resolved_indices = find(resolve_ok);
+    % Copy into contiguous arrays for parfor (avoid broadcast of sparse cells)
+    par_inputs = cell(1, n_resolved);
+    par_meta_nv = cell(1, n_resolved);
+    for j = 1:n_resolved
+        par_inputs{j} = all_inputs{resolved_indices(j)};
+        par_meta_nv{j} = all_meta_nv{resolved_indices(j)};
+    end
+
+    results = cell(1, n_resolved);
+    compute_ok = true(1, n_resolved);
+    compute_errors = cell(1, n_resolved);
+
+    parfor j = 1:n_resolved
+        try
+            if should_pass_metadata
+                r = fn(par_inputs{j}{:}, par_meta_nv{j}{:});
+            else
+                r = fn(par_inputs{j}{:});
+            end
+            if ~iscell(r)
+                r = {r};
+            end
+            results{j} = r;
+        catch err
+            compute_ok(j) = false;
+            compute_errors{j} = err.message;
+            results{j} = {};
+        end
+    end
+
+    % Report compute errors
+    for j = find(~compute_ok)
+        c = resolved_indices(j);
+        combo = combos{c};
+        meta_parts = {};
+        for k = 1:numel(meta_keys)
+            val = combo{k};
+            if isnumeric(val)
+                meta_parts{end+1} = sprintf('%s=%g', meta_keys(k), val); %#ok<AGROW>
+            else
+                meta_parts{end+1} = sprintf('%s=%s', meta_keys(k), string(val)); %#ok<AGROW>
+            end
+        end
+        fprintf('[skip] %s: %s raised: %s\n', ...
+            strjoin(meta_parts, ', '), fn_name, compute_errors{j});
+    end
+
+    n_computed = sum(compute_ok);
+    fprintf('[parallel] Phase B done: %d succeeded, %d failed\n', ...
+        n_computed, n_resolved - n_computed);
+
+    % ---- Phase C: Batch save (serial) ----
+    if do_save && n_computed > 0
+        fprintf('[parallel] Phase C: batch saving %d results...\n', n_computed);
+
+        for o = 1:n_outputs
+            type_name = class(outputs{o});
+            scidb.internal.ensure_registered(type_name);
+
+            py_data = py.list();
+            py_metas = py.list();
+            save_count = 0;
+
+            for j = find(compute_ok)
+                c = resolved_indices(j);
+                if o <= numel(results{j})
+                    py_data.append(scidb.internal.to_python(results{j}{o}));
+                    py_metas.append(scidb.internal.metadata_to_pydict(all_save_nv{c}{:}));
+                    save_count = save_count + 1;
+                end
+            end
+
+            if save_count > 0
+                py.scidb_matlab.bridge.for_each_batch_save( ...
+                    type_name, py_data, py_metas, py_db);
+                fprintf('[save] %s: %d items (batch)\n', type_name, save_count);
+            end
+        end
+    end
+
+    completed = n_computed;
+    skipped = numel(combos) - n_computed;
+end
+
+
+% =========================================================================
 % Local helper functions
 % =========================================================================
 
@@ -519,6 +771,7 @@ function [meta_args, opts] = split_options(varargin)
     opts.pass_metadata = [];
     opts.as_table = string.empty;
     opts.db = [];
+    opts.parallel = false;
 
     meta_args = {};
     i = 1;
@@ -557,6 +810,10 @@ function [meta_args, opts] = split_options(varargin)
                     continue;
                 case "db"
                     opts.db = varargin{i+1};
+                    i = i + 2;
+                    continue;
+                case "parallel"
+                    opts.parallel = logical(varargin{i+1});
                     i = i + 2;
                     continue;
             end

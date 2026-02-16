@@ -306,6 +306,128 @@ classdef TestForEach < matlab.unittest.TestCase
             testCase.verifyEmpty(results);
         end
 
+        % --- Parallel mode ---
+
+        function test_parallel_basic(testCase)
+            % Same as test_single_key_iteration but with parallel=true
+            RawSignal().save([1 2 3], 'subject', 1, 'session', 'A');
+            RawSignal().save([4 5 6], 'subject', 2, 'session', 'A');
+            RawSignal().save([7 8 9], 'subject', 3, 'session', 'A');
+
+            scidb.for_each(@double_values, ...
+                struct('x', RawSignal()), ...
+                {ProcessedSignal()}, ...
+                'parallel', true, ...
+                'subject', [1 2 3], ...
+                'session', "A");
+
+            for s = [1 2 3]
+                result = ProcessedSignal().load('subject', s, 'session', 'A');
+                raw = RawSignal().load('subject', s, 'session', 'A');
+                testCase.verifyEqual(result.data, raw.data * 2, 'AbsTol', 1e-10);
+            end
+        end
+
+        function test_parallel_cartesian(testCase)
+            % Same as test_cartesian_product but with parallel=true
+            for s = [1 2]
+                for sess = ["A", "B"]
+                    RawSignal().save(s * [1 2 3], ...
+                        'subject', s, 'session', sess);
+                end
+            end
+
+            scidb.for_each(@double_values, ...
+                struct('x', RawSignal()), ...
+                {ProcessedSignal()}, ...
+                'parallel', true, ...
+                'subject', [1 2], ...
+                'session', ["A", "B"]);
+
+            all_results = ProcessedSignal().load_all();
+            testCase.verifyEqual(numel(all_results), 4);
+        end
+
+        function test_parallel_with_constant(testCase)
+            % Same as test_constant_input_passed_to_function with parallel=true
+            RawSignal().save([10 20 30], 'subject', 1, 'session', 'A');
+
+            scidb.for_each(@add_offset, ...
+                struct('x', RawSignal(), 'offset', 5), ...
+                {ProcessedSignal()}, ...
+                'parallel', true, ...
+                'subject', 1, ...
+                'session', "A");
+
+            result = ProcessedSignal().load('subject', 1, 'session', 'A');
+            testCase.verifyEqual(result.data, [15 25 35], 'AbsTol', 1e-10);
+        end
+
+        function test_parallel_skips_missing(testCase)
+            % Same as test_missing_input_skips_iteration with parallel=true
+            RawSignal().save([1 2 3], 'subject', 1, 'session', 'A');
+
+            scidb.for_each(@double_values, ...
+                struct('x', RawSignal()), ...
+                {ProcessedSignal()}, ...
+                'parallel', true, ...
+                'subject', [1 2], ...
+                'session', "A");
+
+            r1 = ProcessedSignal().load('subject', 1, 'session', 'A');
+            testCase.verifyEqual(r1.data, [2 4 6], 'AbsTol', 1e-10);
+
+            results = ProcessedSignal().load_all('subject', 2, 'session', 'A');
+            testCase.verifyEmpty(results);
+        end
+
+        function test_parallel_false_is_default(testCase)
+            % parallel=false should behave identically to the default
+            RawSignal().save([10 20 30], 'subject', 1, 'session', 'A');
+
+            scidb.for_each(@double_values, ...
+                struct('x', RawSignal()), ...
+                {ProcessedSignal()}, ...
+                'parallel', false, ...
+                'subject', 1, ...
+                'session', "A");
+
+            result = ProcessedSignal().load('subject', 1, 'session', 'A');
+            testCase.verifyEqual(result.data, [20 40 60], 'AbsTol', 1e-10);
+        end
+
+        function test_parallel_multiple_outputs(testCase)
+            % Parallel mode with multiple outputs
+            RawSignal().save([1 2 3 4], 'subject', 1, 'session', 'A');
+
+            scidb.for_each(@split_data, ...
+                struct('x', RawSignal()), ...
+                {SplitFirst(), SplitSecond()}, ...
+                'parallel', true, ...
+                'subject', 1, ...
+                'session', "A");
+
+            r1 = SplitFirst().load('subject', 1, 'session', 'A');
+            r2 = SplitSecond().load('subject', 1, 'session', 'A');
+            testCase.verifyEqual(r1.data, [1 2], 'AbsTol', 1e-10);
+            testCase.verifyEqual(r2.data, [3 4], 'AbsTol', 1e-10);
+        end
+
+        function test_parallel_thunk_errors(testCase)
+            % Thunks are not supported in parallel mode
+            RawSignal().save([1 2 3], 'subject', 1, 'session', 'A');
+
+            thunk = scidb.Thunk(@double_values);
+            testCase.verifyError(@() ...
+                scidb.for_each(thunk, ...
+                    struct('x', RawSignal()), ...
+                    {ProcessedSignal()}, ...
+                    'parallel', true, ...
+                    'subject', 1, ...
+                    'session', "A"), ...
+                'scidb:for_each');
+        end
+
         % --- Multiple subjects and sessions ---
 
         function test_full_pipeline(testCase)

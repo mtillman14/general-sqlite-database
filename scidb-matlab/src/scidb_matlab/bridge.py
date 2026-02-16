@@ -175,6 +175,48 @@ def register_matlab_variable(type_name: str, schema_version: int = 1):
     return surrogate
 
 
+def for_each_batch_save(type_name, data_list, metadata_list, db=None):
+    """Batch save for for_each parallel results.
+
+    Each element in data_list is a single data value (already converted via
+    to_python on the MATLAB side).  Each element in metadata_list is a Python
+    dict of metadata key-value pairs.
+
+    Parameters
+    ----------
+    type_name : str
+        Variable class name (e.g. "ProcessedSignal").
+    data_list : list
+        One data value per result row.
+    metadata_list : list of dict
+        One metadata dict per result row.
+    db : DatabaseManager or None
+        Optional database; uses global default when None.
+
+    Returns
+    -------
+    str
+        Newline-joined record IDs.
+    """
+    from scidb.variable import BaseVariable
+    from scidb.database import get_database
+
+    cls = BaseVariable.get_subclass_by_name(type_name)
+    if cls is None:
+        raise ValueError(
+            f"Variable type '{type_name}' is not registered. "
+            f"Call scidb.register_variable('{type_name}') first."
+        )
+
+    _db = db if db is not None and not isinstance(db, type(None)) else get_database()
+
+    data_items = []
+    for i in range(len(data_list)):
+        data_items.append((data_list[i], dict(metadata_list[i])))
+
+    return "\n".join(_db.save_batch(cls, data_items))
+
+
 def save_batch_bridge(type_name, data_values, metadata_keys, metadata_columns, common_metadata=None, db=None):
     """Bridge function for MATLAB save_from_table.
 
