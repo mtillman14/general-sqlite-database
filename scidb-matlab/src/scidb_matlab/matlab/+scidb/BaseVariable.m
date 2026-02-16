@@ -507,9 +507,11 @@ classdef BaseVariable < dynamicprops
         %   bridge.wrap_batch_bridge().  Parses newline-joined strings and
         %   JSON metadata with minimal MATLAB-Python boundary crossings.
         %
-        %   Data and py_var objects are stored in a Python-side cache
-        %   (never returned to MATLAB en masse) and accessed one at a
-        %   time via get_batch_item(batch_id, index).
+        %   Optimizations:
+        %   - py_vars are converted to a cell array in one call (not per-item)
+        %   - Scalar data is transferred as a single numpy array when possible
+        %   - str2double for version/parameter IDs is vectorized outside the loop
+        %   - Results array is preallocated
         %
         %   results = scidb.BaseVariable.wrap_py_vars_batch(bulk)
         %
@@ -542,15 +544,42 @@ classdef BaseVariable < dynamicprops
                 end
             end
 
-            % Batch ID for accessing cached data/py_vars one at a time
+            % --- Optimization A: Vectorize str2double outside the loop ---
+            vid_nums = str2double(vid_strs);
+            pid_nums = str2double(pid_strs);
+            vid_valid = ~isnan(vid_nums);
+            pid_valid = ~isnan(pid_nums);
+
+            % --- Optimization B: Scalar data batch transfer ---
+            % When all data values are scalars, Python packs them as a
+            % single numpy array — one double() call instead of N from_python.
+            has_scalar_data = logical( ...
+                py.operator.contains(bulk, 'scalar_data'));
+            if has_scalar_data
+                all_scalar_data = double(bulk{'scalar_data'});
+            end
+
+            % --- Optimization C: Bulk-convert py_vars to cell array ---
+            % One cell() call instead of N get_batch_item Python calls.
+            py_vars_cell = cell(bulk{'py_vars'});
+
+            % Batch ID for non-scalar data fallback
             batch_id = int64(bulk{'batch_id'});
 
-            % Build ThunkOutput array
-            results = scidb.ThunkOutput.empty();
+            % --- Optimization D: Preallocate results array ---
+            results(1:n) = scidb.ThunkOutput();
+
             for i = 1:n
-                item = py.scidb_matlab.bridge.get_batch_item(batch_id, int64(i-1));
-                matlab_data = scidb.internal.from_python(item{1});
-                v = scidb.ThunkOutput(matlab_data, item{2});
+                % Data: use scalar fast path or per-item fallback
+                if has_scalar_data
+                    matlab_data = all_scalar_data(i);
+                else
+                    py_data = py.scidb_matlab.bridge.get_batch_data_item( ...
+                        batch_id, int64(i-1));
+                    matlab_data = scidb.internal.from_python(py_data);
+                end
+
+                v = scidb.ThunkOutput(matlab_data, py_vars_cell{i});
                 v.record_id    = record_ids(i);
                 v.content_hash = content_hashes(i);
 
@@ -560,14 +589,14 @@ classdef BaseVariable < dynamicprops
 
                 v.metadata = meta_arr(i);
 
-                if vid_strs(i) ~= ""
-                    v.version_id = int64(str2double(vid_strs(i)));
+                if vid_valid(i)
+                    v.version_id = int64(vid_nums(i));
                 end
-                if pid_strs(i) ~= ""
-                    v.parameter_id = int64(str2double(pid_strs(i)));
+                if pid_valid(i)
+                    v.parameter_id = int64(pid_nums(i));
                 end
 
-                results(end+1) = v; %#ok<AGROW>
+                results(i) = v;
             end
 
             % Release Python-side cache

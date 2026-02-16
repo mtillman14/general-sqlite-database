@@ -270,6 +270,12 @@ def get_batch_item(batch_id, index):
     return data_list[i], py_vars_list[i]
 
 
+def get_batch_data_item(batch_id, index):
+    """Return just the data for one element from a cached batch."""
+    data_list, _ = _batch_cache[int(batch_id)]
+    return data_list[int(index)]
+
+
 def free_batch(batch_id):
     """Release a cached batch."""
     _batch_cache.pop(int(batch_id), None)
@@ -279,9 +285,11 @@ def wrap_batch_bridge(py_vars_list):
     """Extract all fields from a list of BaseVariables into bulk format.
 
     Scalar fields are packed into newline-joined strings and metadata into
-    a single JSON string.  The heavy ``data`` and ``py_vars`` lists are
-    stored in a Python-side cache (never returned to MATLAB) and accessed
-    one element at a time via ``get_batch_item(batch_id, index)``.
+    a single JSON string.  The ``py_vars`` list is returned directly so
+    MATLAB can convert it to a cell array in one call.  When all data
+    values are scalars (int/float), they are packed into a numpy array
+    (``scalar_data``) for single-crossing transfer; otherwise data is
+    stored in a Python-side cache for per-item access.
 
     Parameters
     ----------
@@ -292,15 +300,18 @@ def wrap_batch_bridge(py_vars_list):
     -------
     dict with keys:
         n              : int
-        batch_id       : int  — handle for get_batch_item / free_batch
-        record_ids     : str  — newline-joined
-        content_hashes : str  — newline-joined
-        lineage_hashes : str  — newline-joined ('' for None)
-        version_ids    : str  — newline-joined int strings ('' for None)
-        parameter_ids  : str  — newline-joined int strings ('' for None)
-        json_meta      : str  — JSON array of metadata dicts
+        py_vars        : list  — BaseVariable objects for MATLAB cell() conversion
+        batch_id       : int   — handle for get_batch_data_item (non-scalar only)
+        record_ids     : str   — newline-joined
+        content_hashes : str   — newline-joined
+        lineage_hashes : str   — newline-joined ('' for None)
+        version_ids    : str   — newline-joined int strings ('' for None)
+        parameter_ids  : str   — newline-joined int strings ('' for None)
+        json_meta      : str   — JSON array of metadata dicts
+        scalar_data    : numpy.ndarray (optional) — present when all data are scalars
     """
     import json
+    import numpy as np
     import time
 
     t0 = time.time()
@@ -331,11 +342,12 @@ def wrap_batch_bridge(py_vars_list):
         data.append(v.data)
     t2 = time.time()
 
+    # Cache data for non-scalar fallback access
     batch_id = _cache_batch(data, py_vars)
-    t3 = time.time()
 
     result = {
         'n': n,
+        'py_vars': py_vars,
         'batch_id': batch_id,
         'record_ids': '\n'.join(record_ids),
         'content_hashes': '\n'.join(content_hashes),
@@ -344,13 +356,17 @@ def wrap_batch_bridge(py_vars_list):
         'parameter_ids': '\n'.join(parameter_ids),
         'json_meta': json.dumps(meta_dicts),
     }
-    t4 = time.time()
+
+    # Scalar fast path: pack all data into a single numpy array
+    if n > 0 and all(isinstance(d, (int, float)) for d in data):
+        result['scalar_data'] = np.array(data, dtype=float)
+
+    t3 = time.time()
 
     print(f"[wrap_batch_bridge] materialize list: {t1-t0:.3f}s, "
-          f"extract fields: {t2-t1:.3f}s, "
-          f"cache: {t3-t2:.3f}s, "
-          f"serialize: {t4-t3:.3f}s, "
-          f"total: {t4-t0:.3f}s, n={n}")
+          f"extract+pack: {t2-t1:.3f}s, "
+          f"serialize: {t3-t2:.3f}s, "
+          f"total: {t3-t0:.3f}s, n={n}")
 
     return result
 
