@@ -15,7 +15,8 @@ function variables = get_var_group(group_name)
 %       end
 
     db = py.scidb.database.get_database();
-    py_names = db._duck.get_group(char(group_name));
+    duck = py.getattr(db, '_duck');
+    py_names = duck.get_group(char(group_name));
     names = string(cell(py_names));
 
     variables = cell(1, numel(names));
