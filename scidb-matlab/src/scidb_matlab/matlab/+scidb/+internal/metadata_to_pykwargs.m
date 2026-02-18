@@ -31,6 +31,10 @@ function kwargs = metadata_to_pykwargs(varargin)
             else
                 val = py.int(int64(val));
             end
+        elseif isstruct(val)
+            % Structs become JSON strings so they can be stored as
+            % version keys (e.g. config structs).
+            val = char(jsonencode(val));
         end
         
         kwargs{i} = key;

@@ -101,6 +101,12 @@ def _serialize_for_hash(obj: Any) -> bytes:
             + _serialize_for_hash(obj.to_numpy())
         )
 
+    # Python array.array (MATLAB bridge can produce these)
+    import array as _array_mod
+    if isinstance(obj, _array_mod.array):
+        import numpy as np
+        return _serialize_for_hash(np.array(obj))
+
     # Unsupported type
     raise ValueError(f"Unserializable data type: {type(obj)}")
 

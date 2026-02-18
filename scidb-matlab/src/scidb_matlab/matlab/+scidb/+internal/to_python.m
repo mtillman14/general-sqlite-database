@@ -74,6 +74,8 @@ function py_obj = to_python(data)
         py_dict = py.dict();
         for i = 1:numel(col_names)
             col = data.(col_names{i});
+            orig_class = class(col);
+            orig_size = size(col);
             if iscategorical(col)
                 col = string(col);
             elseif isdatetime(col)
@@ -88,9 +90,71 @@ function py_obj = to_python(data)
                 end
                 col = tmp;
             end
-            py_dict{col_names{i}} = scidb.internal.to_python(col);
+
+            try
+                if iscell(col)
+                    % Cell array column: convert element-by-element.
+                    % Inner numpy arrays must become Python lists so that
+                    % pandas creates an object column instead of trying to
+                    % stack arrays into a 2-D ndarray.
+                    py_val = py.list();
+                    for k = 1:numel(col)
+                        elem_data = col{k};
+                        % Ensure cell elements that are Nx1 cells are
+                        % transposed to 1xN so MATLAB's Python bridge
+                        % can handle them.
+                        if iscell(elem_data) && iscolumn(elem_data)
+                            elem_data = elem_data';
+                        end
+                        elem = scidb.internal.to_python(elem_data);
+                        if isa(elem, 'py.numpy.ndarray')
+                            elem = elem.tolist();
+                        end
+                        py_val.append(elem);
+                    end
+                else
+                    py_val = scidb.internal.to_python(col);
+                    % to_python always reshapes using size(data) which is
+                    % at least 2-D in MATLAB (e.g. Nx1 -> shape (N,1)).
+                    % pandas requires per-column arrays to be 1-D, so ravel.
+                    if isa(py_val, 'py.numpy.ndarray')
+                        py_val = py_val.ravel();
+                    end
+                end
+                fprintf('  [to_python table] col %d/%d "%s": class=%s size=[%s] -> %s OK\n', ...
+                    i, numel(col_names), col_names{i}, orig_class, ...
+                    num2str(orig_size), class(py_val));
+            catch ME
+                % Report which column failed and what the element looks like
+                detail = sprintf('class=%s size=[%s]', orig_class, num2str(orig_size));
+                if iscell(col)
+                    detail = sprintf('%s, cell elem %d: class=%s size=[%s]', ...
+                        detail, k, class(col{k}), num2str(size(col{k})));
+                end
+                error('scidb:ColumnConvertError', ...
+                    'to_python table col %d/%d "%s" failed (%s): %s', ...
+                    i, numel(col_names), col_names{i}, detail, ME.message);
+            end
+            py_dict{col_names{i}} = py_val;
         end
-        py_obj = py.pandas.DataFrame(py_dict);
+        % Diagnose: try each column individually to find the culprit
+        try
+            py_obj = py.pandas.DataFrame(py_dict);
+        catch ME
+            fprintf('  [to_python table] pd.DataFrame failed: %s\n', ME.message);
+            fprintf('  [to_python table] Testing columns individually...\n');
+            for i = 1:numel(col_names)
+                key = col_names{i};
+                one = py.dict(pyargs(key, py.operator.getitem(py_dict, key)));
+                try
+                    py.pandas.DataFrame(one);
+                    fprintf('  [to_python table]   col "%s": OK\n', key);
+                catch ME2
+                    fprintf('  [to_python table]   col "%s": FAILED - %s\n', key, ME2.message);
+                end
+            end
+            rethrow(ME);
+        end
 
     elseif isstruct(data) && isscalar(data)
         % Scalar struct -> Python dict
