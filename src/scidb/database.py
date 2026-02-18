@@ -361,6 +361,7 @@ class DatabaseManager:
 
         Returns (parameter_id, schema_id, version_id).
         """
+        _t0 = time.perf_counter()
         schema_id = (
             self._duck._get_or_create_schema_id(schema_level, schema_keys)
             if schema_level is not None and schema_keys
@@ -371,8 +372,11 @@ class DatabaseManager:
         parameter_id, version_id, is_new_parameter = self._resolve_parameter_slot(
             table_name, schema_id, version_keys
         )
+        _t_resolve = time.perf_counter() - _t0
+        print(f"      [_save_custom] resolve schema/param slot: {_t_resolve:.4f}s")
 
         # Ensure table exists with SciDuck-compatible schema
+        _t0 = time.perf_counter()
         if not self._duck._table_exists(table_name):
             # Infer column types from DataFrame
             col_defs = []
@@ -399,20 +403,29 @@ class DatabaseManager:
                 )
             """)
             self._create_variable_view(variable_class)
+        _t_table = time.perf_counter() - _t0
+        print(f"      [_save_custom] ensure table exists: {_t_table:.4f}s")
 
         # Insert all DataFrame rows with the same (schema_id, parameter_id, version_id)
-        for _, row in df.iterrows():
-            col_names = ["schema_id", "parameter_id", "version_id"] + list(df.columns)
-            col_str = ", ".join(f'"{c}"' for c in col_names)
-            placeholders = ", ".join(["?"] * len(col_names))
-            values = [schema_id, parameter_id, version_id] + [
-                row[c].item() if hasattr(row[c], 'item') else row[c]
-                for c in df.columns
-            ]
-            self._duck._execute(
-                f'INSERT INTO "{table_name}" ({col_str}) VALUES ({placeholders})',
-                values,
-            )
+        # Build a staging DataFrame with the tracking columns prepended,
+        # then let DuckDB ingest it in a single bulk operation.
+        _t0 = time.perf_counter()
+        insert_df = df.copy()
+        insert_df.insert(0, "version_id", version_id)
+        insert_df.insert(0, "parameter_id", parameter_id)
+        insert_df.insert(0, "schema_id", schema_id)
+        _t_prep = time.perf_counter() - _t0
+        print(f"      [_save_custom] DataFrame prep (copy+insert cols): {_t_prep:.4f}s")
+        print(f"      [_save_custom] DataFrame shape: {insert_df.shape}, dtypes: {dict(insert_df.dtypes)}")
+        print(f"      [_save_custom] DataFrame memory: {insert_df.memory_usage(deep=True).sum() / 1024:.1f} KB")
+
+        _t0 = time.perf_counter()
+        col_str = ", ".join(f'"{c}"' for c in insert_df.columns)
+        self._duck.con.execute(
+            f'INSERT INTO "{table_name}" ({col_str}) SELECT * FROM insert_df'
+        )
+        _t_insert = time.perf_counter() - _t0
+        print(f"      [_save_custom] DuckDB INSERT: {_t_insert:.4f}s")
 
         # Register in _variables only for truly new parameter slots
         effective_level = schema_level or self.dataset_schema_keys[-1]
@@ -443,15 +456,23 @@ class DatabaseManager:
 
         Returns (parameter_id, schema_id=0, version_id).
         """
+        _t0 = time.perf_counter()
         parameter_id, version_id, is_new_parameter = self._resolve_parameter_slot(
             table_name, 0, version_keys
         )
+        print(f"      [_save_native_direct] resolve slot: {time.perf_counter() - _t0:.4f}s")
 
+        _t0 = time.perf_counter()
         ddb_type, col_meta = _infer_duckdb_type(data)
+        print(f"      [_save_native_direct] _infer_duckdb_type: {time.perf_counter() - _t0:.4f}s  -> {ddb_type}, python_type={col_meta.get('python_type')}")
+
+        _t0 = time.perf_counter()
         storage_value = _python_to_storage(data, col_meta)
+        print(f"      [_save_native_direct] _python_to_storage: {time.perf_counter() - _t0:.4f}s  -> value type={type(storage_value).__name__}, len={len(storage_value) if isinstance(storage_value, str) else 'N/A'}")
         dtype_meta = {"mode": "single_column", "columns": {"value": col_meta}}
 
         # Ensure table exists
+        _t0 = time.perf_counter()
         if not self._duck._table_exists(table_name):
             self._duck._execute(f"""
                 CREATE TABLE "{table_name}" (
@@ -462,12 +483,15 @@ class DatabaseManager:
                 )
             """)
             self._create_variable_view(variable_class)
+        print(f"      [_save_native_direct] ensure table: {time.perf_counter() - _t0:.4f}s")
 
         # Insert data
+        _t0 = time.perf_counter()
         self._duck._execute(
             f'INSERT INTO "{table_name}" ("schema_id", "parameter_id", "version_id", "value") VALUES (?, ?, ?, ?)',
             [0, parameter_id, version_id, storage_value],
         )
+        print(f"      [_save_native_direct] DuckDB INSERT: {time.perf_counter() - _t0:.4f}s")
 
         # Register in _variables only for truly new parameter slots
         if is_new_parameter:
@@ -499,6 +523,7 @@ class DatabaseManager:
 
         Returns (parameter_id, schema_id, version_id).
         """
+        _t0 = time.perf_counter()
         schema_id = self._duck._get_or_create_schema_id(
             schema_level, {k: str(v) for k, v in schema_keys.items()}
         )
@@ -507,9 +532,15 @@ class DatabaseManager:
         parameter_id, version_id, is_new_parameter = self._resolve_parameter_slot(
             table_name, schema_id, version_keys
         )
+        print(f"      [_save_native_schema] resolve slot: {time.perf_counter() - _t0:.4f}s")
 
+        _t0 = time.perf_counter()
         ddb_type, col_meta = _infer_duckdb_type(data)
+        print(f"      [_save_native_schema] _infer_duckdb_type: {time.perf_counter() - _t0:.4f}s  -> {ddb_type}, python_type={col_meta.get('python_type')}")
+
+        _t0 = time.perf_counter()
         storage_value = _python_to_storage(data, col_meta)
+        print(f"      [_save_native_schema] _python_to_storage: {time.perf_counter() - _t0:.4f}s  -> value type={type(storage_value).__name__}, len={len(storage_value) if isinstance(storage_value, str) else 'N/A'}")
         dtype_meta = {"mode": "single_column", "columns": {"value": col_meta}}
 
         # Ensure table exists
@@ -1244,6 +1275,9 @@ class DatabaseManager:
         from .lineage import extract_lineage, find_unsaved_variables, get_raw_value
         from .exceptions import UnsavedIntermediateError
 
+        _t_total = time.perf_counter()
+        _t0 = time.perf_counter()
+
         # Normalize input: extract raw data and lineage info based on input type
         lineage = None
         lineage_hash = None
@@ -1315,14 +1349,28 @@ class DatabaseManager:
         else:
             raw_data = data
 
+        _t_normalize = time.perf_counter() - _t0
+        print(f"  [save_variable] input normalization: {_t_normalize:.4f}s")
+
+        _t0 = time.perf_counter()
         instance = variable_class(raw_data)
+        _t_instantiate = time.perf_counter() - _t0
+        print(f"  [save_variable] variable instantiation: {_t_instantiate:.4f}s")
+
+        _t0 = time.perf_counter()
         record_id = self.save(
             instance, metadata, lineage=lineage, lineage_hash=lineage_hash,
             pipeline_lineage_hash=pipeline_lineage_hash, index=index,
         )
+        _t_save = time.perf_counter() - _t0
+        print(f"  [save_variable] self.save() call: {_t_save:.4f}s")
+
         instance.record_id = record_id
         instance.metadata = metadata
         instance.lineage_hash = lineage_hash
+
+        _t_total_elapsed = time.perf_counter() - _t_total
+        print(f"  [save_variable] TOTAL: {_t_total_elapsed:.4f}s")
 
         return record_id
 
@@ -1351,6 +1399,8 @@ class DatabaseManager:
         Returns:
             The record_id of the saved data
         """
+        _t0 = time.perf_counter()
+
         table_name = self._ensure_registered(type(variable))
         type_name = variable.__class__.__name__
         user_id = get_user_id()
@@ -1368,33 +1418,54 @@ class DatabaseManager:
                 stacklevel=2,
             )
 
+        _t_setup = time.perf_counter() - _t0
+        print(f"    [save] setup (register/metadata/user_id): {_t_setup:.4f}s")
+
         # Compute content hash
+        _t0 = time.perf_counter()
         content_hash = canonical_hash(variable.data)
+        _t_hash = time.perf_counter() - _t0
+        print(f"    [save] canonical_hash: {_t_hash:.4f}s")
 
         # Generate record_id
+        _t0 = time.perf_counter()
         record_id = generate_record_id(
             class_name=type_name,
             schema_version=variable.schema_version,
             content_hash=content_hash,
             metadata=nested_metadata,
         )
+        _t_genid = time.perf_counter() - _t0
+        print(f"    [save] generate_record_id: {_t_genid:.4f}s")
 
         # Idempotency: check if record already exists in _record_metadata
+        _t0 = time.perf_counter()
         existing = self._duck._fetchall(
             "SELECT 1 FROM _record_metadata WHERE record_id = ?",
             [record_id],
         )
+        _t_idempotency = time.perf_counter() - _t0
+        print(f"    [save] idempotency check: {_t_idempotency:.4f}s")
         if existing:
+            print(f"    [save] record already exists, returning early")
             return record_id
+
+        # Wrap all writes in a single transaction to avoid repeated
+        # WAL checkpoints (each auto-committed statement can trigger a
+        # checkpoint/fsync, causing random multi-second stalls).
+        self._duck._begin()
 
         schema_keys = nested_metadata.get("schema", {})
         version_keys = nested_metadata.get("version", {})
         schema_level = self._infer_schema_level(schema_keys)
         created_at = datetime.now().isoformat()
 
+        _t0 = time.perf_counter()
         if self._has_custom_serialization(type(variable)):
             # Custom serialization: user provides to_db() → DataFrame
+            _t_todb = time.perf_counter()
             df = variable.to_db()
+            print(f"      [save] to_db() serialization: {time.perf_counter() - _t_todb:.4f}s")
 
             if index is not None:
                 index_list = list(index) if not isinstance(index, list) else index
@@ -1440,7 +1511,10 @@ class DatabaseManager:
                     table_name, type(variable), variable.data, content_hash,
                     version_keys=version_keys,
                 )
+        _t_data_save = time.perf_counter() - _t0
+        print(f"    [save] data write (DuckDB): {_t_data_save:.4f}s")
 
+        _t0 = time.perf_counter()
         self._save_record_metadata(
             record_id=record_id,
             variable_name=table_name,
@@ -1453,8 +1527,11 @@ class DatabaseManager:
             user_id=user_id,
             created_at=created_at,
         )
+        _t_record_meta = time.perf_counter() - _t0
+        print(f"    [save] _save_record_metadata: {_t_record_meta:.4f}s")
 
         # Save lineage if provided
+        _t0 = time.perf_counter()
         if lineage is not None:
             effective_plh = pipeline_lineage_hash if pipeline_lineage_hash is not None else lineage_hash
             self._save_lineage(
@@ -1462,6 +1539,13 @@ class DatabaseManager:
                 schema_keys=nested_metadata.get("schema"),
                 output_content_hash=content_hash,
             )
+        _t_lineage = time.perf_counter() - _t0
+        print(f"    [save] _save_lineage: {_t_lineage:.4f}s")
+
+        _t0 = time.perf_counter()
+        self._duck._commit()
+        _t_commit = time.perf_counter() - _t0
+        print(f"    [save] transaction commit: {_t_commit:.4f}s")
 
         return record_id
 
