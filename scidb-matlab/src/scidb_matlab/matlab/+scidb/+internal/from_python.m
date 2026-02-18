@@ -76,12 +76,16 @@ function data = from_python(py_obj)
                 for k = 1:numel(c)
                     col_data{k} = scidb.internal.from_python(c{k});
                 end
-                args{i} = col_data;
+                % Reconstruct matrix if all elements are same-size numeric
+                % (round-trips multi-column table variables like Nx2 matrices)
+                args{i} = try_stack_numeric(col_data);
             else
                 args{i} = scidb.internal.from_python(col.to_numpy());
             end
-            % Ensure column vector
-            args{i} = args{i}(:);
+            % Ensure column vector (preserve multi-column matrices)
+            if isvector(args{i})
+                args{i} = args{i}(:);
+            end
         end
         col_name_strs = cellfun(@string, col_names, 'UniformOutput', false);
         data = table(args{:}, 'VariableNames', [col_name_strs{:}]);
@@ -97,4 +101,20 @@ function data = from_python(py_obj)
             data = py_obj;  % Return raw Python object
         end
     end
+end
+
+
+function data = try_stack_numeric(data)
+%TRY_STACK_NUMERIC  Stack a cell of same-size numeric vectors into a matrix.
+%   If every element is numeric with identical size, vertcat them into a
+%   matrix (round-trips multi-column table variables).  Otherwise return
+%   the cell array unchanged.
+    if isempty(data) || ~isnumeric(data{1}), return; end
+    ref_sz = size(data{1});
+    for k = 2:numel(data)
+        if ~isnumeric(data{k}) || ~isequal(size(data{k}), ref_sz)
+            return;
+        end
+    end
+    data = vertcat(data{:});
 end
