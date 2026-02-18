@@ -8,11 +8,21 @@ function py_obj = to_python(data)
     if isstring(data) && isscalar(data)
         py_obj = char(data);
 
+    elseif isstring(data)
+        % String array -> Python list of strings
+        py_obj = py.list(cellfun(@char, num2cell(data(:)'), 'UniformOutput', false));
+
     elseif ischar(data)
         py_obj = py.str(data);
 
     elseif islogical(data) && isscalar(data)
         py_obj = py.bool(data);
+
+    elseif islogical(data)
+        % Logical array -> numpy bool array
+        py_obj = py.numpy.array(data(:)', pyargs('dtype', 'bool'));
+        py_shape = py.builtins.tuple(num2cell(int64(size(data))));
+        py_obj = py_obj.reshape(py_shape, pyargs('order', 'C'));
 
     elseif isnumeric(data) && isscalar(data)
         if isfloat(data)
@@ -49,6 +59,15 @@ function py_obj = to_python(data)
             py_obj.append(scidb.internal.to_python(data{i}));
         end
 
+    elseif isdatetime(data)
+        % datetime -> ISO 8601 string(s)
+        if isscalar(data)
+            py_obj = char(string(data, 'yyyy-MM-dd''T''HH:mm:ss.SSS'));
+        else
+            strs = string(data(:)', 'yyyy-MM-dd''T''HH:mm:ss.SSS');
+            py_obj = py.list(cellstr(strs));
+        end
+
     elseif istable(data)
         % MATLAB table -> pandas DataFrame
         col_names = data.Properties.VariableNames;
@@ -57,6 +76,17 @@ function py_obj = to_python(data)
             col = data.(col_names{i});
             if iscategorical(col)
                 col = string(col);
+            elseif isdatetime(col)
+                col = string(col, 'yyyy-MM-dd''T''HH:mm:ss.SSS');
+            elseif isnumeric(col) && ismatrix(col) && ~isvector(col) && ~isscalar(col)
+                % Multi-column numeric variable (e.g. Nx2 matrix) ->
+                % cell array of row vectors.  pandas rejects 2-D ndarrays
+                % as column values, so store each row as a separate 1-D array.
+                tmp = cell(size(col, 1), 1);
+                for k = 1:size(col, 1)
+                    tmp{k} = col(k, :);
+                end
+                col = tmp;
             end
             py_dict{col_names{i}} = scidb.internal.to_python(col);
         end
@@ -68,6 +98,13 @@ function py_obj = to_python(data)
         fns = fieldnames(data);
         for i = 1:numel(fns)
             py_obj{fns{i}} = scidb.internal.to_python(data.(fns{i}));
+        end
+
+    elseif isstruct(data) && ~isscalar(data)
+        % Struct array -> Python list of dicts
+        py_obj = py.list();
+        for i = 1:numel(data)
+            py_obj.append(scidb.internal.to_python(data(i)));
         end
 
     else

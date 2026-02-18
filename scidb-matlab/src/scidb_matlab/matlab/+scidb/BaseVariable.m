@@ -146,6 +146,9 @@ classdef BaseVariable < dynamicprops
 
             % --- Convert data column to Python (numpy for numeric) ---
             data_col = tbl.(data_column);
+            if isdatetime(data_col)
+                data_col = string(data_col, 'yyyy-MM-dd''T''HH:mm:ss.SSS');
+            end
             if isnumeric(data_col)
                 py_data = py.numpy.array(data_col(:)');
             elseif isstring(data_col)
@@ -168,6 +171,15 @@ classdef BaseVariable < dynamicprops
                 col = tbl.(metadata_columns{j});
                 if iscategorical(col)
                     col = string(col); % Can't convert categorical to Python
+                elseif isdatetime(col)
+                    col = string(col, 'yyyy-MM-dd''T''HH:mm:ss.SSS');
+                elseif isstruct(col)
+                    % Struct metadata column -> JSON strings (one per row)
+                    json_strs = strings(numel(col), 1);
+                    for si = 1:numel(col)
+                        json_strs(si) = string(jsonencode(col(si)));
+                    end
+                    col = json_strs;
                 end
                 if isnumeric(col)
                     py_meta_cols.append(py.numpy.array(col(:)'));
