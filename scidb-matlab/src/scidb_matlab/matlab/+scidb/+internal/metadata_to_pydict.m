@@ -25,14 +25,21 @@ function py_dict = metadata_to_pydict(varargin)
             % String array (non-scalar) → Python list for "match any"
             py_dict{key} = py.list(cellfun(@char, num2cell(val), 'UniformOutput', false));
         elseif isnumeric(val) && isscalar(val)
-            if isfloat(val)
-                py_dict{key} = py.float(double(val));
-            else
+            % Whole numbers → py.int so str() gives "1" not "1.0"
+            % (schema keys are VARCHAR in DuckDB)
+            if val == floor(val)
                 py_dict{key} = py.int(int64(val));
+            else
+                py_dict{key} = py.float(double(val));
             end
         elseif isnumeric(val) && ~isscalar(val)
             % Numeric array (non-scalar) → Python list for "match any"
-            py_dict{key} = py.list(num2cell(val));
+            % Whole numbers → py.int so str() gives "1" not "1.0"
+            if all(val == floor(val))
+                py_dict{key} = py.list(arrayfun(@(x) py.int(int64(x)), val, 'UniformOutput', false));
+            else
+                py_dict{key} = py.list(num2cell(val));
+            end
         elseif ischar(val)
             py_dict{key} = py.str(val);
         else

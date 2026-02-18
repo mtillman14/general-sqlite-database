@@ -24,6 +24,18 @@ from .exceptions import (
 from .hashing import generate_record_id, canonical_hash
 from .variable import BaseVariable
 
+
+def _schema_str(value):
+    """Stringify a schema key value, converting whole-number floats to int.
+
+    Schema keys are stored as VARCHAR in DuckDB.  str(1.0) → "1.0" but
+    str(1) → "1".  MATLAB sends all numbers as float, so without this
+    conversion, queries and cache lookups fail because "1.0" ≠ "1".
+    """
+    if isinstance(value, float) and value.is_integer():
+        return str(int(value))
+    return str(value)
+
 # Add sub-package paths
 import sys
 _project_root = Path(__file__).parent.parent.parent
@@ -246,15 +258,30 @@ def _unflatten_struct_columns(df, struct_info):
         # Build nested dicts row by row
         nested_values = []
         n_rows = len(result)
+
+        # DIAGNOSTIC: Log array_leaves metadata
+        print(f"    [_unflatten DIAG] col {col_name!r}: "
+              f"array_leaves keys={list(array_leaves.keys())}, "
+              f"array_leaves={array_leaves}")
+
         for row_idx in range(n_rows):
             row_dict = {}
             for path, flat_col in zip(paths, flat_col_names):
                 if flat_col not in result.columns:
+                    if row_idx == 0:
+                        print(f"    [_unflatten DIAG]   flat_col {flat_col!r} NOT in result columns!")
                     continue
                 val = result[flat_col].iloc[row_idx]
 
-                # Restore arrays from JSON
+                # DIAGNOSTIC: Log each leaf value on first row
                 dot_path = ".".join(path)
+                if row_idx == 0:
+                    print(f"    [_unflatten DIAG]   path={dot_path!r}, "
+                          f"raw val type={type(val).__name__}, "
+                          f"in_array_leaves={dot_path in array_leaves}, "
+                          f"val_preview={repr(val)[:120]}")
+
+                # Restore arrays from JSON
                 if dot_path in array_leaves and val is not None:
                     arr_meta = array_leaves[dot_path]
                     if isinstance(val, str):
@@ -269,6 +296,13 @@ def _unflatten_struct_columns(df, struct_info):
                         if (expected_shape and list(val.shape) != expected_shape
                                 and val.size == np.prod(expected_shape)):
                             val = val.reshape(expected_shape)
+                    if row_idx == 0:
+                        print(f"    [_unflatten DIAG]   RESTORED: type={type(val).__name__}"
+                              f"{f', dtype={val.dtype}, shape={val.shape}' if isinstance(val, np.ndarray) else ''}")
+                elif row_idx == 0 and isinstance(val, str) and val.strip().startswith('['):
+                    print(f"    [_unflatten DIAG]   WARNING: string starting with '[' but "
+                          f"dot_path {dot_path!r} NOT in array_leaves! "
+                          f"This value will remain a string.")
 
                 _set_nested_value(row_dict, path, val)
             nested_values.append(row_dict)
@@ -295,12 +329,24 @@ def _unflatten_struct_columns(df, struct_info):
         if first_val is None:
             continue
 
+        # DIAGNOSTIC: Log what we find in post-unflatten object columns
+        print(f"    [_unflatten DIAG postprocess] col {col!r}: "
+              f"first_val type={type(first_val).__name__}"
+              f"{f', is_dict={True}' if isinstance(first_val, dict) else ''}"
+              f"{f', dtype={first_val.dtype}' if isinstance(first_val, np.ndarray) else ''}"
+              f"{f', preview={repr(first_val)[:100]}' if isinstance(first_val, str) else ''}")
+
         if isinstance(first_val, (list, np.ndarray)):
             # DuckDB DOUBLE[] returns as lists or numpy arrays — ensure numpy
+            # DIAGNOSTIC: Check if we're losing bool type
+            if isinstance(first_val, list) and any(isinstance(x, bool) for x in first_val):
+                print(f"    [_unflatten DIAG postprocess]   WARNING: list contains bools "
+                      f"but converting to dtype=float, losing bool type!")
             result[col] = result[col].apply(
                 lambda v: np.array(v, dtype=float) if isinstance(v, list) else v)
         elif isinstance(first_val, str) and first_val.strip().startswith('['):
             # Backwards compat: parse VARCHAR strings from old saves
+            print(f"    [_unflatten DIAG postprocess]   Parsing string as JSON -> float array")
             def _parse_list_str(v):
                 if not isinstance(v, str):
                     return v
@@ -686,13 +732,30 @@ class DatabaseManager:
                          if v is not None and not (isinstance(v, float) and np.isnan(v))),
                         None,
                     )
+                    # DIAGNOSTIC: Log what we find in object-dtype columns
+                    print(f"      [_save_columnar DIAG] object col {col!r}: "
+                          f"first_val type={type(first_val).__name__}"
+                          f"{f', dtype={first_val.dtype}, shape={first_val.shape}' if isinstance(first_val, np.ndarray) else ''}"
+                          f"{f', len={len(first_val)}, elem_types={set(type(x).__name__ for x in first_val[:5])}' if isinstance(first_val, list) and len(first_val) > 0 else ''}"
+                          f"{f', preview={repr(first_val)[:100]}' if isinstance(first_val, str) else ''}")
                     if isinstance(first_val, np.ndarray) and np.issubdtype(first_val.dtype, np.number):
                         ddb_type = "DOUBLE[]"
+                        print(f"      [_save_columnar DIAG]   -> DOUBLE[] (numeric ndarray)")
+                    elif isinstance(first_val, np.ndarray) and first_val.dtype.kind == 'b':
+                        # DIAGNOSTIC: Bool arrays fail np.issubdtype(bool, number)!
+                        print(f"      [_save_columnar DIAG]   -> VARCHAR (PROBLEM: bool ndarray "
+                              f"fails np.issubdtype check, should be BOOLEAN[])")
+                        ddb_type = "VARCHAR"
                     elif (isinstance(first_val, list) and len(first_val) > 0
                           and all(isinstance(x, (int, float)) for x in first_val)):
+                        # Note: isinstance(True, int) is True in Python, so bool lists pass this
+                        has_bools = any(isinstance(x, bool) for x in first_val)
                         ddb_type = "DOUBLE[]"
+                        print(f"      [_save_columnar DIAG]   -> DOUBLE[] (list of numbers"
+                              f"{', CONTAINS BOOLS - will lose bool type!' if has_bools else ''})")
                     else:
                         ddb_type = "VARCHAR"
+                        print(f"      [_save_columnar DIAG]   -> VARCHAR (fallback)")
                 else:
                     ddb_type = "VARCHAR"
                 col_defs.append(f'"{col}" {ddb_type}')
@@ -776,7 +839,7 @@ class DatabaseManager:
         _t0 = time.perf_counter()
         if schema_level is not None and schema_keys:
             schema_id = self._duck._get_or_create_schema_id(
-                schema_level, {k: str(v) for k, v in schema_keys.items()}
+                schema_level, {k: _schema_str(v) for k, v in schema_keys.items()}
             )
         else:
             schema_id = 0
@@ -961,7 +1024,7 @@ class DatabaseManager:
                     rid = row[0]
                     chash = row[1]
                     schema_vals = tuple(
-                        str(v) if v is not None else None for v in row[2:]
+                        _schema_str(v) if v is not None else None for v in row[2:]
                     )
                     if schema_vals not in existing_by_keys:
                         existing_by_keys[schema_vals] = (rid, chash)
@@ -972,7 +1035,7 @@ class DatabaseManager:
                 all_matched = True
                 for _, flat_meta in data_items:
                     key = tuple(
-                        str(flat_meta[k]) if k in flat_meta else None
+                        _schema_str(flat_meta[k]) if k in flat_meta else None
                         for k in self.dataset_schema_keys
                     )
                     input_keys.append(key)
@@ -1041,7 +1104,7 @@ class DatabaseManager:
         # Resolve schema_ids for all unique combos (batch)
         t2 = time.perf_counter()
         schema_id_cache = self._duck.batch_get_or_create_schema_ids(
-            {k: {col: str(v) for col, v in vals.items()}
+            {k: {col: _schema_str(v) for col, v in vals.items()}
              for k, vals in unique_schema_combos.items()}
         )
         timings["3_schema_resolution"] = time.perf_counter() - t2
@@ -1053,7 +1116,7 @@ class DatabaseManager:
         first_schema_level = self._infer_schema_level(first_schema_keys)
         if first_schema_level is not None and first_schema_keys:
             first_key_tuple = tuple(
-                str(first_schema_keys.get(k, "")) for k in self.dataset_schema_keys
+                _schema_str(first_schema_keys.get(k, "")) for k in self.dataset_schema_keys
                 if k in first_schema_keys
             )
             first_schema_id = schema_id_cache[(first_schema_level, first_key_tuple)]
@@ -1086,7 +1149,7 @@ class DatabaseManager:
             schema_level = self._infer_schema_level(schema_keys)
             if schema_level is not None and schema_keys:
                 key_tuple = tuple(
-                    str(schema_keys.get(k, "")) for k in self.dataset_schema_keys
+                    _schema_str(schema_keys.get(k, "")) for k in self.dataset_schema_keys
                     if k in schema_keys
                 )
                 all_schema_ids.add(schema_id_cache[(schema_level, key_tuple)])
@@ -1130,7 +1193,7 @@ class DatabaseManager:
 
             if schema_level is not None and schema_keys:
                 key_tuple = tuple(
-                    str(schema_keys.get(k, "")) for k in self.dataset_schema_keys
+                    _schema_str(schema_keys.get(k, "")) for k in self.dataset_schema_keys
                     if k in schema_keys
                 )
                 schema_id = schema_id_cache[(schema_level, key_tuple)]
@@ -1337,10 +1400,10 @@ class DatabaseManager:
             if isinstance(value, (list, tuple)):
                 placeholders = ", ".join(["?"] * len(value))
                 conditions.append(f's."{key}" IN ({placeholders})')
-                params.extend([str(v) for v in value])
+                params.extend([_schema_str(v) for v in value])
             else:
                 conditions.append(f's."{key}" = ?')
-                params.append(str(value))
+                params.append(_schema_str(value))
 
         # Filter by specific version_id value(s) in SQL
         if isinstance(version_id, int):
@@ -1412,7 +1475,7 @@ class DatabaseManager:
             if key in row.index:
                 val = row[key]
                 if val is not None and not (isinstance(val, float) and pd.isna(val)):
-                    schema[key] = str(val)
+                    schema[key] = _schema_str(val)
 
         vk_raw = row.get("version_keys")
         version = {}
@@ -1464,6 +1527,13 @@ class DatabaseManager:
         dtype_meta = json.loads(dtype_rows[0][0])
         is_custom = dtype_meta.get("custom", False)
 
+        # DIAGNOSTIC: Log deserialization path
+        print(f"    [_load_by_record_row DIAG] table={table_name!r}, "
+              f"is_custom={is_custom}, "
+              f"dict_of_arrays={dtype_meta.get('dict_of_arrays', False)}, "
+              f"struct_columns={list(dtype_meta.get('struct_columns', {}).keys()) if dtype_meta.get('struct_columns') else 'none'}, "
+              f"has_custom_ser={self._has_custom_serialization(variable_class) if is_custom else 'N/A'}")
+
         if is_custom:
             # Custom path: direct query by parameter_id, version_id, and schema_id
             df = self._duck._fetchdf(
@@ -1472,6 +1542,14 @@ class DatabaseManager:
             )
             # Drop SciDuck internal columns
             df = df.drop(columns=["schema_id", "parameter_id", "version_id"], errors="ignore")
+            # DIAGNOSTIC: Log DataFrame state after loading from DuckDB
+            print(f"    [_load_by_record_row DIAG] loaded df: shape={df.shape}, "
+                  f"columns={df.columns.tolist()}, dtypes={dict(df.dtypes)}")
+            for col in df.columns:
+                first_val = df[col].iloc[0] if len(df) > 0 else None
+                print(f"    [_load_by_record_row DIAG]   col {col!r}: "
+                      f"val_type={type(first_val).__name__}, "
+                      f"val_preview={repr(first_val)[:100]}")
 
             if loc is not None:
                 if not isinstance(loc, (list, range, slice)):
@@ -1518,7 +1596,26 @@ class DatabaseManager:
                 data = variable_class.from_db(df)
             elif dtype_meta.get("struct_columns"):
                 # Unflatten dot-separated columns back to nested dict columns
+                print(f"    [_load_by_record_row DIAG] calling _unflatten_struct_columns "
+                      f"with struct_info keys={list(dtype_meta['struct_columns'].keys())}")
                 data = _unflatten_struct_columns(df, dtype_meta["struct_columns"])
+                # DIAGNOSTIC: Inspect reconstructed DataFrame
+                if isinstance(data, pd.DataFrame):
+                    print(f"    [_load_by_record_row DIAG] after unflatten: "
+                          f"columns={data.columns.tolist()}, dtypes={dict(data.dtypes)}")
+                    for col in data.columns:
+                        if data[col].dtype == object:
+                            fv = data[col].iloc[0] if len(data) > 0 else None
+                            print(f"    [_load_by_record_row DIAG]   object col {col!r}: "
+                                  f"type={type(fv).__name__}"
+                                  f"{f', keys={list(fv.keys())[:10]}' if isinstance(fv, dict) else ''}"
+                                  f"{f', preview={repr(fv)[:120]}' if isinstance(fv, str) else ''}")
+                            if isinstance(fv, dict):
+                                for k, v in list(fv.items())[:5]:
+                                    print(f"    [_load_by_record_row DIAG]     key={k!r}: "
+                                          f"type={type(v).__name__}"
+                                          f"{f', dtype={v.dtype}, shape={v.shape}' if isinstance(v, np.ndarray) else ''}"
+                                          f"{f', preview={repr(v)[:80]}' if isinstance(v, str) else ''}")
             else:
                 # Native DataFrame: return raw DataFrame directly
                 data = df
@@ -1529,7 +1626,7 @@ class DatabaseManager:
             if schema_level is not None and schema_keys:
                 data = self._duck.load(
                     table_name, parameter_id=parameter_id, version_id=version_id, raw=True,
-                    **{k: str(v) for k, v in schema_keys.items()},
+                    **{k: _schema_str(v) for k, v in schema_keys.items()},
                 )
             else:
                 # Non-contiguous or no schema — load directly
@@ -2262,7 +2359,7 @@ class DatabaseManager:
             for sk in schema_keys:
                 val = getattr(row, sk, None)
                 if val is not None and not (isinstance(val, float) and pd.isna(val)):
-                    flat_metadata[sk] = str(val)
+                    flat_metadata[sk] = _schema_str(val)
             vk_raw = getattr(row, 'version_keys', None)
             if vk_raw is not None and isinstance(vk_raw, str):
                 flat_metadata.update(json.loads(vk_raw))

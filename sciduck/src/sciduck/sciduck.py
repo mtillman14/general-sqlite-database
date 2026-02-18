@@ -20,6 +20,18 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple, Union
 
 
+def _schema_str(value):
+    """Stringify a schema key value, converting whole-number floats to int.
+
+    Schema keys are stored as VARCHAR.  str(1.0) → "1.0" but str(1) → "1".
+    MATLAB sends all numbers as float, so without this conversion queries
+    and cache lookups fail because "1.0" ≠ "1".
+    """
+    if isinstance(value, float) and value.is_integer():
+        return str(int(value))
+    return str(value)
+
+
 # ---------------------------------------------------------------------------
 # Type mapping helpers
 # ---------------------------------------------------------------------------
@@ -393,7 +405,7 @@ class SciDuck:
         params = [schema_level]
         for col in key_cols:
             conditions.append(f'"{col}" = ?')
-            params.append(str(key_values[col]))
+            params.append(_schema_str(key_values[col]))
         # Columns above the level that should be NULL are implicit —
         # but to be safe, also require NULLs for levels below.
         for col in self.dataset_schema:
@@ -415,7 +427,7 @@ class SciDuck:
         col_names = ["schema_id", "schema_level"] + key_cols
         placeholders = ", ".join(["?"] * len(col_names))
         col_str = ", ".join(f'"{c}"' for c in col_names)
-        values = [new_id, schema_level] + [str(key_values[c]) for c in key_cols]
+        values = [new_id, schema_level] + [_schema_str(key_values[c]) for c in key_cols]
         self._execute(
             f"INSERT INTO _schema ({col_str}) VALUES ({placeholders})", values
         )
@@ -475,13 +487,13 @@ class SciDuck:
             existing_lookup = {}
             for row in rows:
                 sid = row[0]
-                row_key = tuple(str(v) if v is not None else "" for v in row[1:])
+                row_key = tuple(_schema_str(v) if v is not None else "" for v in row[1:])
                 existing_lookup[row_key] = sid
 
             # Match entries against existing rows
             missing = []  # [(combo_key, key_values), ...]
             for combo_key, key_values in entries:
-                match_key = tuple(str(key_values.get(c, "")) for c in key_cols)
+                match_key = tuple(_schema_str(key_values.get(c, "")) for c in key_cols)
                 if match_key in existing_lookup:
                     result[combo_key] = existing_lookup[match_key]
                 else:
@@ -502,7 +514,7 @@ class SciDuck:
                 for idx, (combo_key, key_values, _) in enumerate(missing):
                     new_id = first_id + idx
                     row = [new_id, schema_level] + [
-                        str(key_values[c]) for c in key_cols
+                        _schema_str(key_values[c]) for c in key_cols
                     ]
                     insert_rows.append(row)
                     result[combo_key] = new_id
@@ -815,7 +827,7 @@ class SciDuck:
         for col, val in schema_keys.items():
             if col in all_schema_cols:
                 sql += f' AND s."{col}" = ?'
-                params.append(str(val))
+                params.append(_schema_str(val))
 
         df = self._fetchdf(sql, params)
 
@@ -847,7 +859,7 @@ class SciDuck:
             for col, val in schema_keys.items():
                 if col in self.dataset_schema:
                     conditions.append(f's."{col}" = ?')
-                    params.append(str(val))
+                    params.append(_schema_str(val))
             if conditions:
                 where = " AND ".join(conditions)
                 rows = self._fetchall(

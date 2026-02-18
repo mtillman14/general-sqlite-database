@@ -108,7 +108,9 @@ function py_obj = to_python(data)
                         end
                         elem = scidb.internal.to_python(elem_data);
                         if isa(elem, 'py.numpy.ndarray')
-                            elem = elem.tolist();
+                            % Ravel to 1-D before tolist so Nx1 vectors
+                            % produce flat lists, not nested [[v],[v],...].
+                            elem = elem.ravel().tolist();
                         end
                         py_val.append(elem);
                     end
@@ -119,6 +121,10 @@ function py_obj = to_python(data)
                     % pandas requires per-column arrays to be 1-D, so ravel.
                     if isa(py_val, 'py.numpy.ndarray')
                         py_val = py_val.ravel();
+                    elseif ~isa(py_val, 'py.list')
+                        % Scalar value (e.g. 1-row table) — wrap in a list
+                        % so pandas gets array-like values for every column.
+                        py_val = py.list({py_val});
                     end
                 end
                 fprintf('  [to_python table] col %d/%d "%s": class=%s size=[%s] -> %s OK\n', ...
