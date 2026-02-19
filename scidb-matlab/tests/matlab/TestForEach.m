@@ -608,5 +608,148 @@ classdef TestForEach < matlab.unittest.TestCase
                 end
             end
         end
+
+        function test_distribute_multiple_subjects(testCase)
+            % Two subjects, same constant table input. Each subject's output
+            % table is independently distributed to sessions 1-3.
+            tbl = table;
+            tbl.A = [1; 2; 3];
+            tbl.B = [4; 5; 6];
+
+            subjects = ["1", "2"];
+            sessions = [1, 2, 3];
+
+            for s = subjects
+                for sess = sessions
+                    ProcessedSignal().save(tbl(sess,:), 'subject', s, 'session', sess);
+                end
+            end
+
+            scidb.for_each(@double_table_values, ...
+                struct('x', tbl), ...
+                {ProcessedSignal()}, ...
+                'subject', subjects, ...
+                distribute=true ...
+            );
+
+            % Both subjects should have identical doubled values at each session
+            for s = subjects
+                for sess = sessions
+                    result = ProcessedSignal().load('subject', s, 'session', sess);
+                    testCase.verifyTrue(istable(result.data));
+                    testCase.verifyEqual(result.data.A, tbl.A(sess) * 2, 'AbsTol', 1e-10);
+                    testCase.verifyEqual(result.data.B, tbl.B(sess) * 2, 'AbsTol', 1e-10);
+                end
+            end
+        end
+
+        function test_distribute_from_loaded_variable(testCase)
+            % Input is a BaseVariable loaded from the database (RawSignal saved
+            % at the subject level with no session). for_each loads it, the
+            % function returns a numeric vector, and distribute= splits the
+            % vector into individual per-session scalar records.
+            RawSignal().save([1; 2; 3], 'subject', 1);
+
+            scidb.for_each(@double_values, ...
+                struct('x', RawSignal()), ...
+                {ProcessedSignal()}, ...
+                'subject', 1, ...
+                distribute=true ...
+            );
+
+            % Row k of [2; 4; 6] goes to session k
+            expected = [2; 4; 6];
+            for sess = 1:3
+                result = ProcessedSignal().load('subject', 1, 'session', sess);
+                testCase.verifyEqual(result.data, expected(sess), 'AbsTol', 1e-10);
+            end
+        end
+
+        function test_distribute_session_column_in_output(testCase)
+            % When the output table contains a column named after the
+            % distribute_key ("session"), distribute= uses those column values
+            % to determine which session each row is stored at (instead of
+            % 1-based row indices). The session column must NOT appear in the
+            % saved data.
+            %
+            % table_with_session_col doubles A/B and adds session=[3;1;2],
+            % so: row 1 (A=2) → session=3, row 2 (A=4) → session=1,
+            %     row 3 (A=6) → session=2.
+            tbl = table;
+            tbl.A = [1; 2; 3];
+            tbl.B = [4; 5; 6];
+
+            sessions = [1, 2, 3];
+            for sess = sessions
+                ProcessedSignal().save(tbl(sess,:), 'subject', '1', 'session', sess);
+            end
+
+            scidb.for_each(@table_with_session_col, ...
+                struct('x', tbl), ...
+                {ProcessedSignal()}, ...
+                'subject', "1", ...
+                distribute=true ...
+            );
+
+            % session=1 ← row 2 of output (A=4), session=2 ← row 3 (A=6),
+            % session=3 ← row 1 (A=2)
+            expected_A = containers.Map({1, 2, 3}, {4.0, 6.0, 2.0});
+            expected_B = containers.Map({1, 2, 3}, {10.0, 12.0, 8.0});
+            for sess = sessions
+                result = ProcessedSignal().load('subject', '1', 'session', sess);
+                testCase.verifyTrue(istable(result.data));
+                testCase.verifyEqual(result.data.A, expected_A(sess), 'AbsTol', 1e-10);
+                testCase.verifyEqual(result.data.B, expected_B(sess), 'AbsTol', 1e-10);
+                % The session column must have been stripped from the saved data
+                testCase.verifyFalse(ismember('session', result.data.Properties.VariableNames));
+            end
+        end
+
+        function test_distribute_idempotent(testCase)
+            % Running for_each with distribute=true twice with the same inputs
+            % must not create duplicate records. The second pass should be a
+            % no-op (same content hash → same record_id → idempotency check).
+            tbl = table;
+            tbl.A = [1; 2; 3];
+            tbl.B = [4; 5; 6];
+
+            for run = 1:2
+                scidb.for_each(@double_table_values, ...
+                    struct('x', tbl), ...
+                    {ProcessedSignal()}, ...
+                    'subject', "1", ...
+                    distribute=true ...
+                );
+            end
+
+            % Exactly 3 session records — not 6 — should exist
+            all_results = ProcessedSignal().load_all();
+            testCase.verifyEqual(numel(all_results), 3);
+
+            % Data must be correct (second run didn't corrupt anything)
+            for sess = 1:3
+                result = ProcessedSignal().load('subject', '1', 'session', sess);
+                testCase.verifyEqual(result.data.A, tbl.A(sess) * 2, 'AbsTol', 1e-10);
+                testCase.verifyEqual(result.data.B, tbl.B(sess) * 2, 'AbsTol', 1e-10);
+            end
+        end
+
+        function test_distribute_dry_run_no_saves(testCase)
+            % dry_run=true must suppress all saves even in distribute mode.
+            tbl = table;
+            tbl.A = [1; 2; 3];
+            tbl.B = [4; 5; 6];
+
+            scidb.for_each(@double_table_values, ...
+                struct('x', tbl), ...
+                {ProcessedSignal()}, ...
+                'subject', "1", ...
+                distribute=true, ...
+                dry_run=true ...
+            );
+
+            results = ProcessedSignal().load_all();
+            testCase.verifyEmpty(results);
+        end
     end
 end
