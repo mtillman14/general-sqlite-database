@@ -15,6 +15,7 @@ def for_each(
     pass_metadata: bool | None = None,
     as_table: list[str] | bool | None = None,
     db=None,
+    distribute: str | None = None,
     **metadata_iterables: list[Any],
 ) -> None:
     """
@@ -55,6 +56,13 @@ def for_each(
                   version_id, and a data column named after the variable type.
         db: Optional DatabaseManager instance to use for all load/save
             operations instead of the global database.
+        distribute: Schema key name to distribute outputs to. When set,
+                    each output (vector/table) is split by element/row
+                    and saved individually with the distribute key set to
+                    the 1-based element index. The distribute key must be
+                    deeper in the schema hierarchy than the deepest
+                    iterated key. No lineage is tracked for distributed
+                    saves.
         **metadata_iterables: Iterables of metadata values to combine
 
     Example:
@@ -97,6 +105,51 @@ def for_each(
                 print(f"[warn] no values found for '{key}' in database, 0 iterations")
             metadata_iterables[key] = values
 
+    # Validate distribute parameter
+    if distribute is not None:
+        _dist_db = db
+        if _dist_db is None:
+            try:
+                from scidb.database import get_database
+                _dist_db = get_database()
+            except Exception:
+                raise ValueError(
+                    f"distribute='{distribute}' requires access to dataset_schema_keys, "
+                    f"but no database is available. Either pass db= to for_each or "
+                    f"call configure_database() first."
+                )
+        schema_keys = _dist_db.dataset_schema_keys
+
+        if distribute not in schema_keys:
+            raise ValueError(
+                f"distribute='{distribute}' is not a valid schema key. "
+                f"Valid schema keys: {schema_keys}"
+            )
+
+        if distribute in metadata_iterables:
+            raise ValueError(
+                f"distribute='{distribute}' must not also appear in metadata_iterables. "
+                f"The distribute key is automatically generated during save, not iterated over."
+            )
+
+        iter_keys_in_schema = [k for k in schema_keys if k in metadata_iterables]
+        if not iter_keys_in_schema:
+            raise ValueError(
+                f"distribute='{distribute}' requires at least one metadata_iterable "
+                f"that is a schema key."
+            )
+        deepest_iterated = iter_keys_in_schema[-1]
+        deepest_idx = schema_keys.index(deepest_iterated)
+        distribute_idx = schema_keys.index(distribute)
+
+        if distribute_idx <= deepest_idx:
+            raise ValueError(
+                f"distribute='{distribute}' (position {distribute_idx}) must be deeper "
+                f"in the schema hierarchy than the deepest iterated key "
+                f"'{deepest_iterated}' (position {deepest_idx}). "
+                f"Schema order: {schema_keys}"
+            )
+
     # Separate loadable inputs from constants
     loadable_inputs = {}
     constant_inputs = {}
@@ -105,6 +158,12 @@ def for_each(
             loadable_inputs[param_name] = var_spec
         else:
             constant_inputs[param_name] = var_spec
+
+    # Check distribute doesn't conflict with a constant input name
+    if distribute is not None and distribute in constant_inputs:
+        raise ValueError(
+            f"distribute='{distribute}' conflicts with a constant input named '{distribute}'."
+        )
 
     # Build set of input names to convert to DataFrame
     if as_table is True:
@@ -130,6 +189,8 @@ def for_each(
         print(f"[dry-run] {total} iterations over: {keys}")
         print(f"[dry-run] inputs: {_format_inputs(inputs)}")
         print(f"[dry-run] outputs: {[o.__name__ for o in outputs]}")
+        if distribute is not None:
+            print(f"[dry-run] distribute: '{distribute}' (split outputs by element/row, 1-based)")
         print()
 
     completed = 0
@@ -140,7 +201,7 @@ def for_each(
         metadata_str = ", ".join(f"{k}={v}" for k, v in metadata.items())
 
         if dry_run:
-            _print_dry_run_iteration(inputs, outputs, metadata, constant_inputs, should_pass_metadata)
+            _print_dry_run_iteration(inputs, outputs, metadata, constant_inputs, should_pass_metadata, distribute)
             completed += 1
             continue
 
@@ -209,12 +270,34 @@ def for_each(
         save_metadata = {**metadata, **constant_inputs}
         if save:
             db_kwargs = {"db": db} if db is not None else {}
-            for output_type, output_value in zip(outputs, result):
-                try:
-                    output_type.save(output_value, **db_kwargs, **save_metadata)
-                    print(f"[save] {metadata_str}: {output_type.__name__}")
-                except Exception as e:
-                    print(f"[error] {metadata_str}: failed to save {output_type.__name__}: {e}")
+
+            if distribute is not None:
+                # Distribute mode: split each output and save pieces individually
+                for output_type, output_value in zip(outputs, result):
+                    raw_value = _unwrap_for_distribute(output_value)
+                    try:
+                        pieces = _split_for_distribute(raw_value)
+                    except TypeError as e:
+                        print(f"[error] {metadata_str}: cannot distribute {output_type.__name__}: {e}")
+                        continue
+
+                    for i, piece in enumerate(pieces):
+                        dist_metadata = {**save_metadata, distribute: i + 1}
+                        try:
+                            output_type.save(piece, **db_kwargs, **dist_metadata)
+                            dist_str = ", ".join(f"{k}={v}" for k, v in dist_metadata.items())
+                            print(f"[save] {dist_str}: {output_type.__name__}")
+                        except Exception as e:
+                            dist_str = ", ".join(f"{k}={v}" for k, v in dist_metadata.items())
+                            print(f"[error] {dist_str}: failed to save {output_type.__name__}: {e}")
+            else:
+                # Normal mode: save each output directly
+                for output_type, output_value in zip(outputs, result):
+                    try:
+                        output_type.save(output_value, **db_kwargs, **save_metadata)
+                        print(f"[save] {metadata_str}: {output_type.__name__}")
+                    except Exception as e:
+                        print(f"[error] {metadata_str}: failed to save {output_type.__name__}: {e}")
 
         completed += 1
 
@@ -242,6 +325,34 @@ def _is_thunk(fn: Any) -> bool:
 
 def _unwrap(value: Any) -> Any:
     """Extract raw data from a loaded variable, pass everything else through."""
+    if hasattr(value, 'data'):
+        return value.data
+    return value
+
+
+def _unwrap_for_distribute(value: Any) -> Any:
+    """Unwrap ThunkOutput/BaseVariable for distribute, but not raw data types.
+
+    Unlike _unwrap, this avoids stripping numpy arrays' .data (memoryview)
+    or pandas DataFrames. Only unwraps objects that have .data and are NOT
+    themselves a distributable data type.
+    """
+    # Don't unwrap types that _split_for_distribute can handle directly
+    if isinstance(value, list):
+        return value
+    try:
+        import numpy as np
+        if isinstance(value, np.ndarray):
+            return value
+    except ImportError:
+        pass
+    try:
+        import pandas as pd
+        if isinstance(value, pd.DataFrame):
+            return value
+    except ImportError:
+        pass
+    # For everything else (ThunkOutput, BaseVariable, custom wrappers), unwrap
     if hasattr(value, 'data'):
         return value.data
     return value
@@ -287,12 +398,58 @@ def _format_inputs(inputs: dict[str, Any]) -> str:
     return "{" + ", ".join(parts) + "}"
 
 
+def _split_for_distribute(data: Any) -> list[Any]:
+    """Split data into elements for distribute-style saving.
+
+    Supports:
+    - numpy 1D arrays: split by element
+    - numpy 2D arrays: split by row
+    - lists: split by element
+    - pandas DataFrames: split by row (each row becomes a single-row DataFrame)
+
+    Returns a list of individual pieces.
+
+    Raises:
+        TypeError: If data type is not supported for splitting.
+    """
+    try:
+        import pandas as pd
+        if isinstance(data, pd.DataFrame):
+            return [data.iloc[[i]] for i in range(len(data))]
+    except ImportError:
+        pass
+
+    try:
+        import numpy as np
+        if isinstance(data, np.ndarray):
+            if data.ndim == 1:
+                return [data[i] for i in range(len(data))]
+            elif data.ndim == 2:
+                return [data[i, :] for i in range(data.shape[0])]
+            else:
+                raise TypeError(
+                    f"distribute does not support numpy arrays with {data.ndim} dimensions. "
+                    f"Only 1D (split by element) and 2D (split by row) are supported."
+                )
+    except ImportError:
+        pass
+
+    if isinstance(data, list):
+        return list(data)
+
+    raise TypeError(
+        f"distribute does not support type {type(data).__name__}. "
+        f"Supported types: numpy 1D/2D array, list, pandas DataFrame."
+    )
+
+
 def _print_dry_run_iteration(
     inputs: dict[str, Any],
     outputs: list[type],
     metadata: dict[str, Any],
     constant_inputs: dict[str, Any],
     pass_metadata: bool = False,
+    distribute: str | None = None,
 ) -> None:
     """Print what would happen for one iteration in dry-run mode."""
     metadata_str = ", ".join(f"{k}={v}" for k, v in metadata.items())
@@ -318,4 +475,7 @@ def _print_dry_run_iteration(
         print(f"  pass metadata: {metadata_str}")
 
     for output_type in outputs:
-        print(f"  save {output_type.__name__}.save(..., {save_metadata_str})")
+        if distribute is not None:
+            print(f"  distribute {output_type.__name__} by '{distribute}' (1-based indexing)")
+        else:
+            print(f"  save {output_type.__name__}.save(..., {save_metadata_str})")

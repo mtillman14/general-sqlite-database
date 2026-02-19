@@ -38,6 +38,12 @@ function for_each(fn, inputs, outputs, varargin)
 %                       (no Thunks or PathInputs). With Parallel Computing
 %                       Toolbox, parfor runs in parallel; without it,
 %                       parfor silently runs serially. (default: false)
+%       distribute    - Schema key name to distribute outputs to. When set,
+%                       each output (vector/table) is split by element/row
+%                       and saved individually with the distribute key set
+%                       to the 1-based element index. The distribute key
+%                       must be deeper in the schema hierarchy than the
+%                       deepest iterated key. (default: '' = disabled)
 %       db            - Optional DatabaseManager to use for all load/save
 %                       operations instead of the global database
 %       (any other)   - Metadata iterables (numeric or string arrays)
@@ -146,6 +152,49 @@ function for_each(fn, inputs, outputs, varargin)
         end
     end
 
+    % Validate distribute parameter
+    distribute = opts.distribute;
+    if strlength(distribute) > 0
+        if isempty(opts.db)
+            dist_db = py.scidb.database.get_database();
+        else
+            dist_db = opts.db;
+        end
+        schema_keys = cell(dist_db.dataset_schema_keys);
+        for sk = 1:numel(schema_keys)
+            schema_keys{sk} = string(schema_keys{sk});
+        end
+        schema_keys = [schema_keys{:}];
+
+        if ~ismember(distribute, schema_keys)
+            error('scidb:for_each', ...
+                'distribute=''%s'' is not a valid schema key. Valid schema keys: %s', ...
+                distribute, strjoin(schema_keys, ', '));
+        end
+
+        if ismember(distribute, meta_keys)
+            error('scidb:for_each', ...
+                'distribute=''%s'' must not also appear in metadata_iterables.', ...
+                distribute);
+        end
+
+        iter_keys_in_schema = schema_keys(ismember(schema_keys, meta_keys));
+        if isempty(iter_keys_in_schema)
+            error('scidb:for_each', ...
+                'distribute=''%s'' requires at least one metadata_iterable that is a schema key.', ...
+                distribute);
+        end
+        deepest_iterated = iter_keys_in_schema(end);
+        deepest_idx = find(schema_keys == deepest_iterated, 1);
+        distribute_idx = find(schema_keys == distribute, 1);
+
+        if distribute_idx <= deepest_idx
+            error('scidb:for_each', ...
+                'distribute=''%s'' (position %d) must be deeper in the schema hierarchy than ''%s'' (position %d). Schema order: %s', ...
+                distribute, distribute_idx, deepest_iterated, deepest_idx, strjoin(schema_keys, ', '));
+        end
+    end
+
     % Compute total iterations
     total = 1;
     for i = 1:numel(meta_values)
@@ -173,6 +222,13 @@ function for_each(fn, inputs, outputs, varargin)
         end
     end
 
+    % Check distribute doesn't conflict with a constant input name
+    if strlength(distribute) > 0 && ismember(distribute, string(constant_names))
+        error('scidb:for_each', ...
+            'distribute=''%s'' conflicts with a constant input named ''%s''.', ...
+            distribute, distribute);
+    end
+
     % Resolve as_table: true → all loadable input names, false/empty → none
     if islogical(as_table_raw) && isscalar(as_table_raw) && as_table_raw
         as_table_set = string(input_names(loadable_idx)');
@@ -191,6 +247,9 @@ function for_each(fn, inputs, outputs, varargin)
         fprintf('[dry-run] %d iterations over: %s\n', total, strjoin(meta_keys, ', '));
         fprintf('[dry-run] inputs: %s\n', format_inputs(inputs, input_names));
         fprintf('[dry-run] outputs: {%s}\n', format_outputs(outputs));
+        if strlength(distribute) > 0
+            fprintf('[dry-run] distribute: ''%s'' (split outputs by element/row, 1-based)\n', distribute);
+        end
         fprintf('\n');
     end
 
@@ -360,7 +419,7 @@ function for_each(fn, inputs, outputs, varargin)
         % --- Dry-run iteration ---
         if dry_run
             print_dry_run_iteration(inputs, input_names, outputs, ...
-                metadata, meta_keys, metadata_str, constant_nv, should_pass_metadata);
+                metadata, meta_keys, metadata_str, constant_nv, should_pass_metadata, distribute);
             completed = completed + 1;
             continue;
         end
@@ -493,14 +552,50 @@ function for_each(fn, inputs, outputs, varargin)
 
         % --- Save outputs (include constants in metadata) ---
         if do_save
-            for o = 1:min(n_outputs, numel(result))
-                out_inst = outputs{o};
-                try
-                    out_inst.save(result{o}, save_nv{:}, db_nv{:});
-                    fprintf('[save] %s: %s\n', metadata_str, class(out_inst));
-                catch err
-                    fprintf('[error] %s: failed to save %s: %s\n', ...
-                        metadata_str, class(out_inst), err.message);
+            if strlength(distribute) > 0
+                % Distribute mode: split each output and save pieces individually
+                for o = 1:min(n_outputs, numel(result))
+                    out_inst = outputs{o};
+                    raw_value = result{o};
+                    % Unwrap ThunkOutput/BaseVariable to raw data
+                    if isa(raw_value, 'scidb.ThunkOutput') || isa(raw_value, 'scidb.BaseVariable')
+                        raw_value = raw_value.data;
+                    end
+
+                    try
+                        pieces = split_for_distribute(raw_value);
+                    catch err
+                        fprintf('[error] %s: cannot distribute %s: %s\n', ...
+                            metadata_str, class(out_inst), err.message);
+                        continue;
+                    end
+
+                    for idx = 1:numel(pieces)
+                        dist_nv = [save_nv, {char(distribute), idx}];
+                        try
+                            out_inst.save(pieces{idx}, dist_nv{:}, db_nv{:});
+                            dist_parts = [meta_parts, {sprintf('%s=%d', distribute, idx)}];
+                            for ci = 1:2:numel(constant_nv)
+                                dist_parts{end+1} = sprintf('%s=%s', constant_nv{ci}, format_value(constant_nv{ci+1})); %#ok<AGROW>
+                            end
+                            fprintf('[save] %s: %s\n', strjoin(dist_parts, ', '), class(out_inst));
+                        catch err
+                            fprintf('[error] %s, %s=%d: failed to save %s: %s\n', ...
+                                metadata_str, distribute, idx, class(out_inst), err.message);
+                        end
+                    end
+                end
+            else
+                % Normal mode: save each output directly
+                for o = 1:min(n_outputs, numel(result))
+                    out_inst = outputs{o};
+                    try
+                        out_inst.save(result{o}, save_nv{:}, db_nv{:});
+                        fprintf('[save] %s: %s\n', metadata_str, class(out_inst));
+                    catch err
+                        fprintf('[error] %s: failed to save %s: %s\n', ...
+                            metadata_str, class(out_inst), err.message);
+                    end
                 end
             end
         end
@@ -772,6 +867,7 @@ function [meta_args, opts] = split_options(varargin)
     opts.as_table = string.empty;
     opts.db = [];
     opts.parallel = false;
+    opts.distribute = '';
 
     meta_args = {};
     i = 1;
@@ -814,6 +910,10 @@ function [meta_args, opts] = split_options(varargin)
                     continue;
                 case "parallel"
                     opts.parallel = logical(varargin{i+1});
+                    i = i + 2;
+                    continue;
+                case "distribute"
+                    opts.distribute = string(varargin{i+1});
                     i = i + 2;
                     continue;
             end
@@ -906,7 +1006,7 @@ end
 
 
 function print_dry_run_iteration(inputs, input_names, outputs, ...
-    metadata, meta_keys, metadata_str, constant_nv, pass_metadata)
+    metadata, meta_keys, metadata_str, constant_nv, pass_metadata, distribute)
 %PRINT_DRY_RUN_ITERATION  Show what would happen for one iteration.
     fprintf('[dry-run] %s:\n', metadata_str);
 
@@ -975,7 +1075,51 @@ function print_dry_run_iteration(inputs, input_names, outputs, ...
     save_metadata_str = strjoin(save_parts, ', ');
 
     for o = 1:numel(outputs)
-        fprintf('  save %s().save(..., %s)\n', class(outputs{o}), save_metadata_str);
+        if strlength(distribute) > 0
+            fprintf('  distribute %s by ''%s'' (1-based indexing)\n', class(outputs{o}), distribute);
+        else
+            fprintf('  save %s().save(..., %s)\n', class(outputs{o}), save_metadata_str);
+        end
+    end
+end
+
+
+function pieces = split_for_distribute(data)
+%SPLIT_FOR_DISTRIBUTE  Split data into elements for distribute-style saving.
+%   Supports:
+%   - Numeric vectors (1D): split by element
+%   - Numeric matrices (2D): split by row
+%   - Cell arrays: split by element
+%   - MATLAB tables: split by row (each row becomes a single-row table)
+%
+%   Returns a cell array of individual pieces.
+    if istable(data)
+        pieces = cell(1, height(data));
+        for i = 1:height(data)
+            pieces{i} = data(i, :);
+        end
+    elseif isnumeric(data) || islogical(data)
+        if isvector(data)
+            pieces = cell(1, numel(data));
+            for i = 1:numel(data)
+                pieces{i} = data(i);
+            end
+        elseif ismatrix(data)
+            pieces = cell(1, size(data, 1));
+            for i = 1:size(data, 1)
+                pieces{i} = data(i, :);
+            end
+        else
+            error('scidb:for_each', ...
+                'distribute does not support arrays with %d dimensions. Only vectors and matrices are supported.', ...
+                ndims(data));
+        end
+    elseif iscell(data)
+        pieces = data(:)';  % ensure row cell array
+    else
+        error('scidb:for_each', ...
+            'distribute does not support type %s. Supported types: numeric array, cell array, table.', ...
+            class(data));
     end
 end
 

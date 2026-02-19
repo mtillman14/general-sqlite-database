@@ -68,6 +68,18 @@ class MockOutput(MockVariable):
         cls.load_error = False
 
 
+class MockOutputB(MockVariable):
+    """Second mock output variable type."""
+
+    saved_data = []
+    load_error = False
+
+    @classmethod
+    def reset(cls):
+        cls.saved_data = []
+        cls.load_error = False
+
+
 @pytest.fixture(autouse=True)
 def reset_mocks():
     """Reset mock state before each test."""
@@ -75,6 +87,7 @@ def reset_mocks():
     MockVariableA.reset()
     MockVariableB.reset()
     MockOutput.reset()
+    MockOutputB.reset()
     yield
 
 
@@ -911,3 +924,455 @@ class TestForEachAllLevels:
         captured = capsys.readouterr()
         assert "[dry-run]" in captured.out
         assert "2 iterations" in captured.out
+
+
+class TestForEachDistribute:
+    """Tests for distribute parameter in for_each."""
+
+    def _make_mock_db(self, schema_keys, schema_values=None):
+        """Create a mock db with dataset_schema_keys and optional distinct values."""
+
+        class MockDB:
+            def __init__(self):
+                self.dataset_schema_keys = schema_keys
+
+            def distinct_schema_values(self, key):
+                if schema_values and key in schema_values:
+                    return schema_values[key]
+                return []
+
+        return MockDB()
+
+    def test_distribute_numpy_1d(self):
+        """1D numpy array should be split by element."""
+        import numpy as np
+
+        db = self._make_mock_db(["subject", "trial", "cycle"])
+
+        def process(x):
+            return np.array([10.0, 20.0, 30.0])
+
+        for_each(
+            process,
+            inputs={"x": MockVariableA},
+            outputs=[MockOutput],
+            db=db,
+            distribute="cycle",
+            subject=[1],
+            trial=[1],
+        )
+
+        assert len(MockOutput.saved_data) == 3
+        for i, entry in enumerate(MockOutput.saved_data):
+            assert entry["metadata"]["cycle"] == i + 1
+            assert entry["metadata"]["subject"] == 1
+            assert entry["metadata"]["trial"] == 1
+
+    def test_distribute_numpy_2d(self):
+        """2D numpy array should be split by row."""
+        import numpy as np
+
+        db = self._make_mock_db(["subject", "trial", "cycle"])
+
+        def process(x):
+            return np.array([[1, 2, 3], [4, 5, 6]])
+
+        for_each(
+            process,
+            inputs={"x": MockVariableA},
+            outputs=[MockOutput],
+            db=db,
+            distribute="cycle",
+            subject=[1],
+            trial=[1],
+        )
+
+        assert len(MockOutput.saved_data) == 2
+        assert list(MockOutput.saved_data[0]["data"]) == [1, 2, 3]
+        assert list(MockOutput.saved_data[1]["data"]) == [4, 5, 6]
+        assert MockOutput.saved_data[0]["metadata"]["cycle"] == 1
+        assert MockOutput.saved_data[1]["metadata"]["cycle"] == 2
+
+    def test_distribute_list(self):
+        """List should be split by element."""
+        db = self._make_mock_db(["subject", "trial", "cycle"])
+
+        def process(x):
+            return ["a", "b", "c"]
+
+        for_each(
+            process,
+            inputs={"x": MockVariableA},
+            outputs=[MockOutput],
+            db=db,
+            distribute="cycle",
+            subject=[1],
+            trial=[1],
+        )
+
+        assert len(MockOutput.saved_data) == 3
+        assert MockOutput.saved_data[0]["data"] == "a"
+        assert MockOutput.saved_data[1]["data"] == "b"
+        assert MockOutput.saved_data[2]["data"] == "c"
+
+    def test_distribute_dataframe(self):
+        """DataFrame should be split by row into single-row DataFrames."""
+        import pandas as pd
+
+        db = self._make_mock_db(["subject", "trial", "cycle"])
+
+        def process(x):
+            return pd.DataFrame({"col_a": [1, 2], "col_b": [3, 4]})
+
+        for_each(
+            process,
+            inputs={"x": MockVariableA},
+            outputs=[MockOutput],
+            db=db,
+            distribute="cycle",
+            subject=[1],
+            trial=[1],
+        )
+
+        assert len(MockOutput.saved_data) == 2
+        assert isinstance(MockOutput.saved_data[0]["data"], pd.DataFrame)
+        assert len(MockOutput.saved_data[0]["data"]) == 1
+        assert MockOutput.saved_data[0]["metadata"]["cycle"] == 1
+        assert MockOutput.saved_data[1]["metadata"]["cycle"] == 2
+
+    def test_distribute_multiple_iterations(self):
+        """Distribute should work across multiple iterations."""
+        import numpy as np
+
+        db = self._make_mock_db(["subject", "trial", "cycle"])
+
+        def process(x):
+            return np.array([100.0, 200.0])
+
+        for_each(
+            process,
+            inputs={"x": MockVariableA},
+            outputs=[MockOutput],
+            db=db,
+            distribute="cycle",
+            subject=[1, 2],
+            trial=[1],
+        )
+
+        # 2 iterations * 2 elements each = 4 saves
+        assert len(MockOutput.saved_data) == 4
+        # Check subject=1 saves
+        s1_saves = [d for d in MockOutput.saved_data if d["metadata"]["subject"] == 1]
+        assert len(s1_saves) == 2
+        assert s1_saves[0]["metadata"]["cycle"] == 1
+        assert s1_saves[1]["metadata"]["cycle"] == 2
+
+    def test_distribute_multiple_outputs(self):
+        """Both outputs should be distributed independently."""
+        import numpy as np
+
+        db = self._make_mock_db(["subject", "trial", "cycle"])
+
+        def process(x):
+            return (np.array([1.0, 2.0]), np.array([10.0, 20.0]))
+
+        for_each(
+            process,
+            inputs={"x": MockVariableA},
+            outputs=[MockOutput, MockOutputB],
+            db=db,
+            distribute="cycle",
+            subject=[1],
+            trial=[1],
+        )
+
+        assert len(MockOutput.saved_data) == 2
+        assert len(MockOutputB.saved_data) == 2
+        assert MockOutput.saved_data[0]["metadata"]["cycle"] == 1
+        assert MockOutputB.saved_data[1]["metadata"]["cycle"] == 2
+
+    def test_distribute_with_constants(self):
+        """Constants should appear in save metadata alongside distribute key."""
+        import numpy as np
+
+        db = self._make_mock_db(["subject", "trial", "cycle"])
+
+        def process(x, smoothing):
+            return np.array([1.0, 2.0])
+
+        for_each(
+            process,
+            inputs={"x": MockVariableA, "smoothing": 0.5},
+            outputs=[MockOutput],
+            db=db,
+            distribute="cycle",
+            subject=[1],
+            trial=[1],
+        )
+
+        assert len(MockOutput.saved_data) == 2
+        for entry in MockOutput.saved_data:
+            assert entry["metadata"]["smoothing"] == 0.5
+            assert "cycle" in entry["metadata"]
+
+    def test_distribute_1_based_indexing(self):
+        """Distribute indices should start at 1, not 0."""
+        db = self._make_mock_db(["subject", "trial", "cycle"])
+
+        def process(x):
+            return ["a", "b", "c", "d"]
+
+        for_each(
+            process,
+            inputs={"x": MockVariableA},
+            outputs=[MockOutput],
+            db=db,
+            distribute="cycle",
+            subject=[1],
+            trial=[1],
+        )
+
+        cycles = [d["metadata"]["cycle"] for d in MockOutput.saved_data]
+        assert cycles == [1, 2, 3, 4]
+
+    def test_distribute_validation_not_schema_key(self):
+        """Should raise ValueError if distribute is not a valid schema key."""
+        db = self._make_mock_db(["subject", "trial", "cycle"])
+
+        def process(x):
+            return [1, 2]
+
+        with pytest.raises(ValueError, match="not a valid schema key"):
+            for_each(
+                process,
+                inputs={"x": MockVariableA},
+                outputs=[MockOutput],
+                db=db,
+                distribute="invalid_key",
+                subject=[1],
+            )
+
+    def test_distribute_validation_in_iterables(self):
+        """Should raise ValueError if distribute key is also iterated."""
+        db = self._make_mock_db(["subject", "trial", "cycle"])
+
+        def process(x):
+            return [1, 2]
+
+        with pytest.raises(ValueError, match="must not also appear"):
+            for_each(
+                process,
+                inputs={"x": MockVariableA},
+                outputs=[MockOutput],
+                db=db,
+                distribute="trial",
+                subject=[1],
+                trial=[1, 2],
+            )
+
+    def test_distribute_validation_not_deeper(self):
+        """Should raise ValueError if distribute level is shallower than iteration."""
+        db = self._make_mock_db(["subject", "trial", "cycle"])
+
+        def process(x):
+            return [1, 2]
+
+        with pytest.raises(ValueError, match="must be deeper"):
+            for_each(
+                process,
+                inputs={"x": MockVariableA},
+                outputs=[MockOutput],
+                db=db,
+                distribute="subject",
+                trial=[1, 2],
+            )
+
+    def test_distribute_validation_same_level(self):
+        """Should raise ValueError if distribute is at same level as deepest iteration."""
+        db = self._make_mock_db(["subject", "trial", "cycle"])
+
+        def process(x):
+            return [1, 2]
+
+        # distribute='trial' when trial is the deepest iterated key
+        with pytest.raises(ValueError, match="must not also appear"):
+            for_each(
+                process,
+                inputs={"x": MockVariableA},
+                outputs=[MockOutput],
+                db=db,
+                distribute="trial",
+                subject=[1],
+                trial=[1],
+            )
+
+    def test_distribute_validation_no_db(self):
+        """Should raise ValueError with helpful message when no db available."""
+        import unittest.mock as mock
+
+        def process(x):
+            return [1, 2]
+
+        with mock.patch.dict("sys.modules", {"scidb": None, "scidb.database": None}):
+            with pytest.raises(ValueError, match="no database is available"):
+                for_each(
+                    process,
+                    inputs={"x": MockVariableA},
+                    outputs=[MockOutput],
+                    distribute="cycle",
+                    subject=[1],
+                )
+
+    def test_distribute_dry_run(self, capsys):
+        """Dry run should show distribute info without executing."""
+        db = self._make_mock_db(["subject", "trial", "cycle"])
+
+        def process(x):
+            raise RuntimeError("Should not be called")
+
+        for_each(
+            process,
+            inputs={"x": MockVariableA},
+            outputs=[MockOutput],
+            db=db,
+            distribute="cycle",
+            dry_run=True,
+            subject=[1],
+            trial=[1],
+        )
+
+        assert len(MockOutput.saved_data) == 0
+        captured = capsys.readouterr()
+        assert "[dry-run]" in captured.out
+        assert "distribute" in captured.out
+        assert "cycle" in captured.out
+
+    def test_distribute_save_false(self):
+        """When save=False, distribute should not save anything."""
+        import numpy as np
+
+        db = self._make_mock_db(["subject", "trial", "cycle"])
+
+        call_count = [0]
+
+        def process(x):
+            call_count[0] += 1
+            return np.array([1.0, 2.0, 3.0])
+
+        for_each(
+            process,
+            inputs={"x": MockVariableA},
+            outputs=[MockOutput],
+            db=db,
+            distribute="cycle",
+            save=False,
+            subject=[1],
+            trial=[1],
+        )
+
+        assert call_count[0] == 1  # Function was called
+        assert len(MockOutput.saved_data) == 0  # But nothing saved
+
+    def test_distribute_unsupported_type(self, capsys):
+        """Unsupported type should print error and continue."""
+        db = self._make_mock_db(["subject", "trial", "cycle"])
+
+        def process(x):
+            return 42  # scalar, not distributable
+
+        for_each(
+            process,
+            inputs={"x": MockVariableA},
+            outputs=[MockOutput],
+            db=db,
+            distribute="cycle",
+            subject=[1],
+            trial=[1],
+        )
+
+        assert len(MockOutput.saved_data) == 0
+        captured = capsys.readouterr()
+        assert "[error]" in captured.out
+        assert "does not support" in captured.out
+
+    def test_distribute_with_thunk_output(self):
+        """ThunkOutput should be unwrapped before splitting."""
+        import numpy as np
+
+        db = self._make_mock_db(["subject", "trial", "cycle"])
+
+        class FakeThunkOutput:
+            def __init__(self, data):
+                self.data = data
+
+        def process(x):
+            return FakeThunkOutput(np.array([10.0, 20.0, 30.0]))
+
+        for_each(
+            process,
+            inputs={"x": MockVariableA},
+            outputs=[MockOutput],
+            db=db,
+            distribute="cycle",
+            subject=[1],
+            trial=[1],
+        )
+
+        assert len(MockOutput.saved_data) == 3
+        assert float(MockOutput.saved_data[0]["data"]) == 10.0
+        assert float(MockOutput.saved_data[1]["data"]) == 20.0
+        assert float(MockOutput.saved_data[2]["data"]) == 30.0
+
+    def test_distribute_constant_name_conflict(self):
+        """Should raise ValueError if distribute key conflicts with constant input."""
+        db = self._make_mock_db(["subject", "trial", "cycle"])
+
+        def process(x, cycle):
+            return [1, 2]
+
+        with pytest.raises(ValueError, match="conflicts with a constant input"):
+            for_each(
+                process,
+                inputs={"x": MockVariableA, "cycle": 5},
+                outputs=[MockOutput],
+                db=db,
+                distribute="cycle",
+                subject=[1],
+                trial=[1],
+            )
+
+    def test_distribute_empty_result(self):
+        """Empty list/array should result in zero saves."""
+        db = self._make_mock_db(["subject", "trial", "cycle"])
+
+        def process(x):
+            return []
+
+        for_each(
+            process,
+            inputs={"x": MockVariableA},
+            outputs=[MockOutput],
+            db=db,
+            distribute="cycle",
+            subject=[1],
+            trial=[1],
+        )
+
+        assert len(MockOutput.saved_data) == 0
+
+    def test_distribute_validation_no_schema_iterables(self):
+        """Should raise ValueError if no metadata_iterables are schema keys."""
+        db = self._make_mock_db(["subject", "trial", "cycle"])
+
+        def process(x):
+            return [1, 2]
+
+        with pytest.raises(ValueError, match="requires at least one metadata_iterable"):
+            for_each(
+                process,
+                inputs={"x": MockVariableA},
+                outputs=[MockOutput],
+                db=db,
+                distribute="cycle",
+                some_non_schema_key=[1, 2],
+            )
