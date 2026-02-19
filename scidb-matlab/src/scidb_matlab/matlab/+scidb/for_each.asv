@@ -206,13 +206,8 @@ function for_each(fn, inputs, outputs, varargin)
         else
             constant_names{end+1} = input_names{p}; %#ok<AGROW>
             constant_values{end+1} = var_spec; %#ok<AGROW>
-            % Only include in save metadata if value can be used as a
-            % metadata key (scalar numeric/string/char/logical, or struct).
-            % Tables, matrices, cell arrays are data inputs, not parameters.
-            if is_metadata_compatible(var_spec)
-                constant_nv{end+1} = input_names{p}; %#ok<AGROW>
-                constant_nv{end+1} = var_spec; %#ok<AGROW>
-            end
+            constant_nv{end+1} = input_names{p}; %#ok<AGROW>
+            constant_nv{end+1} = var_spec; %#ok<AGROW>
         end
     end
 
@@ -559,54 +554,35 @@ function for_each(fn, inputs, outputs, varargin)
         % --- Save outputs (include constants in metadata) ---
         if do_save
             if strlength(distribute_key) > 0
-                % Distribute mode: split table output by row, saving each row as a
-                % separate record under a distinct value of distribute_key.
-                % If distribute_key already exists as a column, use those
-                % values; otherwise assign 1-based row indices.
-                % For non-table outputs, split by element/row.
+                % Distribute mode: split each output and save pieces individually
                 for o = 1:min(n_outputs, numel(result))
-                    out_inst = outputs{o};
+                    out_inst = outputs{o}; % BaseVariable
                     raw_value = result{o};
                     % Unwrap ThunkOutput/BaseVariable to raw data
                     if isa(raw_value, 'scidb.ThunkOutput') || isa(raw_value, 'scidb.BaseVariable')
                         raw_value = raw_value.data;
                     end
 
+                    %% TODO: Replace this with .save_from_table() because that saves all rows of the table at once.
+                    % If a column is selected, and the data is of the appropriate type/shape, 
+                    % may need to iterate overall the column names that are being distributed
                     try
-                        dist_key_char = char(distribute_key);
-                        if istable(raw_value)
-                            % Determine per-row distribute-key values
-                            if ismember(dist_key_char, raw_value.Properties.VariableNames)
-                                dist_values = raw_value.(dist_key_char);
-                                data_tbl = raw_value;
-                                data_tbl.(dist_key_char) = [];  % remove from data
-                            else
-                                dist_values = (1:height(raw_value))';
-                                data_tbl = raw_value;
-                            end
-                            % Save each row as an individual record
-                            for rowIdx = 1:height(data_tbl)
-                                row_data = data_tbl(rowIdx, :);
-                                dist_val = dist_values(rowIdx);
-                                if isnumeric(dist_val) && isscalar(dist_val)
-                                    save_meta = [meta_nv, constant_nv, {dist_key_char, dist_val}];
-                                else
-                                    save_meta = [meta_nv, constant_nv, {dist_key_char, char(string(dist_val))}];
-                                end
-                                out_inst.save(row_data, save_meta{:}, db_nv{:});
-                                fprintf('[save] %s, %s=%s: %s (distribute row %d)\n', ...
-                                    metadata_str, dist_key_char, num2str(dist_val), class(out_inst), rowIdx);
-                            end
-                        else
-                            % Non-table: split by element/row and save each piece
-                            pieces = split_for_distribute(raw_value);
-                            for k = 1:numel(pieces)
-                                save_meta = [meta_nv, constant_nv, {dist_key_char, k}];
-                                out_inst.save(pieces{k}, save_meta{:}, db_nv{:});
-                            end
-                            fprintf('[save] %s: distributed %d pieces by ''%s''\n', ...
-                                metadata_str, numel(pieces), distribute_key);
+                        schema_keys_cell = cellstr(schema_keys);
+                        metadata_columns = raw_value.Properties.VariableNames(ismember(raw_value.Properties.VariableNames, schema_keys_cell));
+                        % save_from_table requires that all schema keys be
+                        % present. But raw_value may be missing some that are higher up. So,
+                        % fill them in here.
+                        missing_metadata_columns = schema_keys_cell(~ismember(schema_keys_cell, metadata_columns));
+                        % Remove the missing columns that are below the
+                        % lowest level being iterated on.
+                        lowest_iter_idx_in = find()
+                        for colNum = 1:length(missing_metadata_columns)
+                            meta_parts_col_idx = find(ismember(meta_nv, missing_metadata_columns{colNum}));
+                            meta_val = meta_nv{meta_parts_col_idx+1};
+                            raw_value.(missing_metadata_columns{colNum}) = repmat(string(meta_val), height(raw_value), 1);
                         end
+
+                        record_ids = out_inst.save_from_table(raw_value, data_column, metadata_columns);
                     catch err
                         fprintf('[error] %s: cannot distribute %s: %s\n', ...
                             metadata_str, class(out_inst), err.message);
@@ -895,19 +871,6 @@ function tf = is_loadable(var_spec)
     tf = isa(var_spec, 'scidb.BaseVariable') ...
       || isa(var_spec, 'scidb.Fixed') ...
       || isa(var_spec, 'scidb.PathInput');
-end
-
-
-function tf = is_metadata_compatible(val)
-%IS_METADATA_COMPATIBLE  Return true if val can be used as a save metadata key.
-%   Only scalar numeric/logical, scalar string/char, and structs are
-%   compatible with Python metadata serialization.  Tables, matrices,
-%   cell arrays, and other complex types cannot be stored as version keys.
-    tf = (isnumeric(val) && isscalar(val)) ...
-      || (islogical(val) && isscalar(val)) ...
-      || (isstring(val) && isscalar(val)) ...
-      || ischar(val) ...
-      || isstruct(val);
 end
 
 

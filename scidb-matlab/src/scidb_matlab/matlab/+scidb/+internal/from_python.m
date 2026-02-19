@@ -187,6 +187,9 @@ function data = convert_dataframe(py_obj)
             % Reconstruct matrix if all elements are same-size numeric
             % (round-trips multi-column table variables like Nx2 matrices)
             col_data = try_stack_numeric(col_data);
+            % Coalesce all-string cell arrays into a MATLAB string array
+            % (round-trips string columns that pandas stores as object dtype)
+            col_data = try_stack_strings(col_data);
             % Convert cell of structs to struct array so table columns
             % are accessible as t.field.subfield instead of t.field{1}.subfield
             col_data_before_struct_stack = col_data;
@@ -242,6 +245,21 @@ function data = try_stack_numeric(data)
     ref_sz = size(data{1});
     for k = 2:numel(data)
         if ~isnumeric(data{k}) || ~isequal(size(data{k}), ref_sz)
+            return;
+        end
+    end
+    data = vertcat(data{:});
+end
+
+
+function data = try_stack_strings(data)
+%TRY_STACK_STRINGS  Convert a cell array of scalar strings to a string array.
+%   If every element is a scalar MATLAB string, concatenate into a column
+%   string vector (round-trips string columns stored as pandas object dtype).
+%   Otherwise return the cell array unchanged.
+    if ~iscell(data) || isempty(data) || ~isstring(data{1}) || ~isscalar(data{1}), return; end
+    for k = 2:numel(data)
+        if ~isstring(data{k}) || ~isscalar(data{k})
             return;
         end
     end

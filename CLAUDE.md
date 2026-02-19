@@ -17,3 +17,5 @@ The next place to look for context is the docs/claude folder. This folder contai
 Finally, after you've collected all relevant information (by reading through the README's and stopping, or by then reading through the docs/claude folder and stopping, or by then reading through the tests and stopping, etc.), please always ask the user if they would like to pause and write a file to docs/claude to fill conceptual gaps that you can look at later to better understand that aspect of the code's function.
 
 Also, every time you draft a plan and present it to me for approval, please also write a .claude/plan-name.md file.
+
+Fially, whenever you encounter a bug and don't know where it comes from, please in your approach consider how we can perform diagnostics, whether with print statements, timing individual steps, etc.
