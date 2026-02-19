@@ -3,6 +3,7 @@
 from itertools import product
 from typing import Any, Callable
 
+from .column_selection import ColumnSelection
 from .fixed import Fixed
 
 
@@ -198,8 +199,20 @@ def for_each(
         load_failed = False
 
         for param_name, var_spec in loadable_inputs.items():
+            # Resolve var_type, load_metadata, and column_selection from the spec
+            column_selection = None
             if isinstance(var_spec, Fixed):
                 load_metadata = {**metadata, **var_spec.fixed_metadata}
+                inner = var_spec.var_type
+                # Fixed can wrap a ColumnSelection: Fixed(MyVar["col"], session="BL")
+                if isinstance(inner, ColumnSelection):
+                    column_selection = inner.columns
+                    var_type = inner.var_type
+                else:
+                    var_type = inner
+            elif isinstance(var_spec, ColumnSelection):
+                load_metadata = metadata
+                column_selection = var_spec.columns
                 var_type = var_spec.var_type
             else:
                 load_metadata = metadata
@@ -218,6 +231,12 @@ def for_each(
             if param_name in as_table_set and isinstance(loaded_inputs[param_name], list):
                 loaded_inputs[param_name] = _multi_result_to_dataframe(
                     loaded_inputs[param_name], var_type
+                )
+
+            # Apply column selection if specified
+            if column_selection is not None:
+                loaded_inputs[param_name] = _apply_column_selection(
+                    loaded_inputs[param_name], column_selection, param_name
                 )
 
         if load_failed:
@@ -298,8 +317,8 @@ def for_each(
 
 
 def _is_loadable(var_spec: Any) -> bool:
-    """Check if an input spec is a loadable type (class, Fixed, or has .load())."""
-    return isinstance(var_spec, (type, Fixed)) or hasattr(var_spec, 'load')
+    """Check if an input spec is a loadable type (class, Fixed, ColumnSelection, or has .load())."""
+    return isinstance(var_spec, (type, Fixed, ColumnSelection)) or hasattr(var_spec, 'load')
 
 
 def _is_thunk(fn: Any) -> bool:
@@ -312,7 +331,26 @@ def _is_thunk(fn: Any) -> bool:
 
 
 def _unwrap(value: Any) -> Any:
-    """Extract raw data from a loaded variable, pass everything else through."""
+    """Extract raw data from a loaded variable, pass everything else through.
+
+    Skips numpy arrays and DataFrames directly (they don't need unwrapping,
+    and numpy arrays have a .data memoryview attribute that must not be accessed).
+    """
+    # Never unwrap native data types that are already "raw"
+    try:
+        import numpy as np
+        if isinstance(value, np.ndarray):
+            return value
+    except ImportError:
+        pass
+    try:
+        import pandas as pd
+        if isinstance(value, (pd.DataFrame, pd.Series)):
+            return value
+    except ImportError:
+        pass
+    if isinstance(value, list):
+        return value
     if hasattr(value, 'data'):
         return value.data
     return value
@@ -371,13 +409,52 @@ def _multi_result_to_dataframe(results: list, var_type: type):
     return pd.DataFrame(rows)
 
 
+def _apply_column_selection(loaded_value: Any, columns: list[str], param_name: str) -> Any:
+    """Extract selected columns from loaded data.
+
+    For single column: returns numpy array (the column's .values).
+    For multiple columns: returns a DataFrame subset.
+
+    Works on both raw DataFrames and BaseVariable instances with .data as DataFrame.
+    """
+    import pandas as pd
+
+    # Get the DataFrame — either from .data or directly
+    if hasattr(loaded_value, 'data') and isinstance(loaded_value.data, pd.DataFrame):
+        df = loaded_value.data
+    elif isinstance(loaded_value, pd.DataFrame):
+        df = loaded_value
+    else:
+        data_type = type(getattr(loaded_value, 'data', loaded_value)).__name__
+        raise TypeError(
+            f"Column selection on '{param_name}' requires DataFrame data, "
+            f"but loaded data is {data_type}."
+        )
+
+    # Validate column names exist
+    missing = [c for c in columns if c not in df.columns]
+    if missing:
+        raise KeyError(
+            f"Column(s) {missing} not found in '{param_name}'. "
+            f"Available columns: {list(df.columns)}"
+        )
+
+    if len(columns) == 1:
+        return df[columns[0]].values
+    else:
+        return df[columns]
+
+
 def _format_inputs(inputs: dict[str, Any]) -> str:
     """Format inputs dict for display."""
     parts = []
     for name, var_spec in inputs.items():
         if isinstance(var_spec, Fixed):
             fixed_str = ", ".join(f"{k}={v}" for k, v in var_spec.fixed_metadata.items())
-            parts.append(f"{name}: Fixed({var_spec.var_type.__name__}, {fixed_str})")
+            inner_name = getattr(var_spec.var_type, '__name__', type(var_spec.var_type).__name__)
+            parts.append(f"{name}: Fixed({inner_name}, {fixed_str})")
+        elif isinstance(var_spec, ColumnSelection):
+            parts.append(f"{name}: {var_spec.__name__}")
         elif _is_loadable(var_spec):
             var_name = getattr(var_spec, '__name__', type(var_spec).__name__)
             parts.append(f"{name}: {var_name}")
@@ -448,10 +525,21 @@ def _print_dry_run_iteration(
     for param_name, var_spec in inputs.items():
         if isinstance(var_spec, Fixed):
             load_metadata = {**metadata, **var_spec.fixed_metadata}
-            var_type = var_spec.var_type
+            inner = var_spec.var_type
+            if isinstance(inner, ColumnSelection):
+                var_name = inner.var_type.__name__
+                col_str = ", ".join(inner.columns)
+                suffix = f" -> columns: [{col_str}]"
+            else:
+                var_name = getattr(inner, '__name__', type(inner).__name__)
+                suffix = ""
             load_str = ", ".join(f"{k}={v}" for k, v in load_metadata.items())
-            var_name = getattr(var_type, '__name__', type(var_type).__name__)
-            print(f"  load {param_name} = {var_name}.load({load_str})")
+            print(f"  load {param_name} = {var_name}.load({load_str}){suffix}")
+        elif isinstance(var_spec, ColumnSelection):
+            load_str = ", ".join(f"{k}={v}" for k, v in metadata.items())
+            var_name = var_spec.var_type.__name__
+            col_str = ", ".join(var_spec.columns)
+            print(f"  load {param_name} = {var_name}.load({load_str}) -> columns: [{col_str}]")
         elif _is_loadable(var_spec):
             load_str = ", ".join(f"{k}={v}" for k, v in metadata.items())
             var_name = getattr(var_spec, '__name__', type(var_spec).__name__)

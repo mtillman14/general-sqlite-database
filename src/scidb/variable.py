@@ -54,6 +54,36 @@ class BaseVariable:
         super().__init_subclass__(**kwargs)
         cls._all_subclasses[cls.__name__] = cls
 
+    def __class_getitem__(cls, key):
+        """
+        Select specific columns from a table variable.
+
+        Returns a ColumnSelection wrapper that, when used in for_each() inputs,
+        extracts only the specified columns after loading.
+
+        Args:
+            key: Column name (str) or list of column names
+
+        Returns:
+            ColumnSelection wrapping this class and the requested columns
+
+        Example:
+            # Single column — function receives numpy array
+            for_each(fn, inputs={"x": MyVar["col_a"]}, ...)
+
+            # Multiple columns — function receives DataFrame subset
+            for_each(fn, inputs={"x": MyVar[["col_a", "col_b"]]}, ...)
+        """
+        from scirun.column_selection import ColumnSelection
+
+        if isinstance(key, str):
+            return ColumnSelection(cls, [key])
+        elif isinstance(key, (list, tuple)):
+            return ColumnSelection(cls, list(key))
+        raise TypeError(
+            f"Column selection key must be str or list of str, got {type(key).__name__}"
+        )
+
     @classmethod
     def get_subclass_by_name(cls, name: str) -> type["BaseVariable"] | None:
         """Look up a subclass by its name from the global registry."""

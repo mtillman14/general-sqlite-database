@@ -4,7 +4,10 @@ import pytest
 from io import StringIO
 import sys
 
-from scirun import for_each, Fixed
+import numpy as np
+import pandas as pd
+
+from scirun import for_each, Fixed, ColumnSelection
 
 
 class MockVariable:
@@ -1374,3 +1377,236 @@ class TestForEachDistribute:
                 distribute=True,
                 some_non_schema_key=[1, 2],
             )
+
+
+class MockTableVariable:
+    """Mock variable that returns DataFrame data."""
+
+    saved_data = []
+    load_error = False
+    _df = pd.DataFrame({"col_a": [1.0, 2.0, 3.0], "col_b": [10.0, 20.0, 30.0], "col_c": ["x", "y", "z"]})
+
+    def __init__(self, data):
+        self.data = data
+
+    @classmethod
+    def load(cls, **metadata):
+        if cls.load_error:
+            raise ValueError("Mock load error")
+        return cls(cls._df.copy())
+
+    @classmethod
+    def save(cls, data, **metadata):
+        cls.saved_data.append({"data": data, "metadata": metadata})
+
+    @classmethod
+    def reset(cls):
+        cls.saved_data = []
+        cls.load_error = False
+
+    def __class_getitem__(cls, key):
+        if isinstance(key, str):
+            return ColumnSelection(cls, [key])
+        elif isinstance(key, (list, tuple)):
+            return ColumnSelection(cls, list(key))
+        raise TypeError(f"Column selection key must be str or list of str, got {type(key).__name__}")
+
+
+class MockScalarVariable:
+    """Mock variable that returns scalar data (not a DataFrame)."""
+
+    def __init__(self, data):
+        self.data = data
+
+    @classmethod
+    def load(cls, **metadata):
+        return cls(42.0)
+
+    @classmethod
+    def save(cls, data, **metadata):
+        pass
+
+    def __class_getitem__(cls, key):
+        if isinstance(key, str):
+            return ColumnSelection(cls, [key])
+        elif isinstance(key, (list, tuple)):
+            return ColumnSelection(cls, list(key))
+        raise TypeError(f"Column selection key must be str or list of str, got {type(key).__name__}")
+
+
+@pytest.fixture(autouse=False)
+def reset_table_mocks():
+    """Reset table mock state."""
+    MockTableVariable.reset()
+    yield
+
+
+class TestForEachColumnSelection:
+    """Tests for column selection via MyVar['col'] syntax."""
+
+    def test_single_column_returns_numpy_array(self, reset_table_mocks):
+        """Single column selection should return numpy array of that column's values."""
+        received = {}
+
+        def process(x):
+            received["x"] = x
+            return "result"
+
+        for_each(
+            process,
+            inputs={"x": MockTableVariable["col_a"]},
+            outputs=[MockOutput],
+            subject=[1],
+        )
+
+        assert isinstance(received["x"], np.ndarray)
+        np.testing.assert_array_equal(received["x"], np.array([1.0, 2.0, 3.0]))
+
+    def test_multiple_columns_returns_dataframe(self, reset_table_mocks):
+        """Multiple column selection should return a DataFrame subset."""
+        received = {}
+
+        def process(x):
+            received["x"] = x
+            return "result"
+
+        for_each(
+            process,
+            inputs={"x": MockTableVariable[["col_a", "col_b"]]},
+            outputs=[MockOutput],
+            subject=[1],
+        )
+
+        assert isinstance(received["x"], pd.DataFrame)
+        assert list(received["x"].columns) == ["col_a", "col_b"]
+        assert len(received["x"]) == 3
+
+    def test_column_selection_with_fixed(self, reset_table_mocks):
+        """Column selection should work inside a Fixed wrapper."""
+        received = {}
+
+        def process(baseline, current):
+            received["baseline"] = baseline
+            received["current"] = current
+            return "result"
+
+        for_each(
+            process,
+            inputs={
+                "baseline": Fixed(MockTableVariable["col_a"], session="BL"),
+                "current": MockTableVariable["col_b"],
+            },
+            outputs=[MockOutput],
+            subject=[1],
+            session=["A"],
+        )
+
+        assert isinstance(received["baseline"], np.ndarray)
+        np.testing.assert_array_equal(received["baseline"], np.array([1.0, 2.0, 3.0]))
+        assert isinstance(received["current"], np.ndarray)
+        np.testing.assert_array_equal(received["current"], np.array([10.0, 20.0, 30.0]))
+
+    def test_invalid_column_raises_key_error(self, reset_table_mocks):
+        """Should raise KeyError when column doesn't exist in loaded data."""
+
+        def process(x):
+            return "result"
+
+        with pytest.raises(KeyError, match="nonexistent"):
+            for_each(
+                process,
+                inputs={"x": MockTableVariable["nonexistent"]},
+                outputs=[MockOutput],
+                subject=[1],
+            )
+
+    def test_non_dataframe_raises_type_error(self):
+        """Should raise TypeError when column selection applied to non-DataFrame data."""
+
+        def process(x):
+            return "result"
+
+        with pytest.raises(TypeError, match="requires DataFrame data"):
+            for_each(
+                process,
+                inputs={"x": MockScalarVariable["col_a"]},
+                outputs=[MockOutput],
+                subject=[1],
+            )
+
+    def test_without_column_selection_passes_full_data(self, reset_table_mocks):
+        """Without column selection, the full DataFrame should be passed."""
+        received = {}
+
+        def process(x):
+            received["x"] = x
+            return "result"
+
+        for_each(
+            process,
+            inputs={"x": MockTableVariable},
+            outputs=[MockOutput],
+            subject=[1],
+        )
+
+        # Without column selection, for non-Thunk functions, _unwrap extracts .data
+        assert isinstance(received["x"], pd.DataFrame)
+        assert list(received["x"].columns) == ["col_a", "col_b", "col_c"]
+
+    def test_column_selection_dry_run(self, reset_table_mocks, capsys):
+        """Dry run should show column selection info."""
+
+        def my_func(x):
+            raise RuntimeError("Should not be called")
+
+        for_each(
+            my_func,
+            inputs={"x": MockTableVariable["col_a"]},
+            outputs=[MockOutput],
+            dry_run=True,
+            subject=[1],
+        )
+
+        captured = capsys.readouterr()
+        assert "columns:" in captured.out
+        assert "col_a" in captured.out
+
+    def test_column_selection_with_constants(self, reset_table_mocks):
+        """Column selection should work alongside constants."""
+        received = {}
+
+        def process(x, factor):
+            received["x"] = x
+            received["factor"] = factor
+            return "result"
+
+        for_each(
+            process,
+            inputs={"x": MockTableVariable["col_b"], "factor": 2.0},
+            outputs=[MockOutput],
+            subject=[1],
+        )
+
+        assert isinstance(received["x"], np.ndarray)
+        np.testing.assert_array_equal(received["x"], np.array([10.0, 20.0, 30.0]))
+        assert received["factor"] == 2.0
+
+    def test_column_selection_multiple_iterations(self, reset_table_mocks):
+        """Column selection should work across multiple iterations."""
+        received_values = []
+
+        def process(x):
+            received_values.append(x.copy())
+            return "result"
+
+        for_each(
+            process,
+            inputs={"x": MockTableVariable["col_a"]},
+            outputs=[MockOutput],
+            subject=[1, 2, 3],
+        )
+
+        assert len(received_values) == 3
+        for val in received_values:
+            assert isinstance(val, np.ndarray)
+            np.testing.assert_array_equal(val, np.array([1.0, 2.0, 3.0]))

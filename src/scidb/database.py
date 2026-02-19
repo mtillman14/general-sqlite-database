@@ -1091,7 +1091,7 @@ class DatabaseManager:
             schema_level = self._infer_schema_level(schema_keys)
             if schema_level is not None and schema_keys:
                 key_tuple = tuple(
-                    str(schema_keys.get(k, "")) for k in self.dataset_schema_keys
+                    _schema_str(schema_keys.get(k, "")) for k in self.dataset_schema_keys
                     if k in schema_keys
                 )
                 combo_key = (schema_level, key_tuple)

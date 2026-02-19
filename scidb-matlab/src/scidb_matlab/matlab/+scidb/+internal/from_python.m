@@ -221,10 +221,13 @@ function data = convert_dataframe(py_obj)
     col_name_strs = cellfun(@string, col_names, 'UniformOutput', false);
     data = table;
     for i = 1:numel(args)
-        if isscalar(args{i})
+        if numel(args{i}) == n_rows
+            % Per-row values (column vector length matches row count): assign directly
             data.(col_name_strs{i}) = args{i};
         else
-            data.(col_name_strs{i}) = args(i);            
+            % Per-row array values (e.g. time series stored in one cell per row):
+            % cell-wrap so the table sees one cell per row, not one row per element.
+            data.(col_name_strs{i}) = args(i);
         end
     end
 end

@@ -484,6 +484,18 @@ function for_each(fn, inputs, outputs, varargin)
                 type_name = class(var_inst);
                 loaded{p} = fe_multi_result_to_table(loaded{p}, type_name);
             end
+
+            % Apply column selection if specified (only BaseVariable subclasses have this)
+            if isa(var_inst, 'scidb.BaseVariable') && ~isempty(var_inst.selected_columns)
+                try
+                    loaded{p} = apply_column_selection(loaded{p}, var_inst.selected_columns, input_names{p});
+                catch err
+                    fprintf('[skip] %s: column selection failed for %s: %s\n', ...
+                        metadata_str, input_names{p}, err.message);
+                    load_failed = true;
+                    break;
+                end
+            end
         end
 
         if load_failed
@@ -723,6 +735,18 @@ function [completed, skipped] = run_parallel(fn, combos, n_inputs, n_outputs, ..
                 type_name = class(var_inst);
                 loaded{p} = fe_multi_result_to_table(loaded{p}, type_name);
             end
+
+            % Apply column selection if specified (only BaseVariable subclasses have this)
+            if isa(var_inst, 'scidb.BaseVariable') && ~isempty(var_inst.selected_columns)
+                try
+                    loaded{p} = apply_column_selection(loaded{p}, var_inst.selected_columns, input_names{p});
+                catch err
+                    fprintf('[skip] %s: column selection failed for %s: %s\n', ...
+                        metadata_str, input_names{p}, err.message);
+                    load_failed = true;
+                    break;
+                end
+            end
         end
 
         if load_failed
@@ -932,7 +956,12 @@ function s = format_inputs(inputs, input_names)
             parts{i} = sprintf('%s: Fixed(%s, %s)', input_names{i}, ...
                 class(var_spec.var_type), strjoin(fixed_parts, ', '));
         elseif is_loadable(var_spec)
-            parts{i} = sprintf('%s: %s', input_names{i}, class(var_spec));
+            if isa(var_spec, 'scidb.BaseVariable') && ~isempty(var_spec.selected_columns)
+                col_str = strjoin(var_spec.selected_columns, '", "');
+                parts{i} = sprintf('%s: %s["%s"]', input_names{i}, class(var_spec), col_str);
+            else
+                parts{i} = sprintf('%s: %s', input_names{i}, class(var_spec));
+            end
         else
             parts{i} = sprintf('%s: %s', input_names{i}, format_value(var_spec));
         end
@@ -1034,8 +1063,14 @@ function print_dry_run_iteration(inputs, input_names, outputs, ...
                     load_parts{f} = sprintf('%s=%s', load_fields{f}, string(val));
                 end
             end
-            fprintf('  load %s = %s().load(%s)\n', input_names{p}, ...
-                type_name, strjoin(load_parts, ', '));
+            if ~isempty(var_spec.selected_columns)
+                col_str = strjoin(var_spec.selected_columns, ', ');
+                fprintf('  load %s = %s().load(%s) -> columns: [%s]\n', input_names{p}, ...
+                    type_name, strjoin(load_parts, ', '), col_str);
+            else
+                fprintf('  load %s = %s().load(%s)\n', input_names{p}, ...
+                    type_name, strjoin(load_parts, ', '));
+            end
         else
             fprintf('  constant %s = %s\n', input_names{p}, ...
                 format_value(var_spec));
@@ -1149,6 +1184,73 @@ function tbl = fe_multi_result_to_table(results, type_name)
         data_col{i} = results(i).data;
     end
     tbl.(col_name) = data_col;
+end
+
+
+function result = apply_column_selection(loaded_val, cols, param_name)
+%APPLY_COLUMN_SELECTION  Extract selected columns from a loaded variable.
+%
+%   For single column: returns the column contents as a vector/cell array.
+%   For multiple columns: returns a MATLAB subtable.
+%
+%   Works on:
+%   - scidb.ThunkOutput with .data = MATLAB table
+%   - MATLAB table directly (from fe_multi_result_to_table)
+%
+%   Raises an error if the data is not a MATLAB table.
+
+    % Get the table — either directly or from inside a ThunkOutput
+    if isa(loaded_val, 'scidb.ThunkOutput')
+        if numel(loaded_val) == 1
+            tbl = loaded_val.data;
+        else
+            % Array of ThunkOutputs — not yet supported for column selection
+            error('scidb:for_each', ...
+                'Column selection on ''%s'' is not supported for multi-result arrays. Use as_table=true first.', ...
+                param_name);
+        end
+    elseif istable(loaded_val)
+        tbl = loaded_val;
+    else
+        error('scidb:for_each', ...
+            'Column selection on ''%s'' requires table data, but loaded data is %s.', ...
+            param_name, class(loaded_val));
+    end
+
+    if ~istable(tbl)
+        error('scidb:for_each', ...
+            'Column selection on ''%s'' requires table data, but loaded data is %s.', ...
+            param_name, class(tbl));
+    end
+
+    % Validate column names
+    for i = 1:numel(cols)
+        if ~ismember(cols(i), tbl.Properties.VariableNames)
+            error('scidb:for_each', ...
+                'Column ''%s'' not found in ''%s''. Available columns: %s', ...
+                cols(i), param_name, strjoin(tbl.Properties.VariableNames, ', '));
+        end
+    end
+
+    if numel(cols) == 1
+        % Single column: return raw array/cell
+        col_data = tbl.(cols(1));
+        if isa(loaded_val, 'scidb.ThunkOutput')
+            loaded_val.data = col_data;
+            result = loaded_val;
+        else
+            result = col_data;
+        end
+    else
+        % Multiple columns: return subtable
+        sub = tbl(:, cols);
+        if isa(loaded_val, 'scidb.ThunkOutput')
+            loaded_val.data = sub;
+            result = loaded_val;
+        else
+            result = sub;
+        end
+    end
 end
 
 

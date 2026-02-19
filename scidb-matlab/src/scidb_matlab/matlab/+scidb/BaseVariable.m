@@ -29,13 +29,29 @@ classdef BaseVariable < dynamicprops
         content_hash string     % Content hash (16-char hex)
         lineage_hash string     % Lineage hash (64-char hex), empty if raw
         py_obj                  % Python BaseVariable shadow (internal)
+        selected_columns string % Column names to extract on load (empty = all columns)
     end
 
     methods
-        function obj = BaseVariable()
-        %BASEVARIABLE  Construct an empty BaseVariable.
+        function obj = BaseVariable(varargin)
+        %BASEVARIABLE  Construct a BaseVariable, optionally with column selection.
+        %
+        %   OBJ = TypeClass()           % no column selection (full data)
+        %   OBJ = TypeClass("col")      % single column selection
+        %   OBJ = TypeClass(["c1","c2"]) % multiple column selection
+        %
+        %   When column selection is specified and the variable is used as
+        %   input to scidb.for_each(), only the requested columns are
+        %   extracted from the loaded table and passed to the function.
+        %   Single column returns a numeric/cell array; multiple columns
+        %   return a MATLAB subtable.
             obj.metadata = struct();
-        end        
+            obj.selected_columns = string.empty;
+            if nargin >= 1
+                cols = varargin{1};
+                obj.selected_columns = string(cols);
+            end
+        end
 
         % -----------------------------------------------------------------
         % save

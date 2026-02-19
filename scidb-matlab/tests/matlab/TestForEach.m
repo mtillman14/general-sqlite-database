@@ -428,6 +428,96 @@ classdef TestForEach < matlab.unittest.TestCase
                 'scidb:for_each');
         end
 
+        % --- Column selection ---
+
+        function test_column_selection_single_column(testCase)
+            % Single column selection should pass the column's values as an array.
+            % Verified indirectly: sum([1;2;3]) = 6, sum([10;20;30]) = 60.
+            % If col_a is selected, result = 6; if full table passed, error.
+            input_tbl = table([1.0; 2.0; 3.0], [10.0; 20.0; 30.0], ...
+                'VariableNames', {'col_a', 'col_b'});
+            RawSignal().save(input_tbl, 'subject', 1, 'session', 'A');
+
+            scidb.for_each(@sum_array, ...
+                struct('x', RawSignal("col_a")), ...
+                {ProcessedSignal()}, ...
+                'subject', 1, ...
+                'session', "A");
+
+            result = ProcessedSignal().load('subject', 1, 'session', 'A');
+            % sum([1;2;3]) = 6
+            testCase.verifyEqual(result.data, 6.0, 'AbsTol', 1e-10);
+        end
+
+        function test_column_selection_multiple_columns(testCase)
+            % Multiple column selection should pass a subtable (not the full table).
+            % noop_func returns its input unchanged; we check the saved data is a
+            % 2-column subtable.
+            input_tbl = table([1.0; 2.0], [10.0; 20.0], [100.0; 200.0], ...
+                'VariableNames', {'col_a', 'col_b', 'col_c'});
+            RawSignal().save(input_tbl, 'subject', 1, 'session', 'A');
+
+            scidb.for_each(@noop_func, ...
+                struct('x', RawSignal(["col_a", "col_b"])), ...
+                {ProcessedSignal()}, ...
+                'subject', 1, ...
+                'session', "A");
+
+            result = ProcessedSignal().load('subject', 1, 'session', 'A');
+            testCase.verifyTrue(istable(result.data));
+            testCase.verifyEqual(result.data.Properties.VariableNames, {'col_a', 'col_b'});
+            testCase.verifyEqual(height(result.data), 2);
+        end
+
+        function test_column_selection_multiple_iterations(testCase)
+            % Column selection should work correctly across multiple iterations.
+            tbl1 = table([1.0; 2.0], [10.0; 20.0], 'VariableNames', {'col_a', 'col_b'});
+            tbl2 = table([3.0; 4.0], [30.0; 40.0], 'VariableNames', {'col_a', 'col_b'});
+            RawSignal().save(tbl1, 'subject', 1, 'session', 'A');
+            RawSignal().save(tbl2, 'subject', 2, 'session', 'A');
+
+            scidb.for_each(@sum_array, ...
+                struct('x', RawSignal("col_a")), ...
+                {ProcessedSignal()}, ...
+                'subject', [1 2], ...
+                'session', "A");
+
+            r1 = ProcessedSignal().load('subject', 1, 'session', 'A');
+            r2 = ProcessedSignal().load('subject', 2, 'session', 'A');
+            testCase.verifyEqual(r1.data, 3.0, 'AbsTol', 1e-10);  % sum([1;2])
+            testCase.verifyEqual(r2.data, 7.0, 'AbsTol', 1e-10);  % sum([3;4])
+        end
+
+        function test_column_selection_invalid_column_skips_iteration(testCase)
+            % Invalid column name should cause a skip (no output saved).
+            input_tbl = table([1.0; 2.0], 'VariableNames', {'col_a'});
+            RawSignal().save(input_tbl, 'subject', 1, 'session', 'A');
+
+            % Should complete without crashing; iteration is skipped
+            scidb.for_each(@noop_func, ...
+                struct('x', RawSignal("nonexistent")), ...
+                {ProcessedSignal()}, ...
+                'subject', 1, ...
+                'session', "A");
+
+            results = ProcessedSignal().load_all('subject', 1, 'session', 'A');
+            testCase.verifyEmpty(results);
+        end
+
+        function test_column_selection_non_table_skips_iteration(testCase)
+            % Column selection on non-table data should cause a skip.
+            RawSignal().save([1.0 2.0 3.0], 'subject', 1, 'session', 'A');
+
+            scidb.for_each(@noop_func, ...
+                struct('x', RawSignal("col_a")), ...
+                {ProcessedSignal()}, ...
+                'subject', 1, ...
+                'session', "A");
+
+            results = ProcessedSignal().load_all('subject', 1, 'session', 'A');
+            testCase.verifyEmpty(results);
+        end
+
         % --- Multiple subjects and sessions ---
 
         function test_full_pipeline(testCase)
