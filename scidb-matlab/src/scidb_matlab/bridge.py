@@ -354,13 +354,9 @@ def wrap_batch_bridge(py_vars_list):
     """
     import json
     import numpy as np
-    import time
-
-    t0 = time.time()
 
     py_vars = list(py_vars_list) if not isinstance(py_vars_list, list) else py_vars_list
     n = len(py_vars)
-    t1 = time.time()
 
     record_ids = []
     content_hashes = []
@@ -382,7 +378,6 @@ def wrap_batch_bridge(py_vars_list):
         meta = v.metadata
         meta_dicts.append(dict(meta) if meta is not None else {})
         data.append(v.data)
-    t2 = time.time()
 
     # Cache data for non-scalar fallback access
     batch_id = _cache_batch(data, py_vars)
@@ -403,12 +398,17 @@ def wrap_batch_bridge(py_vars_list):
     if n > 0 and all(isinstance(d, (int, float)) for d in data):
         result['scalar_data'] = np.array(data, dtype=float)
 
-    t3 = time.time()
-
-    print(f"[wrap_batch_bridge] materialize list: {t1-t0:.3f}s, "
-          f"extract+pack: {t2-t1:.3f}s, "
-          f"serialize: {t3-t2:.3f}s, "
-          f"total: {t3-t0:.3f}s, n={n}")
+    # DataFrame fast path: concatenate same-schema DataFrames into one
+    # so MATLAB converts a single large table instead of N small ones
+    if n > 0 and 'scalar_data' not in result:
+        import pandas as pd
+        if all(isinstance(d, pd.DataFrame) for d in data):
+            first_cols = list(data[0].columns)
+            if all(list(d.columns) == first_cols for d in data):
+                row_counts = [len(d) for d in data]
+                concat_df = pd.concat(data, ignore_index=True)
+                result['concat_df'] = concat_df
+                result['concat_df_row_counts'] = np.array(row_counts, dtype=np.int64)
 
     return result
 
@@ -437,21 +437,13 @@ def load_and_extract(py_class, metadata_dict, version_id='latest', db=None):
     dict
         Same format as wrap_batch_bridge (with batch_id, no data/py_vars).
     """
-    import time
     from scidb.database import get_database
 
     _db = db if db is not None and not isinstance(db, type(None)) else get_database()
 
-    t0 = time.time()
     gen = _db.load_all(py_class, dict(metadata_dict), version_id=version_id)
     py_vars = list(gen)  # materializes entirely in Python
-    t1 = time.time()
-    result = wrap_batch_bridge(py_vars)
-    t2 = time.time()
-
-    print(f"[load_and_extract] query+materialize: {t1-t0:.2f}s, "
-          f"extract: {t2-t1:.2f}s, n={len(py_vars)}")
-    return result
+    return wrap_batch_bridge(py_vars)
 
 
 def get_surrogate_class(type_name: str):

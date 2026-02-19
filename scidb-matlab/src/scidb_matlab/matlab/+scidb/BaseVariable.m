@@ -606,6 +606,19 @@ classdef BaseVariable < dynamicprops
                 all_scalar_data = double(bulk{'scalar_data'});
             end
 
+            % --- Optimization B2: DataFrame batch transfer ---
+            % When all data values are same-schema DataFrames, Python
+            % concatenates them into one big DataFrame.  We convert it to
+            % a MATLAB table once, then split by row counts.
+            has_concat_df = logical( ...
+                py.operator.contains(bulk, 'concat_df'));
+            if has_concat_df
+                concat_table = scidb.internal.from_python(bulk{'concat_df'});
+                row_counts = double(bulk{'concat_df_row_counts'});
+                % Build cumulative row offsets for slicing
+                cum_rows = cumsum([0; row_counts(:)]);
+            end
+
             % --- Optimization C: Bulk-convert py_vars to cell array ---
             % One cell() call instead of N get_batch_item Python calls.
             py_vars_cell = cell(bulk{'py_vars'});
@@ -617,9 +630,14 @@ classdef BaseVariable < dynamicprops
             results(1:n) = scidb.ThunkOutput();
 
             for i = 1:n
-                % Data: use scalar fast path or per-item fallback
+                % Data: use scalar fast path, concat-df fast path,
+                % or per-item fallback
                 if has_scalar_data
                     matlab_data = all_scalar_data(i);
+                elseif has_concat_df
+                    r0 = cum_rows(i) + 1;
+                    r1 = cum_rows(i + 1);
+                    matlab_data = concat_table(r0:r1, :);
                 else
                     py_data = py.scidb_matlab.bridge.get_batch_data_item( ...
                         batch_id, int64(i-1));

@@ -1342,6 +1342,39 @@ class DatabaseManager:
         return record_ids
 
     @staticmethod
+    def _build_bulk_where(keys: set[tuple[int, int, int]]) -> tuple[str, list]:
+        """Build an efficient WHERE clause for bulk (pid, vid, sid) lookup.
+
+        Uses per-dimension IN clauses when the key set is a full cross product,
+        otherwise falls back to tuple-IN with VALUES.
+
+        Returns (where_clause, params).
+        """
+        unique_pids = set(p for p, _, _ in keys)
+        unique_vids = set(v for _, v, _ in keys)
+        unique_sids = set(s for _, _, s in keys)
+        cross_product_size = len(unique_pids) * len(unique_vids) * len(unique_sids)
+
+        if cross_product_size == len(keys):
+            pid_ph = ", ".join("?" for _ in unique_pids)
+            vid_ph = ", ".join("?" for _ in unique_vids)
+            sid_ph = ", ".join("?" for _ in unique_sids)
+            where_clause = (
+                f"parameter_id IN ({pid_ph}) "
+                f"AND version_id IN ({vid_ph}) "
+                f"AND schema_id IN ({sid_ph})"
+            )
+            params = list(unique_pids) + list(unique_vids) + list(unique_sids)
+        else:
+            values_list = ", ".join(f"({p}, {v}, {s})" for p, v, s in keys)
+            where_clause = (
+                f"(parameter_id, version_id, schema_id) IN "
+                f"(VALUES {values_list})"
+            )
+            params = []
+        return where_clause, params
+
+    @staticmethod
     def _has_custom_serialization(variable_class: type) -> bool:
         """Check if a BaseVariable subclass overrides to_db or from_db."""
         return "to_db" in variable_class.__dict__ or "from_db" in variable_class.__dict__
@@ -1488,6 +1521,51 @@ class DatabaseManager:
         flat_metadata.update(version)
         return flat_metadata, nested_metadata
 
+    def _deserialize_custom_subdf(
+        self,
+        variable_class: type[BaseVariable],
+        sub_df: pd.DataFrame,
+        dtype_meta: dict,
+    ):
+        """Deserialize a sub-DataFrame using custom dtype metadata.
+
+        Handles four sub-paths based on dtype_meta flags:
+        - dict_of_arrays: reconstruct dict of numpy arrays
+        - from_db: class-level custom deserialization
+        - struct_columns: unflatten dot-separated columns
+        - raw: return DataFrame as-is
+
+        The sub_df must already have internal columns
+        (schema_id, parameter_id, version_id) dropped.
+        """
+        if dtype_meta.get("dict_of_arrays"):
+            ndarray_keys = dtype_meta.get("ndarray_keys", {})
+            data = {}
+            for col in sub_df.columns:
+                arr = sub_df[col].values
+                if col in ndarray_keys:
+                    col_meta = ndarray_keys[col]
+                    arr = arr.astype(np.dtype(col_meta["dtype"]))
+                    orig_shape = col_meta.get("shape")
+                    if orig_shape and len(orig_shape) == 2:
+                        if orig_shape[0] == 1:
+                            arr = arr.reshape(1, -1)
+                        elif orig_shape[1] == 1:
+                            arr = arr.reshape(-1, 1)
+                        else:
+                            try:
+                                arr = arr.reshape(orig_shape)
+                            except ValueError:
+                                pass
+                data[col] = arr
+            return data
+        elif self._has_custom_serialization(variable_class):
+            return variable_class.from_db(sub_df)
+        elif dtype_meta.get("struct_columns"):
+            return _unflatten_struct_columns(sub_df, dtype_meta["struct_columns"])
+        else:
+            return sub_df
+
     def _load_by_record_row(
         self,
         variable_class: type[BaseVariable],
@@ -1527,13 +1605,6 @@ class DatabaseManager:
         dtype_meta = json.loads(dtype_rows[0][0])
         is_custom = dtype_meta.get("custom", False)
 
-        # DIAGNOSTIC: Log deserialization path
-        print(f"    [_load_by_record_row DIAG] table={table_name!r}, "
-              f"is_custom={is_custom}, "
-              f"dict_of_arrays={dtype_meta.get('dict_of_arrays', False)}, "
-              f"struct_columns={list(dtype_meta.get('struct_columns', {}).keys()) if dtype_meta.get('struct_columns') else 'none'}, "
-              f"has_custom_ser={self._has_custom_serialization(variable_class) if is_custom else 'N/A'}")
-
         if is_custom:
             # Custom path: direct query by parameter_id, version_id, and schema_id
             df = self._duck._fetchdf(
@@ -1542,14 +1613,6 @@ class DatabaseManager:
             )
             # Drop SciDuck internal columns
             df = df.drop(columns=["schema_id", "parameter_id", "version_id"], errors="ignore")
-            # DIAGNOSTIC: Log DataFrame state after loading from DuckDB
-            print(f"    [_load_by_record_row DIAG] loaded df: shape={df.shape}, "
-                  f"columns={df.columns.tolist()}, dtypes={dict(df.dtypes)}")
-            for col in df.columns:
-                first_val = df[col].iloc[0] if len(df) > 0 else None
-                print(f"    [_load_by_record_row DIAG]   col {col!r}: "
-                      f"val_type={type(first_val).__name__}, "
-                      f"val_preview={repr(first_val)[:100]}")
 
             if loc is not None:
                 if not isinstance(loc, (list, range, slice)):
@@ -1560,65 +1623,7 @@ class DatabaseManager:
                     iloc = [iloc]
                 df = df.iloc[iloc]
 
-            if dtype_meta.get("dict_of_arrays"):
-                # Reconstruct dict of numpy arrays with original dtypes/shapes
-                ndarray_keys = dtype_meta.get("ndarray_keys", {})
-                print(f"        [dict_of_arrays load] pid={parameter_id}, vid={version_id}, sid={schema_id}, df.shape={df.shape}")
-                print(f"        [dict_of_arrays load] ndarray_keys={ndarray_keys}")
-                data = {}
-                for col in df.columns:
-                    arr = df[col].values
-                    if col in ndarray_keys:
-                        col_meta = ndarray_keys[col]
-                        arr = arr.astype(np.dtype(col_meta["dtype"]))
-                        orig_shape = col_meta.get("shape")
-                        if orig_shape and len(orig_shape) == 2:
-                            # Restore 2D shape using -1 for the data dimension,
-                            # since different records may have different lengths
-                            # (ndarray_keys is per-parameter, not per-version).
-                            if orig_shape[0] == 1:
-                                # Was a row vector (1, N) — restore to (1, actual_len)
-                                print(f"        [dict_of_arrays load] col={col!r}: reshaping ({len(arr)},) -> (1, -1)  (orig_shape={orig_shape})")
-                                arr = arr.reshape(1, -1)
-                            elif orig_shape[1] == 1:
-                                # Was a column vector (N, 1) — restore to (actual_len, 1)
-                                print(f"        [dict_of_arrays load] col={col!r}: reshaping ({len(arr)},) -> (-1, 1)  (orig_shape={orig_shape})")
-                                arr = arr.reshape(-1, 1)
-                            else:
-                                # General 2D — attempt reshape, log on failure
-                                print(f"        [dict_of_arrays load] col={col!r}: general 2D reshape ({len(arr)},) -> {orig_shape}  (may fail if sizes differ)")
-                                try:
-                                    arr = arr.reshape(orig_shape)
-                                except ValueError as e:
-                                    print(f"        [dict_of_arrays load] WARNING: reshape failed for col={col!r}: {e}. Keeping 1D array of len {len(arr)}.")
-                    data[col] = arr
-            elif self._has_custom_serialization(variable_class):
-                data = variable_class.from_db(df)
-            elif dtype_meta.get("struct_columns"):
-                # Unflatten dot-separated columns back to nested dict columns
-                print(f"    [_load_by_record_row DIAG] calling _unflatten_struct_columns "
-                      f"with struct_info keys={list(dtype_meta['struct_columns'].keys())}")
-                data = _unflatten_struct_columns(df, dtype_meta["struct_columns"])
-                # DIAGNOSTIC: Inspect reconstructed DataFrame
-                if isinstance(data, pd.DataFrame):
-                    print(f"    [_load_by_record_row DIAG] after unflatten: "
-                          f"columns={data.columns.tolist()}, dtypes={dict(data.dtypes)}")
-                    for col in data.columns:
-                        if data[col].dtype == object:
-                            fv = data[col].iloc[0] if len(data) > 0 else None
-                            print(f"    [_load_by_record_row DIAG]   object col {col!r}: "
-                                  f"type={type(fv).__name__}"
-                                  f"{f', keys={list(fv.keys())[:10]}' if isinstance(fv, dict) else ''}"
-                                  f"{f', preview={repr(fv)[:120]}' if isinstance(fv, str) else ''}")
-                            if isinstance(fv, dict):
-                                for k, v in list(fv.items())[:5]:
-                                    print(f"    [_load_by_record_row DIAG]     key={k!r}: "
-                                          f"type={type(v).__name__}"
-                                          f"{f', dtype={v.dtype}, shape={v.shape}' if isinstance(v, np.ndarray) else ''}"
-                                          f"{f', preview={repr(v)[:80]}' if isinstance(v, str) else ''}")
-            else:
-                # Native DataFrame: return raw DataFrame directly
-                data = df
+            data = self._deserialize_custom_subdf(variable_class, df, dtype_meta)
         else:
             # Native path: use SciDuck.load() with parameter_id, version_id and raw=True
             schema_keys = nested_metadata.get("schema", {})
@@ -2208,32 +2213,20 @@ class DatabaseManager:
         Yields:
             BaseVariable instances matching the metadata
         """
-        import time as _time
-
         table_name = self._ensure_registered(variable_class, auto_register=True)
         nested_metadata = self._split_metadata(metadata)
 
-        _t0 = _time.time()
         try:
             records = self._find_record(table_name, nested_metadata=nested_metadata, version_id=version_id)
         except Exception:
             return  # No data
-        _t1 = _time.time()
-        print(f"[load_all] _find_record: {_t1-_t0:.3f}s, {len(records)} rows")
 
         if len(records) == 0:
-            return
-
-        # Fall back to per-record loading for custom serialization
-        if self._has_custom_serialization(variable_class):
-            for _, row in records.iterrows():
-                yield self._load_by_record_row(variable_class, row)
             return
 
         # --- Bulk loading path ---
 
         # 1. Bulk dtype lookup: one query per unique parameter_id
-        _t2 = _time.time()
         unique_pids = records["parameter_id"].unique()
         dtype_by_pid = {}
         for pid in unique_pids:
@@ -2244,116 +2237,109 @@ class DatabaseManager:
             )
             if dtype_rows:
                 dtype_by_pid[pid] = json.loads(dtype_rows[0][0])
-        _t3 = _time.time()
-        print(f"[load_all] dtype lookup ({len(unique_pids)} pids): {_t3-_t2:.3f}s")
 
         if not dtype_by_pid:
             return
 
-        # Check if any parameter_id uses custom dtype — fall back if so
-        if any(dm.get("custom", False) for dm in dtype_by_pid.values()):
-            for _, row in records.iterrows():
-                yield self._load_by_record_row(variable_class, row)
-            return
+        # Partition parameter_ids into custom vs native
+        custom_pids = {pid for pid, dm in dtype_by_pid.items() if dm.get("custom", False)}
+        native_pids = {pid for pid, dm in dtype_by_pid.items() if not dm.get("custom", False)}
 
-        # 2. Bulk data fetch: one query for all data rows
-        first_dtype = next(iter(dtype_by_pid.values()))
-        data_cols = list(first_dtype["columns"].keys())
-        data_select = ", ".join(f'"{c}"' for c in data_cols)
-
-        # Vectorized key extraction (avoids 3x iterrows)
-        _t4 = _time.time()
+        # Vectorized key extraction
         pids_arr = records["parameter_id"].values.astype(int)
         vids_arr = records["version_id"].values.astype(int)
         sids_arr = records["schema_id"].values.astype(int)
-        unique_keys = set(zip(pids_arr.tolist(), vids_arr.tolist(), sids_arr.tolist()))
-        if not unique_keys:
+        all_keys = set(zip(pids_arr.tolist(), vids_arr.tolist(), sids_arr.tolist()))
+        if not all_keys:
             return
-        _t4b = _time.time()
-        print(f"[load_all] build key lists ({len(unique_keys)} unique keys): {_t4b-_t4:.3f}s")
 
-        # Build efficient WHERE clause using per-dimension IN when possible
-        _t5 = _time.time()
-        unique_pids_set = set(p for p, _, _ in unique_keys)
-        unique_vids_set = set(v for _, v, _ in unique_keys)
-        unique_sids_set = set(s for _, _, s in unique_keys)
-        cross_product_size = len(unique_pids_set) * len(unique_vids_set) * len(unique_sids_set)
+        data_lookup = {}  # (pid, vid, sid) -> (value, dtype_meta)  for native
+        custom_data_lookup = {}  # (pid, vid, sid) -> value  for custom
 
-        if cross_product_size == len(unique_keys):
-            # Cross product is exact — use per-dimension IN clauses (very fast)
-            pid_placeholders = ", ".join("?" for _ in unique_pids_set)
-            vid_placeholders = ", ".join("?" for _ in unique_vids_set)
-            sid_placeholders = ", ".join("?" for _ in unique_sids_set)
-            where_clause = (
-                f"parameter_id IN ({pid_placeholders}) "
-                f"AND version_id IN ({vid_placeholders}) "
-                f"AND schema_id IN ({sid_placeholders})"
+        # 2a. Bulk data fetch for CUSTOM pids
+        if custom_pids:
+            custom_keys = {k for k in all_keys if k[0] in custom_pids}
+            where_clause, params = self._build_bulk_where(custom_keys)
+
+            sql = f'SELECT * FROM "{table_name}" WHERE {where_clause}'
+            all_custom_df = self._duck._fetchdf(sql, params)
+
+            # Group by (pid, vid, sid) and deserialize per-record
+            if len(all_custom_df) > 0:
+                grouped = all_custom_df.groupby(
+                    ["parameter_id", "version_id", "schema_id"],
+                    sort=False,
+                )
+                for (pid, vid, sid), sub_df in grouped:
+                    pid, vid, sid = int(pid), int(vid), int(sid)
+                    sub_df = sub_df.drop(
+                        columns=["schema_id", "parameter_id", "version_id"],
+                        errors="ignore",
+                    ).reset_index(drop=True)
+                    dtype_meta = dtype_by_pid[pid]
+                    custom_data_lookup[(pid, vid, sid)] = self._deserialize_custom_subdf(
+                        variable_class, sub_df, dtype_meta,
+                    )
+
+        # 2b. Bulk data fetch for NATIVE pids (existing optimized path)
+        if native_pids:
+            native_keys = {k for k in all_keys if k[0] in native_pids}
+
+            first_native_dtype = dtype_by_pid[next(iter(native_pids))]
+            data_cols = list(first_native_dtype["columns"].keys())
+            data_select = ", ".join(f'"{c}"' for c in data_cols)
+
+            where_clause, params = self._build_bulk_where(native_keys)
+            sql = (
+                f'SELECT parameter_id, version_id, schema_id, {data_select} '
+                f'FROM "{table_name}" '
+                f'WHERE {where_clause}'
             )
-            params = list(unique_pids_set) + list(unique_vids_set) + list(unique_sids_set)
-        else:
-            # Partial cross product — use tuple-IN with VALUES
-            values_list = ", ".join(f"({p}, {v}, {s})" for p, v, s in unique_keys)
-            where_clause = (
-                f"(parameter_id, version_id, schema_id) IN "
-                f"(VALUES {values_list})"
-            )
-            params = []
+            all_data_df = self._duck._fetchdf(sql, params)
 
-        sql = (
-            f'SELECT parameter_id, version_id, schema_id, {data_select} '
-            f'FROM "{table_name}" '
-            f'WHERE {where_clause}'
-        )
-        all_data_df = self._duck._fetchdf(sql, params)
-        _t6 = _time.time()
-        print(f"[load_all] bulk data fetch ({len(all_data_df)} rows): {_t6-_t5:.3f}s")
+            # Restore types per parameter_id group, then build lookup
+            for pid in native_pids:
+                pid_mask = all_data_df["parameter_id"] == pid
+                pid_df = all_data_df[pid_mask]
+                if len(pid_df) == 0:
+                    continue
+                dtype_meta = dtype_by_pid[pid]
+                restored = pid_df[data_cols].copy()
+                restored = self._duck._restore_types(restored, dtype_meta)
 
-        # 3. Restore types per parameter_id group, then build lookup vectorized
-        _t7 = _time.time()
-        data_lookup = {}
-        for pid in dtype_by_pid:
-            pid_mask = all_data_df["parameter_id"] == pid
-            pid_df = all_data_df[pid_mask]
-            if len(pid_df) == 0:
-                continue
-            dtype_meta = dtype_by_pid[pid]
-            restored = pid_df[data_cols].copy()
-            restored = self._duck._restore_types(restored, dtype_meta)
+                pid_keys_p = pid_df["parameter_id"].values.astype(int)
+                pid_keys_v = pid_df["version_id"].values.astype(int)
+                pid_keys_s = pid_df["schema_id"].values.astype(int)
 
-            # Vectorized lookup building — avoid per-row .loc[]
-            pid_keys_p = pid_df["parameter_id"].values.astype(int)
-            pid_keys_v = pid_df["version_id"].values.astype(int)
-            pid_keys_s = pid_df["schema_id"].values.astype(int)
+                mode = dtype_meta.get("mode", "single_column")
+                columns_meta = dtype_meta.get("columns", {})
 
-            mode = dtype_meta.get("mode", "single_column")
-            columns_meta = dtype_meta.get("columns", {})
+                if mode == "single_column":
+                    col_name = next(iter(columns_meta))
+                    col_values = restored[col_name].tolist()
+                    for i in range(len(col_values)):
+                        key = (int(pid_keys_p[i]), int(pid_keys_v[i]), int(pid_keys_s[i]))
+                        data_lookup[key] = (col_values[i], dtype_meta)
+                else:
+                    col_lists = {c: restored[c].tolist() for c in columns_meta}
+                    for i in range(len(pid_df)):
+                        key = (int(pid_keys_p[i]), int(pid_keys_v[i]), int(pid_keys_s[i]))
+                        data_lookup[key] = ({c: col_lists[c][i] for c in columns_meta}, dtype_meta)
 
-            if mode == "single_column":
-                col_name = next(iter(columns_meta))
-                col_values = restored[col_name].tolist()
-                for i in range(len(col_values)):
-                    key = (int(pid_keys_p[i]), int(pid_keys_v[i]), int(pid_keys_s[i]))
-                    data_lookup[key] = (col_values[i], dtype_meta)
-            else:
-                # Multi-column: extract each column as a list
-                col_lists = {c: restored[c].tolist() for c in columns_meta}
-                for i in range(len(pid_df)):
-                    key = (int(pid_keys_p[i]), int(pid_keys_v[i]), int(pid_keys_s[i]))
-                    data_lookup[key] = ({c: col_lists[c][i] for c in columns_meta}, dtype_meta)
-        _t8 = _time.time()
-        print(f"[load_all] restore types + build lookup: {_t8-_t7:.3f}s")
-
-        # 4. Construct instances using itertuples + inline metadata
-        _t9 = _time.time()
+        # 3. Construct instances using itertuples + inline metadata
         _count = 0
         schema_keys = self.dataset_schema_keys
         for row in records.itertuples(index=False):
             pid = int(row.parameter_id)
             vid = int(row.version_id)
             sid = int(row.schema_id)
-
             key = (pid, vid, sid)
-            if key not in data_lookup:
+
+            if key in custom_data_lookup:
+                data_value = custom_data_lookup[key]
+            elif key in data_lookup:
+                data_value, _ = data_lookup[key]
+            else:
                 continue
 
             record_id = row.record_id
@@ -2362,7 +2348,6 @@ class DatabaseManager:
             if lineage_hash is not None and not isinstance(lineage_hash, str):
                 lineage_hash = None
 
-            # Inline metadata reconstruction (avoids _reconstruct_metadata_from_row overhead)
             flat_metadata = {}
             for sk in schema_keys:
                 val = getattr(row, sk, None)
@@ -2371,8 +2356,6 @@ class DatabaseManager:
             vk_raw = getattr(row, 'version_keys', None)
             if vk_raw is not None and isinstance(vk_raw, str):
                 flat_metadata.update(json.loads(vk_raw))
-
-            data_value, dtype_meta = data_lookup[key]
 
             instance = variable_class(data_value)
             instance.record_id = record_id
@@ -2384,9 +2367,6 @@ class DatabaseManager:
             _count += 1
 
             yield instance
-        _t10 = _time.time()
-        print(f"[load_all] construct {_count} instances: {_t10-_t9:.3f}s")
-        print(f"[load_all] TOTAL: {_t10-_t0:.3f}s")
 
     def list_versions(
         self,

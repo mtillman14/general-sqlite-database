@@ -69,10 +69,37 @@ The preloaded path is skipped (falls back to per-iteration `load()`) when:
 - No metadata keys are specified (empty iteration space)
 - The input is a `PathInput` (not a database load)
 
+### Optimization 3: Bulk Loading for Custom-Dtype Records
+
+**File**: `database.py` (`load_all()`, `_deserialize_custom_subdf()`, `_build_bulk_where()`)
+
+The `load_all()` bulk path originally fell back to per-record SQL queries (`_load_by_record_row()`) when:
+1. The variable class had custom serialization (`to_db`/`from_db` overrides), or
+2. The `dtype_meta` had `custom=True` (e.g., DataFrame variables stored as raw columns)
+
+This meant types like tables (DataFrames stored with `custom=True` dtype) would issue N individual `SELECT * WHERE pid=? AND vid=? AND sid=?` queries — one per record. For 2741 records, this was ~5500 SQL queries taking ~10s.
+
+**Solution**: `load_all()` now partitions parameter_ids into `custom_pids` and `native_pids`, then handles each with a single bulk SQL query:
+
+1. **Custom pids**: One `SELECT * FROM "table" WHERE ...` fetches all data rows at once. Results are grouped by `(parameter_id, version_id, schema_id)` via `DataFrame.groupby()`. Each group is passed to `_deserialize_custom_subdf()`, which dispatches to the correct deserialization path:
+   - `dict_of_arrays`: reconstruct dict of numpy arrays with dtype/shape restoration
+   - `from_db()`: class-level custom deserialization (called per-record sub-DataFrame)
+   - `struct_columns`: unflatten dot-separated columns back to nested dicts
+   - Raw DataFrame: return sub-DataFrame as-is (most common case for tables)
+
+2. **Native pids**: Existing bulk path (column-specific SELECT, type restoration via `_restore_types`)
+
+3. Both lookups are merged in a single instance-construction loop.
+
+The WHERE clause building is extracted into `_build_bulk_where()`, reused by both paths. It uses per-dimension `IN` clauses when the key set is a full cross product, otherwise falls back to tuple-IN with `VALUES`.
+
+**Key detail**: Custom bulk uses `SELECT *` (not column-specific) because custom dtypes don't store column metadata in `dtype_meta["columns"]`. Internal columns (`parameter_id`, `version_id`, `schema_id`) are dropped after fetch, before deserialization.
+
 ## Performance Impact
 
 | Component | Before | After |
 |---|---|---|
-| DB queries | ~86s (108 queries) | ~1-2s (1 query per input type) |
+| DB queries (scalars) | ~86s (108 queries) | ~1-2s (1 query per input type) |
 | Variable wrapping | ~20.7s (~250K crossings) | ~5-8s (~17K crossings) |
+| DB queries (tables/custom) | ~10s (5500 queries for 2741 records) | <1s (3 queries) |
 | **Total** | **~107s** | **~7-10s** |

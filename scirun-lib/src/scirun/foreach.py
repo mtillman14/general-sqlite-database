@@ -396,17 +396,38 @@ def _is_dataframe(value: Any) -> bool:
 def _multi_result_to_dataframe(results: list, var_type: type):
     """Convert a list of loaded variables to a pandas DataFrame.
 
-    Columns: metadata keys + version_id + data column (named after var_type).
+    If all results contain DataFrame data, flattens by merging metadata columns
+    with data columns (replicating metadata per row for multi-row data).
+
+    Otherwise, nests data into a single column named after var_type.
     """
     import pandas as pd
-    view_name = var_type.view_name() if hasattr(var_type, 'view_name') else var_type.__name__
-    rows = []
-    for var in results:
-        row = dict(var.metadata) if var.metadata else {}
-        row["version_id"] = getattr(var, "version_id", None)
-        row[view_name] = var.data
-        rows.append(row)
-    return pd.DataFrame(rows)
+
+    # Check if all data items are DataFrames
+    all_dataframes = all(isinstance(var.data, pd.DataFrame) for var in results)
+
+    if all_dataframes:
+        # Flatten mode: metadata + data columns merged into one DataFrame
+        parts = []
+        for var in results:
+            data_df = var.data
+            meta = dict(var.metadata) if var.metadata else {}
+            meta["version_id"] = getattr(var, "version_id", None)
+            nr = len(data_df)
+            meta_df = pd.DataFrame({k: [v] * nr for k, v in meta.items()})
+            parts.append(pd.concat([meta_df.reset_index(drop=True),
+                                    data_df.reset_index(drop=True)], axis=1))
+        return pd.concat(parts, ignore_index=True)
+    else:
+        # Non-DataFrame data: nest into a column named after the variable type
+        view_name = var_type.view_name() if hasattr(var_type, 'view_name') else var_type.__name__
+        rows = []
+        for var in results:
+            row = dict(var.metadata) if var.metadata else {}
+            row["version_id"] = getattr(var, "version_id", None)
+            row[view_name] = var.data
+            rows.append(row)
+        return pd.DataFrame(rows)
 
 
 def _apply_column_selection(loaded_value: Any, columns: list[str], param_name: str) -> Any:

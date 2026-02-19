@@ -1192,38 +1192,81 @@ function tbl = fe_multi_result_to_table(results, type_name)
 %FE_MULTI_RESULT_TO_TABLE  Convert an array of ThunkOutput to a MATLAB table.
     n = numel(results);
 
-    % Build metadata columns
-    meta_fields = fieldnames(results(1).metadata);
-    tbl = table();
-    for f = 1:numel(meta_fields)
-        col_data = cell(n, 1);
+    % Check if all data items are tables — if so, flatten into top-level columns
+    all_tables = true;
+    for i = 1:n
+        if ~istable(results(i).data)
+            all_tables = false;
+            break;
+        end
+    end
+
+    if all_tables
+        % Flatten mode: metadata columns + data columns merged into one table.
+        % Each result may have multiple rows; metadata is replicated per row.
+        rows = cell(n, 1);
         for i = 1:n
-            if isfield(results(i).metadata, meta_fields{f})
-                col_data{i} = results(i).metadata.(meta_fields{f});
+            data_tbl = results(i).data;
+            nr = height(data_tbl);
+
+            % Build metadata columns for this result (replicated per row)
+            meta_tbl = table();
+            meta_fields = fieldnames(results(i).metadata);
+            for f = 1:numel(meta_fields)
+                if isfield(results(i).metadata, meta_fields{f})
+                    val = results(i).metadata.(meta_fields{f});
+                else
+                    val = missing;
+                end
+                meta_tbl.(meta_fields{f}) = repmat({val}, nr, 1);
+            end
+
+            % version_id
+            if ~isempty(results(i).version_id)
+                meta_tbl.version_id = repmat(results(i).version_id, nr, 1);
             else
-                col_data{i} = missing;
+                meta_tbl.version_id = zeros(nr, 1);
+            end
+
+            % Concatenate metadata + data columns for this result
+            rows{i} = [meta_tbl, data_tbl];
+        end
+
+        tbl = vertcat(rows{:});
+    else
+        % Non-table data: nest into a cell column named after the variable type
+        meta_fields = fieldnames(results(1).metadata);
+        tbl = table();
+        for f = 1:numel(meta_fields)
+            col_data = cell(n, 1);
+            for i = 1:n
+                if isfield(results(i).metadata, meta_fields{f})
+                    col_data{i} = results(i).metadata.(meta_fields{f});
+                else
+                    col_data{i} = missing;
+                end
+            end
+            tbl.(meta_fields{f}) = col_data;
+        end
+
+        % version_id column
+        vid_data = zeros(n, 1);
+        for i = 1:n
+            if ~isempty(results(i).version_id)
+                vid_data(i) = results(i).version_id;
             end
         end
-        tbl.(meta_fields{f}) = col_data;
-    end
+        tbl.version_id = vid_data;
 
-    % version_id column
-    vid_data = zeros(n, 1);
-    for i = 1:n
-        if ~isempty(results(i).version_id)
-            vid_data(i) = results(i).version_id;
+        % Data column (named after the variable type)
+        parts = strsplit(type_name, '.');
+        col_name = parts{end};
+        data_col = cell(n, 1);
+        for i = 1:n
+            data_col{i} = results(i).data;
         end
+        tbl.(col_name) = data_col;
     end
-    tbl.version_id = vid_data;
-
-    % Data column (named after the variable type)
-    parts = strsplit(type_name, '.');
-    col_name = parts{end};
-    data_col = cell(n, 1);
-    for i = 1:n
-        data_col{i} = results(i).data;
-    end
-    tbl.(col_name) = data_col;
 end
 
 
