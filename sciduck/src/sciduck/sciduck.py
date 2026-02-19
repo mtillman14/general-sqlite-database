@@ -315,6 +315,9 @@ class SciDuck:
     def _commit(self):
         self.con.execute("COMMIT")
 
+    def _rollback(self):
+        self.con.execute("ROLLBACK")
+
     def _fetchall(self, sql: str, params=None) -> list:
         return self._execute(sql, params).fetchall()
 
