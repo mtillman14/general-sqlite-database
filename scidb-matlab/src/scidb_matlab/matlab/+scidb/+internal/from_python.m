@@ -210,6 +210,11 @@ function data = convert_dataframe(py_obj)
             args{i} = scidb.internal.from_python(col.to_numpy());
             fprintf('[DIAG convert_dataframe]   -> %s [%s]\n', ...
                 class(args{i}), num2str(size(args{i})));
+            % pandas 3.0+ returns StringDtype for text columns; from_python
+            % converts these to cell arrays.  Stack into string arrays.
+            if iscell(args{i})
+                args{i} = try_stack_strings(args{i});
+            end
         end
         % Ensure column vector — but only when the number of elements                                                                                                                
         % matches the DataFrame row count.  Otherwise a 1-row DataFrame                                                                                                              

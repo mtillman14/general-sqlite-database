@@ -227,14 +227,24 @@ def for_each(
                 load_failed = True
                 break
 
-            # Convert multi-result to DataFrame if requested
-            if param_name in as_table_set and isinstance(loaded_inputs[param_name], list):
+            # Handle as_table conversion and/or column selection
+            is_multi = isinstance(loaded_inputs[param_name], list)
+            wants_table = param_name in as_table_set and is_multi
+
+            if column_selection is not None and wants_table:
+                # Both active: filter each variable's data BEFORE building
+                # the table so metadata columns are preserved
+                _apply_column_selection_to_vars(
+                    loaded_inputs[param_name], column_selection, param_name
+                )
                 loaded_inputs[param_name] = _multi_result_to_dataframe(
                     loaded_inputs[param_name], var_type
                 )
-
-            # Apply column selection if specified
-            if column_selection is not None:
+            elif wants_table:
+                loaded_inputs[param_name] = _multi_result_to_dataframe(
+                    loaded_inputs[param_name], var_type
+                )
+            elif column_selection is not None:
                 loaded_inputs[param_name] = _apply_column_selection(
                     loaded_inputs[param_name], column_selection, param_name
                 )
@@ -464,6 +474,32 @@ def _apply_column_selection(loaded_value: Any, columns: list[str], param_name: s
         return df[columns[0]].values
     else:
         return df[columns]
+
+
+def _apply_column_selection_to_vars(variables: list, columns: list[str], param_name: str) -> None:
+    """Filter columns on each variable's DataFrame data in-place.
+
+    Used when both column_selection and as_table are active. Keeps data as a
+    DataFrame (rather than extracting .values for single columns) so that
+    _multi_result_to_dataframe can build the table with metadata + selected columns.
+    """
+    import pandas as pd
+
+    for var in variables:
+        if hasattr(var, 'data') and isinstance(var.data, pd.DataFrame):
+            missing = [c for c in columns if c not in var.data.columns]
+            if missing:
+                raise KeyError(
+                    f"Column(s) {missing} not found in '{param_name}'. "
+                    f"Available columns: {list(var.data.columns)}"
+                )
+            var.data = var.data[columns]
+        else:
+            data_type = type(getattr(var, 'data', var)).__name__
+            raise TypeError(
+                f"Column selection on '{param_name}' requires DataFrame data, "
+                f"but loaded data is {data_type}."
+            )
 
 
 def _format_inputs(inputs: dict[str, Any]) -> str:

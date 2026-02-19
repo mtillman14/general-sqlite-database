@@ -14,8 +14,8 @@ saving a MATLAB value and loading it back should produce the identical type and 
 | `double` / numeric scalar | `py.float` / `py.int` | native | Exact |
 | Numeric vector (Nx1 or 1xN) | 1-D numpy ndarray | native | Exact |
 | Numeric matrix (NxM, M>1) | list of 1-D ndarrays (object column in DataFrame) | JSON list-of-lists when inside dict; object column when in table | Exact — `try_stack_numeric` reconstructs the matrix on load |
-| `string` scalar | `py.str` (via `char`) | native | Exact |
-| `string` array | `py.list` of strings | native | Exact — all-string lists are collapsed back to string arrays |
+| `string` scalar | `py.str` (via `char`) | native | Exact (see pandas 3.0 note below) |
+| `string` array | `py.list` of strings | native | Exact — all-string lists are collapsed back to string arrays (see pandas 3.0 note below) |
 | `logical` scalar | `py.bool` | native | Exact |
 | `logical` array | numpy bool ndarray | native | Exact |
 | `char` | `py.str` | native | Loads back as `string`, not `char` |
@@ -35,7 +35,7 @@ with `data.(col_name)` and processed:
 |---|---|---|---|
 | Numeric Nx1 vector | `to_python(col)` → 1-D ndarray | float64/int64 | Standard path |
 | Numeric NxM matrix (M>1) | Split into cell of 1xM row vectors → list of 1-D ndarrays | object | pandas rejects 2-D ndarrays as column values (see below) |
-| String array | `to_python(col)` → list of strings | object | — |
+| String array | `to_python(col)` → list of strings | object (pandas <3.0) or StringDtype (pandas 3.0+) | See pandas 3.0 section |
 | Datetime array | Format to ISO string first | object (string) | — |
 | Categorical | Convert to string first | object | — |
 | Struct array | `to_python(col)` → list of dicts | object | Each struct → dict recursively |
@@ -66,7 +66,9 @@ When loading a pandas DataFrame back to a MATLAB table:
 | datetime64 | ISO string extraction → `datetime()` | Datetime column |
 | object (dicts) | Element-by-element `from_python` → cell of structs | Cell column of structs |
 | object (uniform numeric lists) | Element-by-element `from_python` → cell of row vectors → `try_stack_numeric` → `vertcat` | NxM numeric matrix |
+| object (strings) | Element-by-element `from_python` → cell of strings → `try_stack_strings` → `vertcat` | String column vector |
 | object (mixed types) | Element-by-element `from_python` | Cell column |
+| StringDtype (pandas 3.0+) | `from_python(col.to_numpy())` → cell → `try_stack_strings` | String column vector |
 
 ### try_stack_numeric
 
@@ -113,6 +115,59 @@ In `BaseVariable.save_from_table`, struct metadata columns are converted to
 JSON strings via `jsonencode` before crossing to Python. Each struct element
 becomes a separate JSON string. This is handled in the metadata column loop
 in `BaseVariable.m`.
+
+## pandas 3.0 StringDtype Compatibility
+
+### Problem
+
+pandas 3.0 changed the default string storage from `object` dtype to `StringDtype`.
+When DuckDB's `fetchdf()` returns VARCHAR columns, they now have a dtype name like
+`"string"` instead of `"object"`.
+
+In `convert_dataframe` (inside `from_python.m`), the dtype dispatch has three branches:
+
+1. `startsWith(dtype_str, "datetime")` → datetime path
+2. `dtype_str == "object"` → object path (includes `try_stack_strings`, `try_stack_numeric`, etc.)
+3. `else` → fallback: `from_python(col.to_numpy())`
+
+With pandas <3.0, string columns had `object` dtype and went through branch 2, which
+called `try_stack_strings` to coalesce cell arrays of strings into MATLAB string arrays.
+
+With pandas 3.0+, string columns have `StringDtype` (dtype name `"string"`), so they
+fall through to branch 3. The fallback calls `from_python(col.to_numpy())`, which
+returns a cell array of strings (e.g. `{["1"]}`) but does NOT call `try_stack_strings`.
+This causes string columns in loaded tables to come back as cell arrays instead of
+string arrays.
+
+### Symptom
+
+A MATLAB table with a string column saved to DuckDB and loaded back returns the column
+as a cell array (`{["1"]}`) instead of a string (`"1"`). This breaks `verifyEqual`
+assertions and any code that expects `result.data.column` to be a string type.
+
+### Fix
+
+Added `try_stack_strings` to the `else` branch in `convert_dataframe`:
+
+```matlab
+else
+    args{i} = scidb.internal.from_python(col.to_numpy());
+    if iscell(args{i})
+        args{i} = try_stack_strings(args{i});
+    end
+end
+```
+
+This ensures that cell arrays of strings produced by the fallback path are coalesced
+into MATLAB string arrays, matching the behavior of the `object` dtype path.
+
+### Future considerations
+
+If pandas 3.0+ introduces other new default dtypes (e.g. nullable `Int64` instead of
+`int64`), similar issues may arise in the fallback path. The pattern is always the same:
+`from_python(col.to_numpy())` returns a cell array that needs post-processing via
+`try_stack_*` helpers. If new dtype issues appear, check whether the `else` branch
+needs additional stacking helpers.
 
 ## Key Files
 

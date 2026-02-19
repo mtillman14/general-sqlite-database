@@ -128,5 +128,115 @@ classdef TestAsTable < matlab.unittest.TestCase
             testCase.verifyEqual(height(received_table), 2);
         end
 
+        % -----------------------------------------------------------------
+        % as_table + column selection interaction
+        % -----------------------------------------------------------------
+
+        function test_as_table_with_single_column_selection_returns_table(testCase)
+            %% as_table=true + single column selection should return a table
+            %  with metadata columns AND the selected data column — not a
+            %  raw vector.
+            tbl1 = table([10.0; 20.0], [0.1; 0.2], ...
+                'VariableNames', {'signal', 'noise'});
+            tbl2 = table([30.0; 40.0], [0.3; 0.4], ...
+                'VariableNames', {'signal', 'noise'});
+            RawSignal().save(tbl1, 'subject', 1, 'session', 'A');
+            RawSignal().save(tbl2, 'subject', 1, 'session', 'B');
+
+            received = [];
+
+            function result = capture_input(values)
+                received = values;
+                result = 0;
+            end
+
+            scidb.for_each(@capture_input, ...
+                struct('values', RawSignal("signal")), ...
+                {ScalarVar()}, ...
+                'as_table', true, ...
+                'subject', 1);
+
+            % Must be a table (as_table controls this)
+            testCase.verifyTrue(istable(received), ...
+                'as_table=true should produce a table even with column selection');
+            % Must have metadata columns
+            testCase.verifyTrue(ismember('subject', received.Properties.VariableNames), ...
+                'Table should contain subject metadata column');
+            testCase.verifyTrue(ismember('session', received.Properties.VariableNames), ...
+                'Table should contain session metadata column');
+            testCase.verifyTrue(ismember('version_id', received.Properties.VariableNames), ...
+                'Table should contain version_id column');
+            % Must have the selected data column
+            testCase.verifyTrue(ismember('signal', received.Properties.VariableNames), ...
+                'Table should contain the selected data column');
+            % Must NOT have the unselected data column
+            testCase.verifyFalse(ismember('noise', received.Properties.VariableNames), ...
+                'Table should NOT contain unselected data columns');
+            % 2 sessions x 2 rows each = 4 rows total (flattened)
+            testCase.verifyEqual(height(received), 4);
+            % Verify data values are correct
+            testCase.verifyEqual(received.signal, [10.0; 20.0; 30.0; 40.0], 'AbsTol', 1e-10);
+        end
+
+        function test_as_table_with_multi_column_selection_returns_table(testCase)
+            %% as_table=true + multi-column selection should return a table
+            %  with metadata columns AND only the selected data columns.
+            tbl1 = table([1.0; 2.0], [10.0; 20.0], [100.0; 200.0], ...
+                'VariableNames', {'a', 'b', 'c'});
+            tbl2 = table([3.0; 4.0], [30.0; 40.0], [300.0; 400.0], ...
+                'VariableNames', {'a', 'b', 'c'});
+            RawSignal().save(tbl1, 'subject', 1, 'session', 'A');
+            RawSignal().save(tbl2, 'subject', 1, 'session', 'B');
+
+            received = [];
+
+            function result = capture_input(values)
+                received = values;
+                result = 0;
+            end
+
+            scidb.for_each(@capture_input, ...
+                struct('values', RawSignal(["a", "b"])), ...
+                {ScalarVar()}, ...
+                'as_table', true, ...
+                'subject', 1);
+
+            % Must be a table
+            testCase.verifyTrue(istable(received));
+            % Must have metadata columns
+            testCase.verifyTrue(ismember('subject', received.Properties.VariableNames));
+            testCase.verifyTrue(ismember('session', received.Properties.VariableNames));
+            testCase.verifyTrue(ismember('version_id', received.Properties.VariableNames));
+            % Must have selected data columns
+            testCase.verifyTrue(ismember('a', received.Properties.VariableNames));
+            testCase.verifyTrue(ismember('b', received.Properties.VariableNames));
+            % Must NOT have unselected data column
+            testCase.verifyFalse(ismember('c', received.Properties.VariableNames));
+            % 2 sessions x 2 rows = 4 rows total
+            testCase.verifyEqual(height(received), 4);
+            % Verify values
+            testCase.verifyEqual(received.a, [1.0; 2.0; 3.0; 4.0], 'AbsTol', 1e-10);
+            testCase.verifyEqual(received.b, [10.0; 20.0; 30.0; 40.0], 'AbsTol', 1e-10);
+        end
+
+        function test_as_table_false_with_column_selection_returns_vector(testCase)
+            %% as_table=false + single column selection should return a
+            %  plain vector (no metadata columns) — existing behavior.
+            input_tbl = table([7.0; 8.0; 9.0], [0.1; 0.2; 0.3], ...
+                'VariableNames', {'signal', 'noise'});
+            RawSignal().save(input_tbl, 'subject', 1, 'session', 'A');
+
+            scidb.for_each(@noop_func, ...
+                struct('x', RawSignal("signal")), ...
+                {ProcessedSignal()}, ...
+                'subject', 1, ...
+                'session', "A");
+
+            result = ProcessedSignal().load('subject', 1, 'session', 'A');
+            testCase.verifyFalse(istable(result.data), ...
+                'as_table=false + column selection should return a vector, not a table');
+            testCase.verifyEqual(result.data, [7.0; 8.0; 9.0], 'AbsTol', 1e-10);
+        end
+
     end
 end

@@ -483,15 +483,44 @@ function for_each(fn, inputs, outputs, varargin)
                 end
             end
 
-            % Convert multi-result to table if requested
-            if ~isempty(as_table_set) && ismember(string(input_names{p}), as_table_set) ...
-                    && isa(loaded{p}, 'scidb.ThunkOutput') && numel(loaded{p}) > 1
+            % Handle as_table conversion and/or column selection
+            has_col_sel = isa(var_inst, 'scidb.BaseVariable') && ~isempty(var_inst.selected_columns);
+            wants_table = ~isempty(as_table_set) && ismember(string(input_names{p}), as_table_set) ...
+                    && isa(loaded{p}, 'scidb.ThunkOutput') && numel(loaded{p}) > 1;
+
+            if has_col_sel && wants_table
+                % Both active: filter each variable's data BEFORE building
+                % the table so metadata columns are preserved
+                cols = var_inst.selected_columns;
+                try
+                    for qi = 1:numel(loaded{p})
+                        tbl_i = loaded{p}(qi).data;
+                        if ~istable(tbl_i)
+                            error('scidb:for_each', ...
+                                'Column selection on ''%s'' requires table data, but loaded data is %s.', ...
+                                input_names{p}, class(tbl_i));
+                        end
+                        for ci = 1:numel(cols)
+                            if ~ismember(cols(ci), tbl_i.Properties.VariableNames)
+                                error('scidb:for_each', ...
+                                    'Column ''%s'' not found in ''%s''. Available columns: %s', ...
+                                    cols(ci), input_names{p}, strjoin(tbl_i.Properties.VariableNames, ', '));
+                            end
+                        end
+                        loaded{p}(qi).data = tbl_i(:, cols);
+                    end
+                catch err
+                    fprintf('[skip] %s: column selection failed for %s: %s\n', ...
+                        metadata_str, input_names{p}, err.message);
+                    load_failed = true;
+                    break;
+                end
                 type_name = class(var_inst);
                 loaded{p} = fe_multi_result_to_table(loaded{p}, type_name);
-            end
-
-            % Apply column selection if specified (only BaseVariable subclasses have this)
-            if isa(var_inst, 'scidb.BaseVariable') && ~isempty(var_inst.selected_columns)
+            elseif wants_table
+                type_name = class(var_inst);
+                loaded{p} = fe_multi_result_to_table(loaded{p}, type_name);
+            elseif has_col_sel
                 try
                     loaded{p} = apply_column_selection(loaded{p}, var_inst.selected_columns, input_names{p});
                 catch err
@@ -756,15 +785,44 @@ function [completed, skipped] = run_parallel(fn, combos, n_inputs, n_outputs, ..
                 end
             end
 
-            % Convert multi-result to table if requested
-            if ~isempty(as_table_set) && ismember(string(input_names{p}), as_table_set) ...
-                    && isa(loaded{p}, 'scidb.ThunkOutput') && numel(loaded{p}) > 1
+            % Handle as_table conversion and/or column selection
+            has_col_sel = isa(var_inst, 'scidb.BaseVariable') && ~isempty(var_inst.selected_columns);
+            wants_table = ~isempty(as_table_set) && ismember(string(input_names{p}), as_table_set) ...
+                    && isa(loaded{p}, 'scidb.ThunkOutput') && numel(loaded{p}) > 1;
+
+            if has_col_sel && wants_table
+                % Both active: filter each variable's data BEFORE building
+                % the table so metadata columns are preserved
+                cols = var_inst.selected_columns;
+                try
+                    for qi = 1:numel(loaded{p})
+                        tbl_i = loaded{p}(qi).data;
+                        if ~istable(tbl_i)
+                            error('scidb:for_each', ...
+                                'Column selection on ''%s'' requires table data, but loaded data is %s.', ...
+                                input_names{p}, class(tbl_i));
+                        end
+                        for ci = 1:numel(cols)
+                            if ~ismember(cols(ci), tbl_i.Properties.VariableNames)
+                                error('scidb:for_each', ...
+                                    'Column ''%s'' not found in ''%s''. Available columns: %s', ...
+                                    cols(ci), input_names{p}, strjoin(tbl_i.Properties.VariableNames, ', '));
+                            end
+                        end
+                        loaded{p}(qi).data = tbl_i(:, cols);
+                    end
+                catch err
+                    fprintf('[skip] %s: column selection failed for %s: %s\n', ...
+                        metadata_str, input_names{p}, err.message);
+                    load_failed = true;
+                    break;
+                end
                 type_name = class(var_inst);
                 loaded{p} = fe_multi_result_to_table(loaded{p}, type_name);
-            end
-
-            % Apply column selection if specified (only BaseVariable subclasses have this)
-            if isa(var_inst, 'scidb.BaseVariable') && ~isempty(var_inst.selected_columns)
+            elseif wants_table
+                type_name = class(var_inst);
+                loaded{p} = fe_multi_result_to_table(loaded{p}, type_name);
+            elseif has_col_sel
                 try
                     loaded{p} = apply_column_selection(loaded{p}, var_inst.selected_columns, input_names{p});
                 catch err
@@ -1155,6 +1213,7 @@ function pieces = split_for_distribute(data)
 %   - Numeric matrices (2D): split by row
 %   - Cell arrays: split by element
 %   - MATLAB tables: split by row (each row becomes a single-row table)
+%   - String vectors (1D): split by element
 %
 %   Returns a cell array of individual pieces.
     if istable(data)
@@ -1180,6 +1239,8 @@ function pieces = split_for_distribute(data)
         end
     elseif iscell(data)
         pieces = data(:)';  % ensure row cell array
+    elseif isstring(data)
+        pieces = cellstr(data)';
     else
         error('scidb:for_each', ...
             'distribute does not support type %s. Supported types: numeric array, cell array, table.', ...
@@ -1191,6 +1252,26 @@ end
 function tbl = fe_multi_result_to_table(results, type_name)
 %FE_MULTI_RESULT_TO_TABLE  Convert an array of ThunkOutput to a MATLAB table.
     n = numel(results);
+
+    % Sort results by metadata for deterministic row order
+    if n > 1
+        meta_fields = sort(fieldnames(results(1).metadata));
+        keys = strings(n, 1);
+        for i = 1:n
+            parts = cell(1, numel(meta_fields));
+            for f = 1:numel(meta_fields)
+                val = results(i).metadata.(meta_fields{f});
+                if isnumeric(val)
+                    parts{f} = sprintf('%s=%020.10f', meta_fields{f}, val);
+                else
+                    parts{f} = sprintf('%s=%s', meta_fields{f}, string(val));
+                end
+            end
+            keys(i) = strjoin(string(parts), '|');
+        end
+        [~, order] = sort(keys);
+        results = results(order);
+    end
 
     % Check if all data items are tables — if so, flatten into top-level columns
     all_tables = true;
