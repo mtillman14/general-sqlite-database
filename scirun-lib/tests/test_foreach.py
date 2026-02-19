@@ -957,7 +957,7 @@ class TestForEachDistribute:
             inputs={"x": MockVariableA},
             outputs=[MockOutput],
             db=db,
-            distribute="cycle",
+            distribute=True,
             subject=[1],
             trial=[1],
         )
@@ -982,7 +982,7 @@ class TestForEachDistribute:
             inputs={"x": MockVariableA},
             outputs=[MockOutput],
             db=db,
-            distribute="cycle",
+            distribute=True,
             subject=[1],
             trial=[1],
         )
@@ -1005,7 +1005,7 @@ class TestForEachDistribute:
             inputs={"x": MockVariableA},
             outputs=[MockOutput],
             db=db,
-            distribute="cycle",
+            distribute=True,
             subject=[1],
             trial=[1],
         )
@@ -1029,7 +1029,7 @@ class TestForEachDistribute:
             inputs={"x": MockVariableA},
             outputs=[MockOutput],
             db=db,
-            distribute="cycle",
+            distribute=True,
             subject=[1],
             trial=[1],
         )
@@ -1054,7 +1054,7 @@ class TestForEachDistribute:
             inputs={"x": MockVariableA},
             outputs=[MockOutput],
             db=db,
-            distribute="cycle",
+            distribute=True,
             subject=[1, 2],
             trial=[1],
         )
@@ -1081,7 +1081,7 @@ class TestForEachDistribute:
             inputs={"x": MockVariableA},
             outputs=[MockOutput, MockOutputB],
             db=db,
-            distribute="cycle",
+            distribute=True,
             subject=[1],
             trial=[1],
         )
@@ -1105,7 +1105,7 @@ class TestForEachDistribute:
             inputs={"x": MockVariableA, "smoothing": 0.5},
             outputs=[MockOutput],
             db=db,
-            distribute="cycle",
+            distribute=True,
             subject=[1],
             trial=[1],
         )
@@ -1127,7 +1127,7 @@ class TestForEachDistribute:
             inputs={"x": MockVariableA},
             outputs=[MockOutput],
             db=db,
-            distribute="cycle",
+            distribute=True,
             subject=[1],
             trial=[1],
         )
@@ -1135,75 +1135,73 @@ class TestForEachDistribute:
         cycles = [d["metadata"]["cycle"] for d in MockOutput.saved_data]
         assert cycles == [1, 2, 3, 4]
 
-    def test_distribute_validation_not_schema_key(self):
-        """Should raise ValueError if distribute is not a valid schema key."""
+    def test_distribute_trial_level_to_cycle(self):
+        """With [subject, trial, cycle], running at trial level distributes to cycle."""
+        import numpy as np
+
+        db = self._make_mock_db(["subject", "trial", "cycle"])
+
+        def process(x):
+            return np.array([10.0, 20.0, 30.0])
+
+        for_each(
+            process,
+            inputs={"x": MockVariableA},
+            outputs=[MockOutput],
+            db=db,
+            distribute=True,
+            subject=[1],
+            trial=[1],
+        )
+
+        assert len(MockOutput.saved_data) == 3
+        for i, entry in enumerate(MockOutput.saved_data):
+            assert entry["metadata"]["cycle"] == i + 1
+            assert entry["metadata"]["subject"] == 1
+            assert entry["metadata"]["trial"] == 1
+            assert float(entry["data"]) == (i + 1) * 10.0
+
+    def test_distribute_subject_level_to_trial(self):
+        """With [subject, trial, cycle], running at subject level distributes to trial."""
+        import numpy as np
+
+        db = self._make_mock_db(["subject", "trial", "cycle"])
+
+        def process(x):
+            return np.array([100.0, 200.0, 300.0])
+
+        for_each(
+            process,
+            inputs={"x": MockVariableA},
+            outputs=[MockOutput],
+            db=db,
+            distribute=True,
+            subject=[1],
+        )
+
+        assert len(MockOutput.saved_data) == 3
+        for i, entry in enumerate(MockOutput.saved_data):
+            assert entry["metadata"]["trial"] == i + 1
+            assert entry["metadata"]["subject"] == 1
+            assert "cycle" not in entry["metadata"]
+
+    def test_distribute_no_deeper_level(self):
+        """Should raise ValueError when iterating at deepest schema level."""
         db = self._make_mock_db(["subject", "trial", "cycle"])
 
         def process(x):
             return [1, 2]
 
-        with pytest.raises(ValueError, match="not a valid schema key"):
+        with pytest.raises(ValueError, match="deepest schema key"):
             for_each(
                 process,
                 inputs={"x": MockVariableA},
                 outputs=[MockOutput],
                 db=db,
-                distribute="invalid_key",
-                subject=[1],
-            )
-
-    def test_distribute_validation_in_iterables(self):
-        """Should raise ValueError if distribute key is also iterated."""
-        db = self._make_mock_db(["subject", "trial", "cycle"])
-
-        def process(x):
-            return [1, 2]
-
-        with pytest.raises(ValueError, match="must not also appear"):
-            for_each(
-                process,
-                inputs={"x": MockVariableA},
-                outputs=[MockOutput],
-                db=db,
-                distribute="trial",
-                subject=[1],
-                trial=[1, 2],
-            )
-
-    def test_distribute_validation_not_deeper(self):
-        """Should raise ValueError if distribute level is shallower than iteration."""
-        db = self._make_mock_db(["subject", "trial", "cycle"])
-
-        def process(x):
-            return [1, 2]
-
-        with pytest.raises(ValueError, match="must be deeper"):
-            for_each(
-                process,
-                inputs={"x": MockVariableA},
-                outputs=[MockOutput],
-                db=db,
-                distribute="subject",
-                trial=[1, 2],
-            )
-
-    def test_distribute_validation_same_level(self):
-        """Should raise ValueError if distribute is at same level as deepest iteration."""
-        db = self._make_mock_db(["subject", "trial", "cycle"])
-
-        def process(x):
-            return [1, 2]
-
-        # distribute='trial' when trial is the deepest iterated key
-        with pytest.raises(ValueError, match="must not also appear"):
-            for_each(
-                process,
-                inputs={"x": MockVariableA},
-                outputs=[MockOutput],
-                db=db,
-                distribute="trial",
+                distribute=True,
                 subject=[1],
                 trial=[1],
+                cycle=[1, 2],
             )
 
     def test_distribute_validation_no_db(self):
@@ -1219,7 +1217,7 @@ class TestForEachDistribute:
                     process,
                     inputs={"x": MockVariableA},
                     outputs=[MockOutput],
-                    distribute="cycle",
+                    distribute=True,
                     subject=[1],
                 )
 
@@ -1235,7 +1233,7 @@ class TestForEachDistribute:
             inputs={"x": MockVariableA},
             outputs=[MockOutput],
             db=db,
-            distribute="cycle",
+            distribute=True,
             dry_run=True,
             subject=[1],
             trial=[1],
@@ -1264,7 +1262,7 @@ class TestForEachDistribute:
             inputs={"x": MockVariableA},
             outputs=[MockOutput],
             db=db,
-            distribute="cycle",
+            distribute=True,
             save=False,
             subject=[1],
             trial=[1],
@@ -1285,7 +1283,7 @@ class TestForEachDistribute:
             inputs={"x": MockVariableA},
             outputs=[MockOutput],
             db=db,
-            distribute="cycle",
+            distribute=True,
             subject=[1],
             trial=[1],
         )
@@ -1313,7 +1311,7 @@ class TestForEachDistribute:
             inputs={"x": MockVariableA},
             outputs=[MockOutput],
             db=db,
-            distribute="cycle",
+            distribute=True,
             subject=[1],
             trial=[1],
         )
@@ -1336,7 +1334,7 @@ class TestForEachDistribute:
                 inputs={"x": MockVariableA, "cycle": 5},
                 outputs=[MockOutput],
                 db=db,
-                distribute="cycle",
+                distribute=True,
                 subject=[1],
                 trial=[1],
             )
@@ -1353,7 +1351,7 @@ class TestForEachDistribute:
             inputs={"x": MockVariableA},
             outputs=[MockOutput],
             db=db,
-            distribute="cycle",
+            distribute=True,
             subject=[1],
             trial=[1],
         )
@@ -1373,6 +1371,6 @@ class TestForEachDistribute:
                 inputs={"x": MockVariableA},
                 outputs=[MockOutput],
                 db=db,
-                distribute="cycle",
+                distribute=True,
                 some_non_schema_key=[1, 2],
             )

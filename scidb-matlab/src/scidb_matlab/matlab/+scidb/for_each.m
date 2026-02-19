@@ -38,12 +38,13 @@ function for_each(fn, inputs, outputs, varargin)
 %                       (no Thunks or PathInputs). With Parallel Computing
 %                       Toolbox, parfor runs in parallel; without it,
 %                       parfor silently runs serially. (default: false)
-%       distribute    - Schema key name to distribute outputs to. When set,
-%                       each output (vector/table) is split by element/row
-%                       and saved individually with the distribute key set
-%                       to the 1-based element index. The distribute key
-%                       must be deeper in the schema hierarchy than the
-%                       deepest iterated key. (default: '' = disabled)
+%       distribute    - If true, split each output (vector/table) by
+%                       element/row and save each piece at the schema level
+%                       immediately below the deepest iterated key, using
+%                       1-based indexing. For example, with schema
+%                       [subject, trial, cycle] and iteration at the trial
+%                       level, distribute=true saves each element/row as a
+%                       separate cycle (1, 2, 3, ...). (default: false)
 %       db            - Optional DatabaseManager to use for all load/save
 %                       operations instead of the global database
 %       (any other)   - Metadata iterables (numeric or string arrays)
@@ -152,9 +153,10 @@ function for_each(fn, inputs, outputs, varargin)
         end
     end
 
-    % Validate distribute parameter
+    % Validate distribute parameter and resolve target key
     distribute = opts.distribute;
-    if strlength(distribute) > 0
+    distribute_key = '';
+    if distribute
         if isempty(opts.db)
             dist_db = py.scidb.database.get_database();
         else
@@ -166,33 +168,20 @@ function for_each(fn, inputs, outputs, varargin)
         end
         schema_keys = [schema_keys{:}];
 
-        if ~ismember(distribute, schema_keys)
-            error('scidb:for_each', ...
-                'distribute=''%s'' is not a valid schema key. Valid schema keys: %s', ...
-                distribute, strjoin(schema_keys, ', '));
-        end
-
-        if ismember(distribute, meta_keys)
-            error('scidb:for_each', ...
-                'distribute=''%s'' must not also appear in metadata_iterables.', ...
-                distribute);
-        end
-
         iter_keys_in_schema = schema_keys(ismember(schema_keys, meta_keys));
         if isempty(iter_keys_in_schema)
             error('scidb:for_each', ...
-                'distribute=''%s'' requires at least one metadata_iterable that is a schema key.', ...
-                distribute);
+                'distribute=true requires at least one metadata_iterable that is a schema key.');
         end
         deepest_iterated = iter_keys_in_schema(end);
         deepest_idx = find(schema_keys == deepest_iterated, 1);
-        distribute_idx = find(schema_keys == distribute, 1);
 
-        if distribute_idx <= deepest_idx
+        if deepest_idx >= numel(schema_keys)
             error('scidb:for_each', ...
-                'distribute=''%s'' (position %d) must be deeper in the schema hierarchy than ''%s'' (position %d). Schema order: %s', ...
-                distribute, distribute_idx, deepest_iterated, deepest_idx, strjoin(schema_keys, ', '));
+                'distribute=true but ''%s'' is the deepest schema key. There is no lower level to distribute to. Schema order: %s', ...
+                deepest_iterated, strjoin(schema_keys, ', '));
         end
+        distribute_key = schema_keys(deepest_idx + 1);
     end
 
     % Compute total iterations
@@ -223,10 +212,10 @@ function for_each(fn, inputs, outputs, varargin)
     end
 
     % Check distribute doesn't conflict with a constant input name
-    if strlength(distribute) > 0 && ismember(distribute, string(constant_names))
+    if strlength(distribute_key) > 0 && ismember(distribute_key, string(constant_names))
         error('scidb:for_each', ...
-            'distribute=''%s'' conflicts with a constant input named ''%s''.', ...
-            distribute, distribute);
+            'distribute target ''%s'' conflicts with a constant input named ''%s''.', ...
+            distribute_key, distribute_key);
     end
 
     % Resolve as_table: true → all loadable input names, false/empty → none
@@ -247,8 +236,8 @@ function for_each(fn, inputs, outputs, varargin)
         fprintf('[dry-run] %d iterations over: %s\n', total, strjoin(meta_keys, ', '));
         fprintf('[dry-run] inputs: %s\n', format_inputs(inputs, input_names));
         fprintf('[dry-run] outputs: {%s}\n', format_outputs(outputs));
-        if strlength(distribute) > 0
-            fprintf('[dry-run] distribute: ''%s'' (split outputs by element/row, 1-based)\n', distribute);
+        if strlength(distribute_key) > 0
+            fprintf('[dry-run] distribute: ''%s'' (split outputs by element/row, 1-based)\n', distribute_key);
         end
         fprintf('\n');
     end
@@ -419,7 +408,7 @@ function for_each(fn, inputs, outputs, varargin)
         % --- Dry-run iteration ---
         if dry_run
             print_dry_run_iteration(inputs, input_names, outputs, ...
-                metadata, meta_keys, metadata_str, constant_nv, should_pass_metadata, distribute);
+                metadata, meta_keys, metadata_str, constant_nv, should_pass_metadata, distribute_key);
             completed = completed + 1;
             continue;
         end
@@ -552,7 +541,7 @@ function for_each(fn, inputs, outputs, varargin)
 
         % --- Save outputs (include constants in metadata) ---
         if do_save
-            if strlength(distribute) > 0
+            if strlength(distribute_key) > 0
                 % Distribute mode: split each output and save pieces individually
                 for o = 1:min(n_outputs, numel(result))
                     out_inst = outputs{o};
@@ -571,17 +560,17 @@ function for_each(fn, inputs, outputs, varargin)
                     end
 
                     for idx = 1:numel(pieces)
-                        dist_nv = [save_nv, {char(distribute), idx}];
+                        dist_nv = [save_nv, {char(distribute_key), idx}];
                         try
                             out_inst.save(pieces{idx}, dist_nv{:}, db_nv{:});
-                            dist_parts = [meta_parts, {sprintf('%s=%d', distribute, idx)}];
+                            dist_parts = [meta_parts, {sprintf('%s=%d', distribute_key, idx)}];
                             for ci = 1:2:numel(constant_nv)
                                 dist_parts{end+1} = sprintf('%s=%s', constant_nv{ci}, format_value(constant_nv{ci+1})); %#ok<AGROW>
                             end
                             fprintf('[save] %s: %s\n', strjoin(dist_parts, ', '), class(out_inst));
                         catch err
                             fprintf('[error] %s, %s=%d: failed to save %s: %s\n', ...
-                                metadata_str, distribute, idx, class(out_inst), err.message);
+                                metadata_str, distribute_key, idx, class(out_inst), err.message);
                         end
                     end
                 end
@@ -867,7 +856,7 @@ function [meta_args, opts] = split_options(varargin)
     opts.as_table = string.empty;
     opts.db = [];
     opts.parallel = false;
-    opts.distribute = '';
+    opts.distribute = false;
 
     meta_args = {};
     i = 1;
@@ -913,7 +902,7 @@ function [meta_args, opts] = split_options(varargin)
                     i = i + 2;
                     continue;
                 case "distribute"
-                    opts.distribute = string(varargin{i+1});
+                    opts.distribute = logical(varargin{i+1});
                     i = i + 2;
                     continue;
             end

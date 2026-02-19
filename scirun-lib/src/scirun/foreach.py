@@ -15,7 +15,7 @@ def for_each(
     pass_metadata: bool | None = None,
     as_table: list[str] | bool | None = None,
     db=None,
-    distribute: str | None = None,
+    distribute: bool = False,
     **metadata_iterables: list[Any],
 ) -> None:
     """
@@ -56,13 +56,13 @@ def for_each(
                   version_id, and a data column named after the variable type.
         db: Optional DatabaseManager instance to use for all load/save
             operations instead of the global database.
-        distribute: Schema key name to distribute outputs to. When set,
-                    each output (vector/table) is split by element/row
-                    and saved individually with the distribute key set to
-                    the 1-based element index. The distribute key must be
-                    deeper in the schema hierarchy than the deepest
-                    iterated key. No lineage is tracked for distributed
-                    saves.
+        distribute: If True, split each output (vector/table) by element/row
+                    and save each piece at the schema level immediately
+                    below the deepest iterated key, using 1-based indexing.
+                    For example, with schema [subject, trial, cycle] and
+                    iteration at the trial level, distribute=True saves
+                    each element/row as a separate cycle (1, 2, 3, ...).
+                    No lineage is tracked for distributed saves.
         **metadata_iterables: Iterables of metadata values to combine
 
     Example:
@@ -105,8 +105,9 @@ def for_each(
                 print(f"[warn] no values found for '{key}' in database, 0 iterations")
             metadata_iterables[key] = values
 
-    # Validate distribute parameter
-    if distribute is not None:
+    # Validate distribute parameter and resolve target key
+    distribute_key = None
+    if distribute:
         _dist_db = db
         if _dist_db is None:
             try:
@@ -114,41 +115,28 @@ def for_each(
                 _dist_db = get_database()
             except Exception:
                 raise ValueError(
-                    f"distribute='{distribute}' requires access to dataset_schema_keys, "
-                    f"but no database is available. Either pass db= to for_each or "
-                    f"call configure_database() first."
+                    "distribute=True requires access to dataset_schema_keys, "
+                    "but no database is available. Either pass db= to for_each or "
+                    "call configure_database() first."
                 )
         schema_keys = _dist_db.dataset_schema_keys
-
-        if distribute not in schema_keys:
-            raise ValueError(
-                f"distribute='{distribute}' is not a valid schema key. "
-                f"Valid schema keys: {schema_keys}"
-            )
-
-        if distribute in metadata_iterables:
-            raise ValueError(
-                f"distribute='{distribute}' must not also appear in metadata_iterables. "
-                f"The distribute key is automatically generated during save, not iterated over."
-            )
 
         iter_keys_in_schema = [k for k in schema_keys if k in metadata_iterables]
         if not iter_keys_in_schema:
             raise ValueError(
-                f"distribute='{distribute}' requires at least one metadata_iterable "
-                f"that is a schema key."
+                "distribute=True requires at least one metadata_iterable "
+                "that is a schema key."
             )
         deepest_iterated = iter_keys_in_schema[-1]
         deepest_idx = schema_keys.index(deepest_iterated)
-        distribute_idx = schema_keys.index(distribute)
 
-        if distribute_idx <= deepest_idx:
+        if deepest_idx + 1 >= len(schema_keys):
             raise ValueError(
-                f"distribute='{distribute}' (position {distribute_idx}) must be deeper "
-                f"in the schema hierarchy than the deepest iterated key "
-                f"'{deepest_iterated}' (position {deepest_idx}). "
+                f"distribute=True but '{deepest_iterated}' is the deepest schema key. "
+                f"There is no lower level to distribute to. "
                 f"Schema order: {schema_keys}"
             )
+        distribute_key = schema_keys[deepest_idx + 1]
 
     # Separate loadable inputs from constants
     loadable_inputs = {}
@@ -160,9 +148,9 @@ def for_each(
             constant_inputs[param_name] = var_spec
 
     # Check distribute doesn't conflict with a constant input name
-    if distribute is not None and distribute in constant_inputs:
+    if distribute_key is not None and distribute_key in constant_inputs:
         raise ValueError(
-            f"distribute='{distribute}' conflicts with a constant input named '{distribute}'."
+            f"distribute target '{distribute_key}' conflicts with a constant input named '{distribute_key}'."
         )
 
     # Build set of input names to convert to DataFrame
@@ -189,8 +177,8 @@ def for_each(
         print(f"[dry-run] {total} iterations over: {keys}")
         print(f"[dry-run] inputs: {_format_inputs(inputs)}")
         print(f"[dry-run] outputs: {[o.__name__ for o in outputs]}")
-        if distribute is not None:
-            print(f"[dry-run] distribute: '{distribute}' (split outputs by element/row, 1-based)")
+        if distribute_key is not None:
+            print(f"[dry-run] distribute: '{distribute_key}' (split outputs by element/row, 1-based)")
         print()
 
     completed = 0
@@ -201,7 +189,7 @@ def for_each(
         metadata_str = ", ".join(f"{k}={v}" for k, v in metadata.items())
 
         if dry_run:
-            _print_dry_run_iteration(inputs, outputs, metadata, constant_inputs, should_pass_metadata, distribute)
+            _print_dry_run_iteration(inputs, outputs, metadata, constant_inputs, should_pass_metadata, distribute_key)
             completed += 1
             continue
 
@@ -271,7 +259,7 @@ def for_each(
         if save:
             db_kwargs = {"db": db} if db is not None else {}
 
-            if distribute is not None:
+            if distribute_key is not None:
                 # Distribute mode: split each output and save pieces individually
                 for output_type, output_value in zip(outputs, result):
                     raw_value = _unwrap_for_distribute(output_value)
@@ -282,7 +270,7 @@ def for_each(
                         continue
 
                     for i, piece in enumerate(pieces):
-                        dist_metadata = {**save_metadata, distribute: i + 1}
+                        dist_metadata = {**save_metadata, distribute_key: i + 1}
                         try:
                             output_type.save(piece, **db_kwargs, **dist_metadata)
                             dist_str = ", ".join(f"{k}={v}" for k, v in dist_metadata.items())
