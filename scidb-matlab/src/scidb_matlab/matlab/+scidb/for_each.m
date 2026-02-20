@@ -1405,7 +1405,13 @@ function tbl = fe_multi_result_to_table(results, type_name)
                 else
                     val = missing;
                 end
-                meta_tbl.(meta_fields{f}) = repmat({val}, nr, 1);
+                if isnumeric(val)
+                    meta_tbl.(meta_fields{f}) = repmat(double(val), nr, 1);
+                elseif isstring(val) || ischar(val)
+                    meta_tbl.(meta_fields{f}) = repmat(string(val), nr, 1);
+                else
+                    meta_tbl.(meta_fields{f}) = repmat({val}, nr, 1);
+                end
             end
 
             % version_id
@@ -1433,7 +1439,7 @@ function tbl = fe_multi_result_to_table(results, type_name)
                     col_data{i} = missing;
                 end
             end
-            tbl.(meta_fields{f}) = col_data;
+            tbl.(meta_fields{f}) = normalize_cell_column(col_data);
         end
 
         % version_id column
@@ -1452,7 +1458,7 @@ function tbl = fe_multi_result_to_table(results, type_name)
         for i = 1:n
             data_col{i} = results(i).data;
         end
-        tbl.(col_name) = data_col;
+        tbl.(col_name) = normalize_cell_column(data_col);
     end
 end
 
@@ -1959,6 +1965,32 @@ function result = merge_parts_columnwise(parts, part_names, param_name)
             tbl_i = repmat(tbl_i, target_len, 1);
         end
         result = [result, tbl_i]; %#ok<AGROW>
+    end
+end
+
+
+function col = normalize_cell_column(col_data)
+%NORMALIZE_CELL_COLUMN  Convert a cell column to its native type.
+%   All scalar numeric cells → numeric array, all scalar string/char cells →
+%   string array, otherwise leave as cell array.
+    n = numel(col_data);
+    all_scalar_numeric = true;
+    all_string = true;
+    for i = 1:n
+        v = col_data{i};
+        if ~(isnumeric(v) && isscalar(v) && ~ismissing(v))
+            all_scalar_numeric = false;
+        end
+        if ~(isstring(v) || ischar(v))
+            all_string = false;
+        end
+    end
+    if all_scalar_numeric
+        col = cell2mat(col_data);
+    elseif all_string
+        col = string(col_data);
+    else
+        col = col_data;
     end
 end
 

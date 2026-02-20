@@ -54,6 +54,38 @@ classdef BaseVariable < dynamicprops
         end
 
         % -----------------------------------------------------------------
+        % clear
+        % -----------------------------------------------------------------
+        function [] = clear(obj, confirm)
+        %CLEAR  Delete all data for this variable type and re-register.
+        %
+        %   TypeClass().clear()         % prompts for confirmation
+        %   TypeClass().clear('y')      % skips prompt
+        %
+        %   Drops the data table and removes all entries from _variables
+        %   and _record_metadata for this variable type.
+
+            type_name = class(obj);
+            duck = py.getattr(scidb.get_database(), '_duck');
+
+            if nargin < 2
+                confirm = input(['This action will irreversibly delete all data for variable "' type_name '"! Type "y" (with quotes) to proceed (default n): ']);
+                if isempty(confirm)
+                    confirm = 'n';
+                end
+            end
+            if ~startsWith(confirm, 'y')
+                disp(['Aborted ' type_name '.clear()']);
+                return;
+            end
+
+            duck.con.execute(['DROP TABLE IF EXISTS "' type_name '_data"']);
+            duck.con.execute(['DELETE FROM _variables WHERE variable_name = ''' type_name '_data''']);
+            duck.con.execute(['DELETE FROM _record_metadata WHERE variable_name = ''' type_name '_data''']);
+            fprintf('Cleared all data for %s\n', type_name);
+        end
+
+        % -----------------------------------------------------------------
         % save
         % -----------------------------------------------------------------
         function record_id = save(obj, data, varargin)
@@ -548,7 +580,7 @@ classdef BaseVariable < dynamicprops
             py_val = scidb.internal.to_python(other);
             py_filter = py.scidb.filters.VariableFilter(py_class, '>=', py_val);
             filt = scidb.Filter(py_filter);
-        end
+        end        
 
         % -----------------------------------------------------------------
         % disp
@@ -834,16 +866,22 @@ function tbl = multi_result_to_table(results, type_name)
                 col_data{i} = missing;
             end
         end
-        % Try to convert to numeric if all values are numeric
-        all_numeric = true;
+        % Convert to native type: scalar numeric → double array, string → string array
+        all_scalar_numeric = true;
+        all_string = true;
         for i = 1:n
-            if ~isnumeric(col_data{i}) || ismissing(col_data{i})
-                all_numeric = false;
-                break;
+            v = col_data{i};
+            if ~(isnumeric(v) && isscalar(v) && ~ismissing(v))
+                all_scalar_numeric = false;
+            end
+            if ~(isstring(v) || ischar(v))
+                all_string = false;
             end
         end
-        if all_numeric
+        if all_scalar_numeric
             tbl.(meta_fields{f}) = cell2mat(col_data);
+        elseif all_string
+            tbl.(meta_fields{f}) = string(col_data);
         else
             tbl.(meta_fields{f}) = col_data;
         end
@@ -866,5 +904,31 @@ function tbl = multi_result_to_table(results, type_name)
     for i = 1:n
         data_col{i} = results(i).data;
     end
-    tbl.(col_name) = data_col;
+    tbl.(col_name) = normalize_data_column(data_col);
+end
+
+
+function col = normalize_data_column(col_data)
+%NORMALIZE_DATA_COLUMN  Convert a cell column to its native type.
+%   All scalar numeric cells → numeric array, all scalar string/char cells →
+%   string array, otherwise leave as cell array.
+    n = numel(col_data);
+    all_scalar_numeric = true;
+    all_string = true;
+    for i = 1:n
+        v = col_data{i};
+        if ~(isnumeric(v) && isscalar(v) && ~ismissing(v))
+            all_scalar_numeric = false;
+        end
+        if ~(isstring(v) || ischar(v))
+            all_string = false;
+        end
+    end
+    if all_scalar_numeric
+        col = cell2mat(col_data);
+    elseif all_string
+        col = string(col_data);
+    else
+        col = col_data;
+    end
 end

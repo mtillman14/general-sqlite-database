@@ -219,6 +219,88 @@ classdef TestAsTable < matlab.unittest.TestCase
             testCase.verifyEqual(received.b, [10.0; 20.0; 30.0; 40.0], 'AbsTol', 1e-10);
         end
 
+        function test_as_table_column_types(testCase)
+            %% as_table=true should return string columns for string metadata,
+            %  numeric columns for numeric metadata, and numeric data columns
+            %  for scalar numeric data — not cell arrays.
+            ScalarVar().save(10, 'subject', 1, 'session', 'A');
+            ScalarVar().save(20, 'subject', 2, 'session', 'A');
+            ScalarVar().save(30, 'subject', 1, 'session', 'B');
+
+            % --- Test via load(as_table=true) ---
+            tbl = ScalarVar().load('as_table', true);
+            testCase.verifyTrue(isnumeric(tbl.subject), ...
+                'Numeric metadata column should be numeric, not cell');
+            testCase.verifyTrue(isstring(tbl.session), ...
+                'String metadata column should be string, not cell');
+            testCase.verifyTrue(isnumeric(tbl.ScalarVar), ...
+                'Scalar numeric data column should be numeric, not cell');
+            testCase.verifyEqual(sort(tbl.ScalarVar), [10; 20; 30]);
+
+            % --- Test via for_each(as_table=true) with scalar data ---
+            received = [];
+
+            function result = capture_table(values)
+                received = values;
+                result = 0;
+            end
+
+            scidb.for_each(@capture_table, ...
+                struct('values', ScalarVar()), ...
+                {RawSignal()}, ...
+                'as_table', true, ...
+                'subject', 1);
+
+            testCase.verifyTrue(istable(received));
+            testCase.verifyTrue(isnumeric(received.subject), ...
+                'for_each as_table: numeric metadata column should be numeric, not cell');
+            testCase.verifyTrue(isstring(received.session), ...
+                'for_each as_table: string metadata column should be string, not cell');
+            testCase.verifyTrue(isnumeric(received.ScalarVar), ...
+                'for_each as_table: scalar numeric data column should be numeric, not cell');
+        end
+
+        function test_as_table_array_data_stays_cell(testCase)
+            %% as_table=true with non-scalar data should keep data as cell column
+            RawSignal().save([1 2 3], 'subject', 1, 'session', 'A');
+            RawSignal().save([4 5 6], 'subject', 1, 'session', 'B');
+
+            tbl = RawSignal().load('as_table', true, 'subject', 1);
+            testCase.verifyTrue(iscell(tbl.RawSignal), ...
+                'Non-scalar array data should remain as cell column');
+        end
+
+        function test_for_each_as_table_flatten_column_types(testCase)
+            %% as_table=true with table data (flatten mode) should also
+            %  return proper typed columns for metadata.
+            tbl1 = table([10; 20], 'VariableNames', {'value'});
+            tbl2 = table([30; 40], 'VariableNames', {'value'});
+            RawSignal().save(tbl1, 'subject', 1, 'session', 'A');
+            RawSignal().save(tbl2, 'subject', 1, 'session', 'B');
+
+            received = [];
+
+            function result = capture_flat(values)
+                received = values;
+                result = 0;
+            end
+
+            scidb.for_each(@capture_flat, ...
+                struct('values', RawSignal()), ...
+                {ScalarVar()}, ...
+                'as_table', true, ...
+                'subject', 1);
+
+            testCase.verifyTrue(istable(received));
+            % Flatten mode: table data gets merged with metadata columns
+            testCase.verifyTrue(isnumeric(received.subject), ...
+                'Flatten mode: numeric metadata should be numeric, not cell');
+            testCase.verifyTrue(isstring(received.session), ...
+                'Flatten mode: string metadata should be string, not cell');
+            testCase.verifyTrue(isnumeric(received.value), ...
+                'Flatten mode: numeric data column should be numeric');
+        end
+
         function test_as_table_false_with_column_selection_returns_vector(testCase)
             %% as_table=false + single column selection should return a
             %  plain vector (no metadata columns) — existing behavior.
