@@ -12,7 +12,8 @@
       "Bash(git push:*)",
       "Bash(xargs cat:*)",
       "Bash(grep:*)",
-      "Bash(python -m pytest tests/ -x -v)"
+      "Bash(python -m pytest tests/ -x -v)",
+      "Bash(python -c \"import sys; sys.path.insert\\(0, ''scidb-matlab/src''\\); from scidb_matlab.bridge import load_and_extract; import inspect; print\\(inspect.signature\\(load_and_extract\\)\\)\")"
     ]
   }
 }

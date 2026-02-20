@@ -281,7 +281,7 @@ classdef BaseVariable < dynamicprops
             type_name = class(obj);
             py_class = scidb.internal.ensure_registered(type_name);
 
-            [metadata_args, version, as_table, db_val] = split_load_args(varargin{:});
+            [metadata_args, version, as_table, db_val, where] = split_load_args(varargin{:});
             py_metadata = scidb.internal.metadata_to_pydict(metadata_args{:});
 
             if isempty(db_val)
@@ -299,9 +299,16 @@ classdef BaseVariable < dynamicprops
 
             % Query all matching records (latest version per parameter set)
             % load_and_extract keeps generator materialization in Python
-            bulk = py.scidb_matlab.bridge.load_and_extract( ...
-                py_class, py_metadata, ...
-                pyargs('version_id', 'latest', 'db', py_db));
+            if isempty(where)
+                bulk = py.scidb_matlab.bridge.load_and_extract( ...
+                    py_class, py_metadata, ...
+                    pyargs('version_id', 'latest', 'db', py_db));
+            else
+                bulk = py.scidb_matlab.bridge.load_and_extract( ...
+                    py_class, py_metadata, ...
+                    pyargs('version_id', 'latest', 'db', py_db, ...
+                           'where', where.py_filter));
+            end
             n = int64(bulk{'n'});
 
             if n == 0
@@ -349,7 +356,7 @@ classdef BaseVariable < dynamicprops
             type_name = class(obj);
             py_class = scidb.internal.ensure_registered(type_name);
 
-            [metadata_args, py_version_id, as_table, db_val] = scidb.internal.split_load_all_args(varargin{:});
+            [metadata_args, py_version_id, as_table, db_val, where] = scidb.internal.split_load_all_args(varargin{:});
             py_metadata = scidb.internal.metadata_to_pydict(metadata_args{:});
 
             if isempty(db_val)
@@ -358,9 +365,16 @@ classdef BaseVariable < dynamicprops
                 py_db = db_val;
             end
             % load_and_extract keeps generator materialization in Python
-            bulk = py.scidb_matlab.bridge.load_and_extract( ...
-                py_class, py_metadata, ...
-                pyargs('version_id', py_version_id, 'db', py_db));
+            if isempty(where)
+                bulk = py.scidb_matlab.bridge.load_and_extract( ...
+                    py_class, py_metadata, ...
+                    pyargs('version_id', py_version_id, 'db', py_db));
+            else
+                bulk = py.scidb_matlab.bridge.load_and_extract( ...
+                    py_class, py_metadata, ...
+                    pyargs('version_id', py_version_id, 'db', py_db, ...
+                           'where', where.py_filter));
+            end
             results_arr = scidb.BaseVariable.wrap_py_vars_batch(bulk);
 
             if as_table && numel(results_arr) > 1
@@ -464,6 +478,76 @@ classdef BaseVariable < dynamicprops
             end
 
             
+        end
+
+        % -----------------------------------------------------------------
+        % Comparison operators (for where= filter syntax)
+        % -----------------------------------------------------------------
+        function filt = eq(obj, other)
+        %EQ  Create a VariableFilter: TypeClass() == value
+        %
+        %   FILT = TypeClass() == value
+        %
+        %   Returns a scidb.Filter that can be passed to load/load_all
+        %   via the 'where' key.
+            if isa(other, 'scidb.BaseVariable')
+                filt = builtin('eq', obj, other);
+                return;
+            end
+            type_name = class(obj);
+            py_class = scidb.internal.ensure_registered(type_name);
+            py_val = scidb.internal.to_python(other);
+            py_filter = py.scidb.filters.VariableFilter(py_class, '==', py_val);
+            filt = scidb.Filter(py_filter);
+        end
+
+        function filt = ne(obj, other)
+        %NE  Create a VariableFilter: TypeClass() ~= value
+            if isa(other, 'scidb.BaseVariable')
+                filt = builtin('ne', obj, other);
+                return;
+            end
+            type_name = class(obj);
+            py_class = scidb.internal.ensure_registered(type_name);
+            py_val = scidb.internal.to_python(other);
+            py_filter = py.scidb.filters.VariableFilter(py_class, '!=', py_val);
+            filt = scidb.Filter(py_filter);
+        end
+
+        function filt = lt(obj, other)
+        %LT  Create a VariableFilter: TypeClass() < value
+            type_name = class(obj);
+            py_class = scidb.internal.ensure_registered(type_name);
+            py_val = scidb.internal.to_python(other);
+            py_filter = py.scidb.filters.VariableFilter(py_class, '<', py_val);
+            filt = scidb.Filter(py_filter);
+        end
+
+        function filt = le(obj, other)
+        %LE  Create a VariableFilter: TypeClass() <= value
+            type_name = class(obj);
+            py_class = scidb.internal.ensure_registered(type_name);
+            py_val = scidb.internal.to_python(other);
+            py_filter = py.scidb.filters.VariableFilter(py_class, '<=', py_val);
+            filt = scidb.Filter(py_filter);
+        end
+
+        function filt = gt(obj, other)
+        %GT  Create a VariableFilter: TypeClass() > value
+            type_name = class(obj);
+            py_class = scidb.internal.ensure_registered(type_name);
+            py_val = scidb.internal.to_python(other);
+            py_filter = py.scidb.filters.VariableFilter(py_class, '>', py_val);
+            filt = scidb.Filter(py_filter);
+        end
+
+        function filt = ge(obj, other)
+        %GE  Create a VariableFilter: TypeClass() >= value
+            type_name = class(obj);
+            py_class = scidb.internal.ensure_registered(type_name);
+            py_val = scidb.internal.to_python(other);
+            py_filter = py.scidb.filters.VariableFilter(py_class, '>=', py_val);
+            filt = scidb.Filter(py_filter);
         end
 
         % -----------------------------------------------------------------
@@ -675,11 +759,12 @@ end
 % Local helper functions
 % =========================================================================
 
-function [metadata_args, version, as_table, db] = split_load_args(varargin)
-%SPLIT_LOAD_ARGS  Separate 'version', 'as_table', and 'db' from metadata args.
+function [metadata_args, version, as_table, db, where] = split_load_args(varargin)
+%SPLIT_LOAD_ARGS  Separate 'version', 'as_table', 'db', and 'where' from metadata args.
     version = "latest";
     as_table = false;
     db = [];
+    where = [];
     metadata_args = {};
 
     i = 1;
@@ -695,6 +780,9 @@ function [metadata_args, version, as_table, db] = split_load_args(varargin)
             i = i + 2;
         elseif strcmpi(key, 'db') && i < numel(varargin)
             db = varargin{i+1};
+            i = i + 2;
+        elseif strcmpi(key, 'where') && i < numel(varargin)
+            where = varargin{i+1};
             i = i + 2;
         else
             metadata_args{end+1} = varargin{i};   %#ok<AGROW>

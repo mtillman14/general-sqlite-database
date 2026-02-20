@@ -413,7 +413,7 @@ def wrap_batch_bridge(py_vars_list):
     return result
 
 
-def load_and_extract(py_class, metadata_dict, version_id='latest', db=None):
+def load_and_extract(py_class, metadata_dict, version_id='latest', db=None, where=None):
     """Load all matching variables and extract fields in bulk.
 
     Combines load_all -> list -> wrap_batch_bridge in one Python call.
@@ -431,6 +431,8 @@ def load_and_extract(py_class, metadata_dict, version_id='latest', db=None):
         Version filter ('latest', 'all', or an integer).
     db : DatabaseManager or None
         Optional database; uses global default when None.
+    where : Filter or None
+        Optional where= filter (scidb.filters.Filter instance).
 
     Returns
     -------
@@ -441,7 +443,7 @@ def load_and_extract(py_class, metadata_dict, version_id='latest', db=None):
 
     _db = db if db is not None and not isinstance(db, type(None)) else get_database()
 
-    gen = _db.load_all(py_class, dict(metadata_dict), version_id=version_id)
+    gen = _db.load_all(py_class, dict(metadata_dict), version_id=version_id, where=where)
     py_vars = list(gen)  # materializes entirely in Python
     return wrap_batch_bridge(py_vars)
 

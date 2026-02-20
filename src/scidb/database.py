@@ -36,6 +36,26 @@ def _schema_str(value):
         return str(int(value))
     return str(value)
 
+
+def _from_schema_str(value):
+    """Convert a schema VARCHAR value back to a numeric type if possible.
+
+    Schema keys are stored as VARCHAR, so loaded values are always strings.
+    This restores the original type (int or float) so that user-facing
+    metadata has the same type as what was originally saved.
+    """
+    if not isinstance(value, str):
+        return value
+    try:
+        return int(value)
+    except (ValueError, TypeError):
+        pass
+    try:
+        return float(value)
+    except (ValueError, TypeError):
+        pass
+    return value
+
 # Add sub-package paths
 import sys
 _project_root = Path(__file__).parent.parent.parent
@@ -1508,7 +1528,7 @@ class DatabaseManager:
             if key in row.index:
                 val = row[key]
                 if val is not None and not (isinstance(val, float) and pd.isna(val)):
-                    schema[key] = _schema_str(val)
+                    schema[key] = _from_schema_str(val)
 
         vk_raw = row.get("version_keys")
         version = {}
@@ -2148,6 +2168,7 @@ class DatabaseManager:
         version: str = "latest",
         loc: Any = None,
         iloc: Any = None,
+        where=None,
     ) -> BaseVariable:
         """
         Load a single variable matching the given metadata.
@@ -2179,6 +2200,16 @@ class DatabaseManager:
                         f"No {variable_class.__name__} found matching metadata: {metadata}"
                     )
 
+            # Apply where= filter if provided
+            if where is not None:
+                allowed_schema_ids = where.resolve(self, variable_class, table_name)
+                records = records[records["schema_id"].isin(allowed_schema_ids)]
+                if len(records) == 0:
+                    raise NotFoundError(
+                        f"No {variable_class.__name__} found matching metadata: {metadata} "
+                        f"with the given where= filter."
+                    )
+
             # Take the first (latest) record
             row = records.iloc[0]
         except NotFoundError:
@@ -2197,6 +2228,7 @@ class DatabaseManager:
         variable_class: Type[BaseVariable],
         metadata: dict,
         version_id="all",
+        where=None,
     ):
         """
         Load all variables matching the given metadata as a generator.
@@ -2223,6 +2255,13 @@ class DatabaseManager:
 
         if len(records) == 0:
             return
+
+        # Apply where= filter if provided
+        if where is not None:
+            allowed_schema_ids = where.resolve(self, variable_class, table_name)
+            records = records[records["schema_id"].isin(allowed_schema_ids)]
+            if len(records) == 0:
+                return
 
         # --- Bulk loading path ---
 
@@ -2352,7 +2391,7 @@ class DatabaseManager:
             for sk in schema_keys:
                 val = getattr(row, sk, None)
                 if val is not None and not (isinstance(val, float) and pd.isna(val)):
-                    flat_metadata[sk] = _schema_str(val)
+                    flat_metadata[sk] = _from_schema_str(val)
             vk_raw = getattr(row, 'version_keys', None)
             if vk_raw is not None and isinstance(vk_raw, str):
                 flat_metadata.update(json.loads(vk_raw))

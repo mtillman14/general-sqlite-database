@@ -17,6 +17,7 @@ function results = run_tests()
     % pyenv('Version', pythonPath);
 
     this_dir = fileparts(mfilename('fullpath'));
+    addpath(genpath(this_dir));
 
     % Set up MATLAB and Python paths
     run(fullfile(this_dir, 'setup_paths.m'));

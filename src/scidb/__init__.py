@@ -50,6 +50,7 @@ from scirun import Fixed, Merge, for_each
 
 from .thunk import ThunkOutput, Thunk, thunk
 from .variable import BaseVariable
+from .filters import raw_sql
 
 __version__ = "0.1.0"
 
@@ -67,6 +68,8 @@ __all__ = [
     "thunk",
     "Thunk",
     "ThunkOutput",
+    # Filter utilities
+    "raw_sql",
     # Exceptions
     "SciDBError",
     "NotRegisteredError",

@@ -5,7 +5,51 @@ from typing import Any, Self
 import pandas as pd
 
 
-class BaseVariable:
+class VariableMeta(type):
+    """Metaclass for BaseVariable that enables class-level comparison operators.
+
+    This allows expressions like ``Side == "L"`` (at the class level, not
+    instance level) to produce ``VariableFilter`` objects for use in the
+    ``where=`` parameter of ``load()`` and ``load_all()``.
+
+    Class-to-class equality (e.g. ``Side == Side``) is preserved so that
+    class identity checks still work. Hashing is also preserved so that
+    variable classes can be used as dict keys.
+    """
+
+    def __eq__(cls, other):
+        if isinstance(other, type):
+            return type.__eq__(cls, other)
+        from .filters import VariableFilter
+        return VariableFilter(cls, "==", other)
+
+    def __ne__(cls, other):
+        if isinstance(other, type):
+            return type.__ne__(cls, other)
+        from .filters import VariableFilter
+        return VariableFilter(cls, "!=", other)
+
+    def __lt__(cls, other):
+        from .filters import VariableFilter
+        return VariableFilter(cls, "<", other)
+
+    def __le__(cls, other):
+        from .filters import VariableFilter
+        return VariableFilter(cls, "<=", other)
+
+    def __gt__(cls, other):
+        from .filters import VariableFilter
+        return VariableFilter(cls, ">", other)
+
+    def __ge__(cls, other):
+        from .filters import VariableFilter
+        return VariableFilter(cls, ">=", other)
+
+    def __hash__(cls):
+        return type.__hash__(cls)
+
+
+class BaseVariable(metaclass=VariableMeta):
     """
     Base class for all database-storable variable types.
 
@@ -239,6 +283,7 @@ class BaseVariable:
         loc: Any | None = None,
         iloc: Any | None = None,
         as_table: bool = False,
+        where=None,
         db=None,
         **metadata,
     ) -> "Self | list[Self] | pd.DataFrame":
@@ -308,7 +353,7 @@ class BaseVariable:
         # Query all matching records (latest version per parameter set)
         from .exceptions import NotFoundError
 
-        results = list(_db.load_all(cls, metadata, version_id="latest"))
+        results = list(_db.load_all(cls, metadata, version_id="latest", where=where))
 
         if not results:
             raise NotFoundError(
@@ -317,7 +362,7 @@ class BaseVariable:
         elif len(results) == 1:
             # Single match → return variable directly (with loc/iloc support)
             if loc is not None or iloc is not None:
-                return _db.load(cls, metadata, version=version, loc=loc, iloc=iloc)
+                return _db.load(cls, metadata, version=version, loc=loc, iloc=iloc, where=where)
             return results[0]
         else:
             # Multiple matches
@@ -346,6 +391,7 @@ class BaseVariable:
         as_df: bool = False,
         include_record_id: bool = False,
         version_id: int | list[int] | str = "all",
+        where=None,
         db=None,
         **metadata,
     ):
@@ -406,10 +452,10 @@ class BaseVariable:
 
         if not as_df:
             # Return generator via helper to avoid making this function a generator
-            return cls._load_all_generator(_db, metadata, version_id=version_id)
+            return cls._load_all_generator(_db, metadata, version_id=version_id, where=where)
         else:
             # Collect into DataFrame
-            results = list(_db.load_all(cls, metadata, version_id=version_id))
+            results = list(_db.load_all(cls, metadata, version_id=version_id, where=where))
 
             if not results:
                 raise NotFoundError(
@@ -427,9 +473,9 @@ class BaseVariable:
             return pd.DataFrame(rows)
 
     @classmethod
-    def _load_all_generator(cls, db, metadata: dict, version_id: int | list[int] | str = "all"):
+    def _load_all_generator(cls, db, metadata: dict, version_id: int | list[int] | str = "all", where=None):
         """Helper generator for load_all() to avoid making load_all a generator."""
-        yield from db.load_all(cls, metadata, version_id=version_id)
+        yield from db.load_all(cls, metadata, version_id=version_id, where=where)
 
     @classmethod
     def list_versions(
