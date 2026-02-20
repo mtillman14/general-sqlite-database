@@ -418,6 +418,50 @@ classdef BaseVariable < dynamicprops
         end
 
         % -----------------------------------------------------------------
+        % head
+        % -----------------------------------------------------------------
+        function tbl = head(obj, n, varargin)
+        %HEAD  Peek at the first N records (latest version).
+        %
+        %   TBL = TypeClass().head()          % first record
+        %   TBL = TypeClass().head(5)         % first 5 records
+        %   TBL = TypeClass().head(3, subject=1)  % first 3 for subject 1
+        %
+        %   Returns a MATLAB table with schema key columns and a 'data'
+        %   column.  Returns an empty table if no records exist.
+        %
+        %   Arguments:
+        %       n  - Number of records to return (default 1)
+        %
+        %   Name-Value Arguments:
+        %       db - Optional DatabaseManager to use instead of the global
+        %            database
+        %       Any other name-value pairs are metadata filters.
+
+            if nargin < 2
+                n = 1;
+            end
+
+            type_name = class(obj);
+            py_class = scidb.internal.ensure_registered(type_name);
+
+            [metadata_nv, db_val] = extract_db(varargin);
+            py_kwargs = scidb.internal.metadata_to_pykwargs(metadata_nv{:});
+
+            if isempty(db_val)
+                py_result = py_class.head(pyargs('n', int64(n), py_kwargs{:}));
+            else
+                py_result = py_class.head(pyargs('n', int64(n), 'db', db_val, py_kwargs{:}));
+            end
+
+            if int64(py.builtins.len(py_result)) == 0
+                tbl = table();
+            else
+                tbl = scidb.internal.from_python(py_result);
+            end
+        end
+
+        % -----------------------------------------------------------------
         % list_versions
         % -----------------------------------------------------------------
         function versions = list_versions(obj, varargin)

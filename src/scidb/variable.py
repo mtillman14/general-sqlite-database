@@ -1,5 +1,6 @@
 """Base class for database-storable variables."""
 
+import itertools
 from typing import Any, Self
 
 import pandas as pd
@@ -592,6 +593,44 @@ class BaseVariable(metaclass=VariableMeta):
             data_items.append((data_list[i], full_metadata))
 
         return _db.save_batch(cls, data_items)
+
+    @classmethod
+    def head(cls, n: int = 1, db=None, **metadata) -> pd.DataFrame:
+        """
+        Peek at the first N records of this variable (latest version).
+
+        Convenience method for quickly inspecting stored data without
+        loading everything.
+
+        Args:
+            n: Number of records to return. Default is 1.
+            db: Optional DatabaseManager instance to use instead of the
+                global database.
+            **metadata: Optional metadata filters (e.g., subject=1).
+
+        Returns:
+            pd.DataFrame with schema key columns and a 'data' column.
+            Returns an empty DataFrame if no records exist.
+
+        Example:
+            StepLength.head()       # first record
+            StepLength.head(5)      # first 5 records
+            StepLength.head(3, subject=1)  # first 3 for subject 1
+        """
+        from .database import get_database
+
+        _db = db or get_database()
+        results = list(itertools.islice(
+            _db.load_all(cls, metadata, version_id="latest"), n
+        ))
+        if not results:
+            return pd.DataFrame()
+        rows = []
+        for var in results:
+            row = dict(var.metadata) if var.metadata else {}
+            row["data"] = var.data
+            rows.append(row)
+        return pd.DataFrame(rows)
 
     def to_csv(self, path: str) -> None:
         """

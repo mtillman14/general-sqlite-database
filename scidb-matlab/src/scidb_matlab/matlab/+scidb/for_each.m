@@ -1978,7 +1978,7 @@ function col = normalize_cell_column(col_data)
     all_string = true;
     for i = 1:n
         v = col_data{i};
-        if ~(isnumeric(v) && isscalar(v) && ~ismissing(v))
+        if ~(isnumeric(v) && isscalar(v))
             all_scalar_numeric = false;
         end
         if ~(isstring(v) || ischar(v))
