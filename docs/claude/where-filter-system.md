@@ -138,8 +138,106 @@ Level is inferred by inspecting `_schema` rows for each variable's schema_ids. T
 | `tests/test_filters.py` | Unit tests (no DB required) |
 | `tests/test_where.py` | Integration tests with real DuckDB |
 
-## What is NOT implemented (deferred)
+## MATLAB Implementation
 
-- **MATLAB wrapper**: MATLAB operator overloading for `where=` is a follow-up. The Python layer is complete and tested.
+### Filter construction (scidb.BaseVariable operators)
+
+Operator overloads on `scidb.BaseVariable` produce `scidb.Filter` objects wrapping the corresponding Python filter:
+
+```matlab
+filt = Side() == "L";           % VariableFilter
+filt = Side() ~= "L";           % negated VariableFilter
+filt = ScalarVar() > 1.2;       % comparison VariableFilter
+filt = (Side() == "L") & (ScalarVar() > 1.0);  % CompoundFilter AND
+filt = (Side() == "L") | (Side() == "R");       % CompoundFilter OR
+filt = ~(Side() == "L");        % NotFilter
+filt = scidb.raw_sql('"value" > 0.70');         % RawFilter
+```
+
+`scidb.Filter` holds a `.py_filter` property containing the Python filter object. The `&`, `|`, and `~` operators on `scidb.Filter` delegate to Python via `__and__`, `__or__`, `__invert__`.
+
+Key file: `scidb-matlab/src/scidb_matlab/matlab/+scidb/Filter.m`
+
+### where= in load() / load_all()
+
+```matlab
+StepLength().load(where=Side() == "L", subject=1, session='A')
+StepLength().load_all(where=(Side() == "L") & (ScalarVar() > 1.0), db=db)
+```
+
+The filter is forwarded to Python as `where_filter.py_filter` via the bridge. Schema-level validation and coverage checks behave identically to the Python API.
+
+## `where=` in `scidb.for_each` (MATLAB)
+
+### How it applies — the preload path (default, `preload=true`)
+
+For each non-Merge, non-PathInput input variable, `for_each` bulk-preloads all values for all iteration combos in a single Python call. The `where=` filter is passed to `load_and_extract`:
+
+```matlab
+bulk = py.scidb_matlab.bridge.load_and_extract( ...
+    py_class, py_metadata, ...
+    pyargs('version_id', 'latest', 'db', py_db, 'where', where_filter.py_filter));
+```
+
+Results are stored in a `containers.Map` keyed by metadata. Any combo whose key is absent from the map is silently skipped.
+
+### How it applies — the per-iteration path (`preload=false` or no metadata keys)
+
+When preloading is disabled, the filter is passed directly to the per-iteration load call:
+
+```matlab
+loaded{p} = var_inst.load(load_nv{:}, db_nv{:}, where_nv{:});
+```
+
+Behavior is identical; any iteration where the load returns nothing is skipped.
+
+### where= with `parallel=true`
+
+Parallel mode also uses the preload path (Phase A is serial). The `where=` filter is applied to `load_and_extract` exactly as in the serial preload. Combos missing from the preloaded map are skipped before Phase B (parfor compute).
+
+### where= with `scidb.Fixed` inputs
+
+`Fixed` inputs are preloaded with their overridden metadata substituted in. The `where=` filter is applied to those pinned metadata bulk-loads too.
+
+Practical implication: if `where=Side()=="L"` is used with `Fixed(Baseline, session='BL')`, the filter checks Side at `session='BL'` (not the iteration's session). Save Side data at all sessions that any input will be queried at, or the Fixed preload may yield empty results and skip the iteration.
+
+### where= with `scidb.Merge` (IMPORTANT: filter is NOT applied)
+
+`Merge` inputs are **excluded from the preload phase** and are always loaded via `merge_constituents()`, which does not pass `where_nv`. This is by design — Merge uses its own schema-key inner-join logic and cannot be filtered by an external where= predicate.
+
+**Consequence**: if **all** inputs to `for_each` are `Merge` objects, the `where=` parameter has no effect. The iteration runs for every combo where all Merge constituents have data, regardless of the filter.
+
+If at least one non-Merge input is present, that input is filtered by `where=` and the combo is skipped if it yields no data. The Merge constituents still load without filtering.
+
+```matlab
+% where= is IGNORED — only input is a Merge:
+scidb.for_each(@fn, struct('d', scidb.Merge(A(), B())), {Out()}, ...
+    'subject', [1 2], where=Side() == "L");
+% → Runs for every subject that has A and B data, Side value irrelevant.
+
+% where= IS applied — non-Merge input present:
+scidb.for_each(@fn, struct('x', RawSignal(), 'd', scidb.Merge(A(), B())), {Out()}, ...
+    'subject', [1 2], where=Side() == "L");
+% → Runs only where RawSignal passes the Side filter; Merge loads unfiltered.
+```
+
+### `where=` with SelectedColumn inputs (`VarName("col")`)
+
+Column selection (`RawSignal("col_a")`) sets `selected_columns` on the BaseVariable instance. The `where=` filter is applied to the preload/load of the full table first; column narrowing happens after. The combination works correctly.
+
+### Summary table
+
+| Input type | where= applied? | Path |
+|------------|----------------|------|
+| Plain `BaseVariable` | Yes | Preload bulk query or per-iteration `load()` |
+| `scidb.Fixed(BaseVariable)` | Yes | Preload bulk query using fixed metadata |
+| `BaseVariable("col")` | Yes | Preload bulk query, column narrowed after |
+| `scidb.PathInput` | N/A | PathInput is not a DB load |
+| `scidb.Merge(...)` | **No** | Always via `merge_constituents`, no filter |
+| Constant (scalar/table) | N/A | Not loaded from DB |
+
+## What is NOT implemented
+
 - **Version-specific filter**: The filter always uses "latest version" of the filter variable. There is no mechanism to specify a particular version of the filter variable.
 - **Cross-database filters**: The filter variable must be in the same database as the target.
+- **where= for Merge constituents**: Merge bypasses the filter path by design. There is no mechanism to filter individual Merge constituents via the top-level `where=`.

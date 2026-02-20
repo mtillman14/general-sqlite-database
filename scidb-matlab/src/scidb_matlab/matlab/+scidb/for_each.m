@@ -47,6 +47,10 @@ function for_each(fn, inputs, outputs, varargin)
 %                       separate cycle (1, 2, 3, ...). (default: false)
 %       db            - Optional DatabaseManager to use for all load/save
 %                       operations instead of the global database
+%       where         - Optional scidb.Filter to apply when loading each input
+%                       variable. Combos where an input has no matching data
+%                       after filtering are silently skipped.
+%                       Example: where=Side() == "R"
 %       (any other)   - Metadata iterables (numeric or string arrays)
 %
 %   Example:
@@ -85,6 +89,14 @@ function for_each(fn, inputs, outputs, varargin)
         db_nv = {};
     else
         db_nv = {'db', opts.db};
+    end
+
+    % Build where name-value pair for passthrough to load calls
+    where_filter = opts.where;
+    if isempty(where_filter)
+        where_nv = {};
+    else
+        where_nv = {'where', where_filter};
     end
 
     % Auto-detect pass_metadata
@@ -241,6 +253,9 @@ function for_each(fn, inputs, outputs, varargin)
         fprintf('[dry-run] %d iterations over: %s\n', total, strjoin(meta_keys, ', '));
         fprintf('[dry-run] inputs: %s\n', format_inputs(inputs, input_names));
         fprintf('[dry-run] outputs: {%s}\n', format_outputs(outputs));
+        if ~isempty(where_filter)
+            fprintf('[dry-run] where: filter applied to all input loads\n');
+        end
         if strlength(distribute_key) > 0
             fprintf('[dry-run] distribute: ''%s'' (split outputs by element/row, 1-based)\n', distribute_key);
         end
@@ -344,9 +359,16 @@ function for_each(fn, inputs, outputs, varargin)
             % Single query for all combinations — load_and_extract keeps
             % generator materialization in Python (no proxy overhead)
             py_metadata = scidb.internal.metadata_to_pydict(query_nv{:});
-            bulk = py.scidb_matlab.bridge.load_and_extract( ...
-                py_class, py_metadata, ...
-                pyargs('version_id', 'latest', 'db', py_db));
+            if isempty(where_filter)
+                bulk = py.scidb_matlab.bridge.load_and_extract( ...
+                    py_class, py_metadata, ...
+                    pyargs('version_id', 'latest', 'db', py_db));
+            else
+                bulk = py.scidb_matlab.bridge.load_and_extract( ...
+                    py_class, py_metadata, ...
+                    pyargs('version_id', 'latest', 'db', py_db, ...
+                           'where', where_filter.py_filter));
+            end
             n_results = int64(bulk{'n'});
 
             if n_results == 0
@@ -383,7 +405,8 @@ function for_each(fn, inputs, outputs, varargin)
             input_names, loadable_idx, preloaded_results, preloaded_maps, ...
             preloaded_keys, inputs, meta_keys, outputs, ...
             constant_names, constant_values, constant_nv, ...
-            as_table_set, should_pass_metadata, fn_name, do_save, db_nv, py_db);
+            as_table_set, should_pass_metadata, fn_name, do_save, db_nv, py_db, ...
+            where_nv);
         fprintf('\n[done] completed=%d, skipped=%d, total=%d\n', ...
             completed, skipped, total);
         return;
@@ -498,7 +521,7 @@ function for_each(fn, inputs, outputs, varargin)
                 end
 
                 try
-                    loaded{p} = var_inst.load(load_nv{:}, db_nv{:});
+                    loaded{p} = var_inst.load(load_nv{:}, db_nv{:}, where_nv{:});
                 catch err
                     fprintf('[skip] %s: failed to load %s (%s): %s\n', ...
                         metadata_str, input_names{p}, class(var_inst), err.message);
@@ -703,7 +726,8 @@ function [completed, skipped] = run_parallel(fn, combos, n_inputs, n_outputs, ..
     input_names, loadable_idx, preloaded_results, preloaded_maps, ...
     preloaded_keys, inputs, meta_keys, outputs, ...
     constant_names, constant_values, constant_nv, ...
-    as_table_set, should_pass_metadata, fn_name, do_save, db_nv, py_db)
+    as_table_set, should_pass_metadata, fn_name, do_save, db_nv, py_db, ...
+    where_nv)
 %RUN_PARALLEL  Three-phase parallel execution for for_each.
 %   Phase A: pre-resolve all inputs from preloaded maps (serial, uses py.)
 %   Phase B: parfor compute (pure MATLAB, no py. calls)
@@ -800,7 +824,7 @@ function [completed, skipped] = run_parallel(fn, combos, n_inputs, n_outputs, ..
                     load_nv = meta_nv;
                 end
                 try
-                    loaded{p} = var_inst.load(load_nv{:}, db_nv{:});
+                    loaded{p} = var_inst.load(load_nv{:}, db_nv{:}, where_nv{:});
                 catch err
                     fprintf('[skip] %s: failed to load %s (%s): %s\n', ...
                         metadata_str, input_names{p}, class(var_inst), err.message);
@@ -1005,6 +1029,7 @@ function [meta_args, opts] = split_options(varargin)
     opts.db = [];
     opts.parallel = false;
     opts.distribute = false;
+    opts.where = [];
 
     meta_args = {};
     i = 1;
@@ -1051,6 +1076,10 @@ function [meta_args, opts] = split_options(varargin)
                     continue;
                 case "distribute"
                     opts.distribute = logical(varargin{i+1});
+                    i = i + 2;
+                    continue;
+                case "where"
+                    opts.where = varargin{i+1};
                     i = i + 2;
                     continue;
             end

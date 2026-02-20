@@ -18,6 +18,7 @@ def for_each(
     as_table: list[str] | bool | None = None,
     db=None,
     distribute: bool = False,
+    where=None,
     **metadata_iterables: list[Any],
 ) -> None:
     """
@@ -65,6 +66,9 @@ def for_each(
                     iteration at the trial level, distribute=True saves
                     each element/row as a separate cycle (1, 2, 3, ...).
                     No lineage is tracked for distributed saves.
+        where: Optional Filter to apply when loading each input variable.
+               Combos where an input has no data after filtering are skipped.
+               Example: where=Side == "R"  (only process combos where Side is R)
         **metadata_iterables: Iterables of metadata values to combine
 
     Example:
@@ -227,7 +231,8 @@ def for_each(
 
             try:
                 db_kwargs = {"db": db} if db is not None else {}
-                loaded_inputs[param_name] = var_type.load(**db_kwargs, **load_metadata)
+                where_kwargs = {"where": where} if where is not None else {}
+                loaded_inputs[param_name] = var_type.load(**db_kwargs, **load_metadata, **where_kwargs)
             except Exception as e:
                 var_name = getattr(var_type, '__name__', type(var_type).__name__)
                 print(f"[skip] {metadata_str}: failed to load {param_name} ({var_name}): {e}")
