@@ -46,7 +46,7 @@ import sys
 from pathlib import Path
 _project_root = Path(__file__).parent.parent.parent
 sys.path.insert(0, str(_project_root / "scirun-lib" / "src"))
-from scirun import Fixed, for_each
+from scirun import Fixed, Merge, for_each
 
 from .thunk import ThunkOutput, Thunk, thunk
 from .variable import BaseVariable
@@ -62,6 +62,7 @@ __all__ = [
     # Batch execution
     "for_each",
     "Fixed",
+    "Merge",
     # Thunk system
     "thunk",
     "Thunk",

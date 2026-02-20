@@ -279,6 +279,11 @@ function for_each(fn, inputs, outputs, varargin)
                 continue;
             end
 
+            % Merge loads constituents individually — skip preloading
+            if isa(var_spec, 'scidb.Merge')
+                continue;
+            end
+
             % Determine variable type and fixed overrides
             if isa(var_spec, 'scidb.Fixed')
                 var_inst = var_spec.var_type;
@@ -430,6 +435,25 @@ function for_each(fn, inputs, outputs, varargin)
             end
 
             var_spec = inputs.(input_names{p});
+
+            % Handle Merge: load each constituent and combine into table
+            if isa(var_spec, 'scidb.Merge')
+                try
+                    loaded{p} = merge_constituents(var_spec, meta_nv, db_nv, input_names{p});
+                catch err
+                    fprintf('[skip] %s: failed to merge %s: %s\n', ...
+                        metadata_str, input_names{p}, err.message);
+                    load_failed = true;
+                    break;
+                end
+                continue;
+            end
+
+            % Guard against Fixed wrapping Merge
+            if isa(var_spec, 'scidb.Fixed') && isa(var_spec.var_type, 'scidb.Merge')
+                error('scidb:for_each', ...
+                    'Fixed cannot wrap a Merge. Use Fixed on individual constituents inside the Merge instead: Merge(Fixed(VarA(), ...), VarB())');
+            end
 
             % Determine var_inst for table conversion
             if isa(var_spec, 'scidb.Fixed')
@@ -948,11 +972,13 @@ end
 
 function tf = is_loadable(var_spec)
 %IS_LOADABLE  Check if an input spec is a loadable type.
-%   Returns true for BaseVariable instances, Fixed wrappers, and PathInput.
+%   Returns true for BaseVariable instances, Fixed wrappers, PathInput,
+%   and Merge wrappers.
 %   Returns false for plain constants (numeric, string, logical, etc.).
     tf = isa(var_spec, 'scidb.BaseVariable') ...
       || isa(var_spec, 'scidb.Fixed') ...
-      || isa(var_spec, 'scidb.PathInput');
+      || isa(var_spec, 'scidb.PathInput') ...
+      || isa(var_spec, 'scidb.Merge');
 end
 
 
@@ -1040,7 +1066,18 @@ function s = format_inputs(inputs, input_names)
     parts = cell(1, numel(input_names));
     for i = 1:numel(input_names)
         var_spec = inputs.(input_names{i});
-        if isa(var_spec, 'scidb.Fixed')
+        if isa(var_spec, 'scidb.Merge')
+            sub_parts = cell(1, numel(var_spec.var_specs));
+            for j = 1:numel(var_spec.var_specs)
+                sub = var_spec.var_specs{j};
+                if isa(sub, 'scidb.Fixed')
+                    sub_parts{j} = sprintf('Fixed(%s)', class(sub.var_type));
+                else
+                    sub_parts{j} = class(sub);
+                end
+            end
+            parts{i} = sprintf('%s: Merge(%s)', input_names{i}, strjoin(sub_parts, ', '));
+        elseif isa(var_spec, 'scidb.Fixed')
             fields = fieldnames(var_spec.fixed_metadata);
             fixed_parts = cell(1, numel(fields));
             for f = 1:numel(fields)
@@ -1128,7 +1165,47 @@ function print_dry_run_iteration(inputs, input_names, outputs, ...
 
     for p = 1:numel(input_names)
         var_spec = inputs.(input_names{p});
-        if isa(var_spec, 'scidb.Fixed')
+        if isa(var_spec, 'scidb.Merge')
+            fprintf('  merge %s:\n', input_names{p});
+            for mi = 1:numel(var_spec.var_specs)
+                sub = var_spec.var_specs{mi};
+                if isa(sub, 'scidb.Fixed')
+                    sub_meta = metadata;
+                    ff = fieldnames(sub.fixed_metadata);
+                    for fi = 1:numel(ff)
+                        sub_meta.(ff{fi}) = sub.fixed_metadata.(ff{fi});
+                    end
+                    sub_fields = fieldnames(sub_meta);
+                    sp = cell(1, numel(sub_fields));
+                    for fi = 1:numel(sub_fields)
+                        val = sub_meta.(sub_fields{fi});
+                        if isnumeric(val)
+                            sp{fi} = sprintf('%s=%g', sub_fields{fi}, val);
+                        else
+                            sp{fi} = sprintf('%s=%s', sub_fields{fi}, string(val));
+                        end
+                    end
+                    fprintf('    [%d] %s().load(%s)\n', mi-1, class(sub.var_type), strjoin(sp, ', '));
+                elseif isa(sub, 'scidb.BaseVariable')
+                    sub_fields = fieldnames(metadata);
+                    sp = cell(1, numel(sub_fields));
+                    for fi = 1:numel(sub_fields)
+                        val = metadata.(sub_fields{fi});
+                        if isnumeric(val)
+                            sp{fi} = sprintf('%s=%g', sub_fields{fi}, val);
+                        else
+                            sp{fi} = sprintf('%s=%s', sub_fields{fi}, string(val));
+                        end
+                    end
+                    if ~isempty(sub.selected_columns)
+                        col_str = strjoin(sub.selected_columns, ', ');
+                        fprintf('    [%d] %s().load(%s) -> columns: [%s]\n', mi-1, class(sub), strjoin(sp, ', '), col_str);
+                    else
+                        fprintf('    [%d] %s().load(%s)\n', mi-1, class(sub), strjoin(sp, ', '));
+                    end
+                end
+            end
+        elseif isa(var_spec, 'scidb.Fixed')
             load_meta = metadata;
             fields = fieldnames(var_spec.fixed_metadata);
             for f = 1:numel(fields)
@@ -1368,10 +1445,17 @@ function result = apply_column_selection(loaded_val, cols, param_name)
         if numel(loaded_val) == 1
             tbl = loaded_val.data;
         else
-            % Array of ThunkOutputs — not yet supported for column selection
-            error('scidb:for_each', ...
-                'Column selection on ''%s'' is not supported for multi-result arrays. Use as_table=true first.', ...
-                param_name);
+            if istable(loaded_val(1).data)
+                tbl = table;
+                for i = 1:numel(loaded_val)
+                    tbl = [tbl; loaded_val(i).data];
+                end
+            else
+                % Array of ThunkOutputs — not yet supported for column selection
+                error('scidb:for_each', ...
+                    'Column selection on ''%s'' is not supported for multi-result non-table arrays. Use as_table=true first.', ...
+                    param_name);
+            end
         end
     elseif istable(loaded_val)
         tbl = loaded_val;
@@ -1399,7 +1483,7 @@ function result = apply_column_selection(loaded_val, cols, param_name)
     if numel(cols) == 1
         % Single column: return raw array/cell
         col_data = tbl.(cols(1));
-        if isa(loaded_val, 'scidb.ThunkOutput')
+        if isscalar(loaded_val) && isa(loaded_val, 'scidb.ThunkOutput')
             loaded_val.data = col_data;
             result = loaded_val;
         else
@@ -1408,7 +1492,7 @@ function result = apply_column_selection(loaded_val, cols, param_name)
     else
         % Multiple columns: return subtable
         sub = tbl(:, cols);
-        if isa(loaded_val, 'scidb.ThunkOutput')
+        if isscalar(loaded_val) && isa(loaded_val, 'scidb.ThunkOutput')
             loaded_val.data = sub;
             result = loaded_val;
         else
@@ -1466,4 +1550,411 @@ function key = combo_meta_key(meta_keys, combo, fixed_meta, query_keys)
         vals{k} = effective(char(query_keys(k)));
     end
     key = build_meta_key(query_keys, vals);
+end
+
+
+function result = merge_constituents(merge_spec, meta_nv, db_nv, param_name)
+%MERGE_CONSTITUENTS  Load and merge Merge constituents into a MATLAB table.
+%
+%   For each constituent in the Merge:
+%   - Resolve Fixed wrappers and column selection
+%   - Load the variable (per-iteration, no preload for Merge)
+%   - Build a keyed table with schema key columns + data columns
+%   - Inner-join all constituent tables on common schema keys
+%
+%   When constituents return multiple records, they are joined by their
+%   common schema keys (inner join). Unmatched rows are dropped.
+
+    n = numel(merge_spec.var_specs);
+    all_loaded = cell(1, n);
+    all_col_sel = cell(1, n);
+    all_short_names = cell(1, n);
+    all_fixed_keys = cell(1, n);
+
+    for i = 1:n
+        spec = merge_spec.var_specs{i};
+
+        [var_inst, load_nv, col_sel] = resolve_merge_spec(spec, meta_nv);
+
+        type_name = class(var_inst);
+        type_parts = strsplit(type_name, '.');
+        all_short_names{i} = type_parts{end};
+        all_col_sel{i} = col_sel;
+
+        % Track which schema keys are fixed for this constituent
+        if isa(spec, 'scidb.Fixed')
+            all_fixed_keys{i} = string(fieldnames(spec.fixed_metadata));
+        else
+            all_fixed_keys{i} = string.empty;
+        end
+
+        % Load the variable
+        all_loaded{i} = var_inst.load(load_nv{:}, db_nv{:});
+    end
+
+    result = merge_by_schema_keys(all_loaded, all_col_sel, all_short_names, all_fixed_keys, db_nv, param_name);
+end
+
+
+function tbl = to_table_part(raw, var_name, param_name, idx)
+%TO_TABLE_PART  Convert raw data to a table fragment for merging.
+    if istable(raw)
+        tbl = raw;
+    elseif isnumeric(raw) && isscalar(raw)
+        tbl = table(raw, 'VariableNames', {var_name});
+    elseif isnumeric(raw) && isvector(raw)
+        tbl = table(raw(:), 'VariableNames', {var_name});
+    elseif isnumeric(raw) && ismatrix(raw)
+        % 2D matrix: one column per matrix column
+        tbl = table();
+        for j = 1:size(raw, 2)
+            col_name = sprintf('%s_%d', var_name, j-1);
+            tbl.(col_name) = raw(:, j);
+        end
+    elseif isstring(raw) || ischar(raw)
+        if ischar(raw)
+            raw = string(raw);
+        end
+        if isscalar(raw)
+            tbl = table(raw, 'VariableNames', {var_name});
+        else
+            tbl = table(raw(:), 'VariableNames', {var_name});
+        end
+    elseif iscell(raw)
+        tbl = table(raw(:), 'VariableNames', {var_name});
+    elseif islogical(raw)
+        if isscalar(raw)
+            tbl = table(raw, 'VariableNames', {var_name});
+        else
+            tbl = table(raw(:), 'VariableNames', {var_name});
+        end
+    else
+        error('scidb:Merge', ...
+            'Merge constituent %s[%d] has unsupported data type %s. Supported: table, numeric, string, cell, logical.', ...
+            param_name, idx, class(raw));
+    end
+end
+
+
+function [var_inst, load_nv, col_sel] = resolve_merge_spec(spec, meta_nv)
+%RESOLVE_MERGE_SPEC  Extract variable instance, load metadata, and column
+%   selection from a Merge constituent spec.
+    col_sel = string.empty;
+    if isa(spec, 'scidb.Fixed')
+        inner = spec.var_type;
+        load_nv = meta_nv;
+        ff = fieldnames(spec.fixed_metadata);
+        for f = 1:numel(ff)
+            load_nv{end+1} = ff{f}; %#ok<AGROW>
+            load_nv{end+1} = spec.fixed_metadata.(ff{f}); %#ok<AGROW>
+        end
+        if isa(inner, 'scidb.BaseVariable') && ~isempty(inner.selected_columns)
+            col_sel = inner.selected_columns;
+        end
+        var_inst = inner;
+    elseif isa(spec, 'scidb.BaseVariable') && ~isempty(spec.selected_columns)
+        col_sel = spec.selected_columns;
+        var_inst = spec;
+        load_nv = meta_nv;
+    else
+        var_inst = spec;
+        load_nv = meta_nv;
+    end
+end
+
+
+function raw = apply_merge_col_sel(raw, col_sel, short_name)
+%APPLY_MERGE_COL_SEL  Apply column selection to raw data for Merge.
+    if istable(raw)
+        for ci = 1:numel(col_sel)
+            if ~ismember(col_sel(ci), raw.Properties.VariableNames)
+                error('scidb:Merge', ...
+                    'Column ''%s'' not found in ''%s''. Available: %s', ...
+                    col_sel(ci), short_name, strjoin(raw.Properties.VariableNames, ', '));
+            end
+        end
+        if numel(col_sel) == 1
+            col_data = raw.(col_sel(1));
+            raw = table(col_data, 'VariableNames', {char(col_sel(1))});
+        else
+            raw = raw(:, col_sel);
+        end
+    else
+        error('scidb:Merge', ...
+            'Column selection on ''%s'' requires table data, but loaded data is %s.', ...
+            short_name, class(raw));
+    end
+end
+
+
+function result = merge_by_schema_keys(all_loaded, all_col_sel, all_short_names, all_fixed_keys, db_nv, param_name)
+%MERGE_BY_SCHEMA_KEYS  Match records by schema keys and merge column-wise.
+%
+%   Uses record-level matching (not row-level) to avoid cross-products
+%   when a single record contains multi-row table data.
+%
+%   1. Determine common schema keys across all constituents
+%      (excluding keys that are Fixed in any constituent)
+%   2. Build per-constituent lookup: common_key_str → record indices
+%   3. Inner join: find key combinations present in ALL constituents
+%   4. For each matched key: cross-product matching records, merge data
+%      column-wise, add schema key columns
+%   5. Stack all results
+
+    n = numel(all_loaded);
+
+    % Get schema keys from the database
+    if ~isempty(db_nv) && numel(db_nv) >= 2
+        py_db = db_nv{2};
+    else
+        py_db = py.scidb.database.get_database();
+    end
+    sk_cell = cell(py_db.dataset_schema_keys);
+    schema_keys = string.empty;
+    for s = 1:numel(sk_cell)
+        schema_keys(end+1) = string(sk_cell{s}); %#ok<AGROW>
+    end
+
+    % Determine which schema keys each constituent has in its metadata
+    per_const_keys = cell(1, n);
+    for i = 1:n
+        results = all_loaded{i};
+        meta_fields = string(fieldnames(results(1).metadata));
+        per_const_keys{i} = intersect(schema_keys, meta_fields);
+    end
+
+    % Keys that are fixed in ANY constituent — exclude from join
+    any_fixed = string.empty;
+    for i = 1:n
+        any_fixed = union(any_fixed, all_fixed_keys{i});
+    end
+
+    % Common schema keys (intersection across all constituents, minus fixed)
+    common_keys = sort(per_const_keys{1});
+    for i = 2:n
+        common_keys = intersect(common_keys, per_const_keys{i});
+    end
+    common_keys = setdiff(common_keys, any_fixed);
+
+    % Check for data column conflicts upfront (using first record of each)
+    all_data_cols = {};
+    for i = 1:n
+        raw = all_loaded{i}(1).data;
+        if ~isempty(all_col_sel{i})
+            raw = apply_merge_col_sel(raw, all_col_sel{i}, all_short_names{i});
+        end
+        sample = to_table_part(raw, all_short_names{i}, param_name, i-1);
+        cols = setdiff(string(sample.Properties.VariableNames), schema_keys);
+        for j = 1:numel(cols)
+            if ismember(char(cols(j)), all_data_cols)
+                error('scidb:Merge', ...
+                    'Column name conflict in Merge for ''%s'': column ''%s'' appears in multiple constituents. Use column selection to select non-conflicting columns.', ...
+                    param_name, cols(j));
+            end
+            all_data_cols{end+1} = char(cols(j)); %#ok<AGROW>
+        end
+    end
+
+    % Build per-constituent lookup: common_key_str → array of record indices
+    maps = cell(1, n);
+    for i = 1:n
+        map = containers.Map('KeyType', 'char', 'ValueType', 'any');
+        for j = 1:numel(all_loaded{i})
+            key = schema_key_str(all_loaded{i}(j).metadata, common_keys);
+            if map.isKey(key)
+                map(key) = [map(key), j];
+            else
+                map(key) = j;
+            end
+        end
+        maps{i} = map;
+    end
+
+    % Inner join: find keys present in ALL constituents
+    matched_keys = string(maps{1}.keys);
+    for i = 2:n
+        matched_keys = intersect(matched_keys, string(maps{i}.keys));
+    end
+
+    if isempty(matched_keys)
+        error('scidb:Merge', ...
+            'No matching records found across Merge constituents for ''%s''.', ...
+            param_name);
+    end
+    matched_keys = sort(matched_keys);
+
+    % For each matched key, cross-product matching records, merge data
+    all_rows = cell(numel(matched_keys), 1);
+    for k = 1:numel(matched_keys)
+        key = char(matched_keys(k));
+
+        % Get matching record indices from each constituent
+        idx_per_const = cell(1, n);
+        for i = 1:n
+            idx_per_const{i} = maps{i}(key);
+        end
+
+        % Cross product of record indices
+        combos = cartesian_indices(idx_per_const);
+
+        combo_rows = cell(size(combos, 1), 1);
+        for c = 1:size(combos, 1)
+            parts = cell(1, n);
+            all_meta = struct();
+
+            for i = 1:n
+                rec = all_loaded{i}(combos(c, i));
+                raw = rec.data;
+
+                % Apply column selection
+                if ~isempty(all_col_sel{i})
+                    raw = apply_merge_col_sel(raw, all_col_sel{i}, all_short_names{i});
+                end
+
+                parts{i} = to_table_part(raw, all_short_names{i}, param_name, i-1);
+
+                % Collect schema key values from this record, but skip
+                % fixed keys from Fixed constituents (prefer non-fixed
+                % constituent values for those keys)
+                meta_fields = fieldnames(rec.metadata);
+                for mf = 1:numel(meta_fields)
+                    if ismember(string(meta_fields{mf}), schema_keys)
+                        is_fixed_here = ismember(string(meta_fields{mf}), all_fixed_keys{i});
+                        already_set = isfield(all_meta, meta_fields{mf});
+                        if ~is_fixed_here || ~already_set
+                            all_meta.(meta_fields{mf}) = rec.metadata.(meta_fields{mf});
+                        end
+                    end
+                end
+            end
+
+            % Column-wise merge with broadcast
+            merged = merge_parts_columnwise(parts, all_short_names, param_name);
+            nr = height(merged);
+
+            % Build schema key columns (preserving schema order)
+            meta_tbl = table();
+            sk_present = intersect(schema_keys, string(fieldnames(all_meta)), 'stable');
+            for sk = 1:numel(sk_present)
+                sk_name = char(sk_present(sk));
+                val = all_meta.(sk_name);
+                if isnumeric(val)
+                    meta_tbl.(sk_name) = repmat(double(val), nr, 1);
+                else
+                    meta_tbl.(sk_name) = repmat(string(val), nr, 1);
+                end
+            end
+
+            % Remove data columns that overlap with schema key columns
+            overlap = intersect( ...
+                string(merged.Properties.VariableNames), ...
+                string(meta_tbl.Properties.VariableNames));
+            if ~isempty(overlap)
+                merged(:, cellstr(overlap)) = [];
+            end
+
+            combo_rows{c} = [meta_tbl, merged];
+        end
+
+        all_rows{k} = vertcat(combo_rows{:});
+    end
+
+    result = vertcat(all_rows{:});
+end
+
+
+function key = schema_key_str(metadata, keys)
+%SCHEMA_KEY_STR  Build a sorted lookup key from metadata schema key values.
+    parts = cell(1, numel(keys));
+    for k = 1:numel(keys)
+        kname = char(keys(k));
+        if isfield(metadata, kname)
+            val = metadata.(kname);
+            if isnumeric(val)
+                parts{k} = sprintf('%s=%g', kname, val);
+            else
+                parts{k} = sprintf('%s=%s', kname, string(val));
+            end
+        else
+            parts{k} = sprintf('%s=<missing>', kname);
+        end
+    end
+    key = char(strjoin(string(parts), '|'));
+end
+
+
+function result = merge_parts_columnwise(parts, part_names, param_name)
+%MERGE_PARTS_COLUMNWISE  Merge table fragments column-wise with broadcast.
+%   Validates no column conflicts and consistent row counts.
+%   Broadcasts single-row tables to match multi-row tables.
+
+    % Check column name conflicts
+    seen = {};
+    for i = 1:numel(parts)
+        cols = parts{i}.Properties.VariableNames;
+        for c = 1:numel(cols)
+            if ismember(cols{c}, seen)
+                error('scidb:Merge', ...
+                    'Column name conflict in Merge for ''%s'': column ''%s'' appears in multiple constituents. Use column selection to select non-conflicting columns.', ...
+                    param_name, cols{c});
+            end
+            seen{end+1} = cols{c}; %#ok<AGROW>
+        end
+    end
+
+    % Determine target row count from multi-row parts
+    row_counts = cellfun(@height, parts);
+    multi_row = row_counts(row_counts > 1);
+
+    if ~isempty(multi_row)
+        unique_counts = unique(multi_row);
+        if numel(unique_counts) > 1
+            detail_parts = cell(1, numel(parts));
+            for i = 1:numel(parts)
+                detail_parts{i} = sprintf('%s=%d', part_names{i}, row_counts(i));
+            end
+            error('scidb:Merge', ...
+                'Cannot merge constituents with different row counts in ''%s'': %s. All multi-row constituents must have the same number of rows.', ...
+                param_name, strjoin(detail_parts, ', '));
+        end
+        target_len = unique_counts(1);
+    else
+        target_len = 1;
+    end
+
+    % Broadcast single-row parts and concatenate
+    result = table();
+    for i = 1:numel(parts)
+        tbl_i = parts{i};
+        if height(tbl_i) == 1 && target_len > 1
+            tbl_i = repmat(tbl_i, target_len, 1);
+        end
+        result = [result, tbl_i]; %#ok<AGROW>
+    end
+end
+
+
+function combos = cartesian_indices(idx_cells)
+%CARTESIAN_INDICES  Cartesian product of index arrays.
+%   idx_cells: 1×n cell array, each containing an array of indices.
+%   Returns: total×n matrix where each row is one combination.
+    n_dims = numel(idx_cells);
+    if n_dims == 1
+        combos = idx_cells{1}(:);
+        return;
+    end
+
+    sizes = cellfun(@numel, idx_cells);
+    total = prod(sizes);
+    combos = zeros(total, n_dims);
+
+    repeats_after = 1;
+    for d = n_dims:-1:1
+        vals = idx_cells{d}(:);
+        nv = numel(vals);
+        repeats_before = total / (repeats_after * nv);
+        col = repmat(repelem(vals, repeats_after), repeats_before, 1);
+        combos(:, d) = col;
+        repeats_after = repeats_after * nv;
+    end
 end

@@ -5,6 +5,7 @@ from typing import Any, Callable
 
 from .column_selection import ColumnSelection
 from .fixed import Fixed
+from .merge import Merge
 
 
 def for_each(
@@ -199,24 +200,30 @@ def for_each(
         load_failed = False
 
         for param_name, var_spec in loadable_inputs.items():
+            # Handle Merge: load each constituent and combine into DataFrame
+            if isinstance(var_spec, Merge):
+                try:
+                    loaded_inputs[param_name] = _load_and_merge(
+                        var_spec, metadata, param_name, db
+                    )
+                except Exception as e:
+                    print(f"[skip] {metadata_str}: failed to load {param_name} ({var_spec.__name__}): {e}")
+                    load_failed = True
+                    break
+                continue
+
+            # Guard against Fixed wrapping Merge
+            if isinstance(var_spec, Fixed) and isinstance(var_spec.var_type, Merge):
+                raise TypeError(
+                    "Fixed cannot wrap a Merge. Use Fixed on individual "
+                    "constituents inside the Merge instead: "
+                    "Merge(Fixed(VarA, ...), VarB)"
+                )
+
             # Resolve var_type, load_metadata, and column_selection from the spec
-            column_selection = None
-            if isinstance(var_spec, Fixed):
-                load_metadata = {**metadata, **var_spec.fixed_metadata}
-                inner = var_spec.var_type
-                # Fixed can wrap a ColumnSelection: Fixed(MyVar["col"], session="BL")
-                if isinstance(inner, ColumnSelection):
-                    column_selection = inner.columns
-                    var_type = inner.var_type
-                else:
-                    var_type = inner
-            elif isinstance(var_spec, ColumnSelection):
-                load_metadata = metadata
-                column_selection = var_spec.columns
-                var_type = var_spec.var_type
-            else:
-                load_metadata = metadata
-                var_type = var_spec
+            var_type, load_metadata, column_selection = _resolve_var_spec(
+                var_spec, metadata
+            )
 
             try:
                 db_kwargs = {"db": db} if db is not None else {}
@@ -327,8 +334,8 @@ def for_each(
 
 
 def _is_loadable(var_spec: Any) -> bool:
-    """Check if an input spec is a loadable type (class, Fixed, ColumnSelection, or has .load())."""
-    return isinstance(var_spec, (type, Fixed, ColumnSelection)) or hasattr(var_spec, 'load')
+    """Check if an input spec is a loadable type (class, Fixed, ColumnSelection, Merge, or has .load())."""
+    return isinstance(var_spec, (type, Fixed, ColumnSelection, Merge)) or hasattr(var_spec, 'load')
 
 
 def _is_thunk(fn: Any) -> bool:
@@ -506,7 +513,9 @@ def _format_inputs(inputs: dict[str, Any]) -> str:
     """Format inputs dict for display."""
     parts = []
     for name, var_spec in inputs.items():
-        if isinstance(var_spec, Fixed):
+        if isinstance(var_spec, Merge):
+            parts.append(f"{name}: {var_spec.__name__}")
+        elif isinstance(var_spec, Fixed):
             fixed_str = ", ".join(f"{k}={v}" for k, v in var_spec.fixed_metadata.items())
             inner_name = getattr(var_spec.var_type, '__name__', type(var_spec.var_type).__name__)
             parts.append(f"{name}: Fixed({inner_name}, {fixed_str})")
@@ -580,7 +589,11 @@ def _print_dry_run_iteration(
     print(f"[dry-run] {metadata_str}:")
 
     for param_name, var_spec in inputs.items():
-        if isinstance(var_spec, Fixed):
+        if isinstance(var_spec, Merge):
+            print(f"  merge {param_name}:")
+            for i, sub_spec in enumerate(var_spec.var_specs):
+                _print_constituent_load(sub_spec, metadata, i)
+        elif isinstance(var_spec, Fixed):
             load_metadata = {**metadata, **var_spec.fixed_metadata}
             inner = var_spec.var_type
             if isinstance(inner, ColumnSelection):
@@ -612,3 +625,198 @@ def _print_dry_run_iteration(
             print(f"  distribute {output_type.__name__} by '{distribute}' (1-based indexing)")
         else:
             print(f"  save {output_type.__name__}.save(..., {save_metadata_str})")
+
+
+def _print_constituent_load(spec: Any, metadata: dict[str, Any], index: int) -> None:
+    """Print a single Merge constituent's load line for dry-run display."""
+    if isinstance(spec, Fixed):
+        load_metadata = {**metadata, **spec.fixed_metadata}
+        inner = spec.var_type
+        if isinstance(inner, ColumnSelection):
+            var_name = inner.var_type.__name__
+            col_str = ", ".join(inner.columns)
+            suffix = f" -> columns: [{col_str}]"
+        else:
+            var_name = getattr(inner, '__name__', type(inner).__name__)
+            suffix = ""
+        load_str = ", ".join(f"{k}={v}" for k, v in load_metadata.items())
+        print(f"    [{index}] {var_name}.load({load_str}){suffix}")
+    elif isinstance(spec, ColumnSelection):
+        load_str = ", ".join(f"{k}={v}" for k, v in metadata.items())
+        var_name = spec.var_type.__name__
+        col_str = ", ".join(spec.columns)
+        print(f"    [{index}] {var_name}.load({load_str}) -> columns: [{col_str}]")
+    else:
+        load_str = ", ".join(f"{k}={v}" for k, v in metadata.items())
+        var_name = getattr(spec, '__name__', type(spec).__name__)
+        print(f"    [{index}] {var_name}.load({load_str})")
+
+
+def _resolve_var_spec(
+    var_spec: Any, metadata: dict[str, Any]
+) -> tuple[type, dict[str, Any], list[str] | None]:
+    """Resolve a var_spec into (var_type, load_metadata, column_selection).
+
+    Handles Fixed, ColumnSelection, Fixed(ColumnSelection), and plain types.
+
+    Returns:
+        var_type: The actual class to call .load() on
+        load_metadata: The metadata dict to pass to .load()
+        column_selection: list of column names, or None
+    """
+    column_selection = None
+    if isinstance(var_spec, Fixed):
+        load_metadata = {**metadata, **var_spec.fixed_metadata}
+        inner = var_spec.var_type
+        if isinstance(inner, ColumnSelection):
+            column_selection = inner.columns
+            var_type = inner.var_type
+        else:
+            var_type = inner
+    elif isinstance(var_spec, ColumnSelection):
+        load_metadata = metadata
+        column_selection = var_spec.columns
+        var_type = var_spec.var_type
+    else:
+        load_metadata = metadata
+        var_type = var_spec
+    return var_type, load_metadata, column_selection
+
+
+def _load_and_merge(
+    merge_spec: Merge,
+    metadata: dict[str, Any],
+    param_name: str,
+    db: Any | None = None,
+) -> "pd.DataFrame":
+    """Load each constituent of a Merge and combine into a single DataFrame.
+
+    Each constituent must match exactly one record. DataFrames contribute
+    all their columns. Arrays and scalars are added as a column named
+    after the variable class name.
+    """
+    import pandas as pd
+
+    parts = []
+
+    for i, spec in enumerate(merge_spec.var_specs):
+        var_type, load_metadata, column_selection = _resolve_var_spec(spec, metadata)
+        label = f"{param_name}[{i}]"
+
+        db_kwargs = {"db": db} if db is not None else {}
+        loaded = var_type.load(**db_kwargs, **load_metadata)
+
+        # Merge requires exactly one result per constituent
+        if isinstance(loaded, list):
+            var_name = getattr(var_type, '__name__', type(var_type).__name__)
+            raise ValueError(
+                f"Merge constituent {var_name} returned {len(loaded)} records "
+                f"for {label}, but Merge requires exactly 1 per iteration. "
+                f"Use more specific metadata or Fixed() to narrow the match."
+            )
+
+        # Apply column selection if applicable
+        if column_selection is not None:
+            loaded = _apply_column_selection(loaded, column_selection, label)
+            # Use the selected column name(s) for naming instead of the var class
+            col_name = column_selection[0] if len(column_selection) == 1 else None
+        else:
+            col_name = None
+
+        var_name = getattr(var_type, '__name__', type(var_type).__name__)
+        display_name = col_name if col_name is not None else var_name
+        part_df = _constituent_to_dataframe(loaded, display_name, label)
+        parts.append((var_name, part_df))
+
+    return _merge_parts(parts, param_name)
+
+
+def _constituent_to_dataframe(loaded: Any, var_name: str, label: str) -> "pd.DataFrame":
+    """Convert a loaded value to a DataFrame for merging.
+
+    DataFrame data: all columns included as-is.
+    1D array/list: single column named after the variable class.
+    2D array: columns named VarName_0, VarName_1, etc.
+    Scalar: single-row, single-column DataFrame.
+    """
+    import numpy as np
+    import pandas as pd
+
+    # Extract raw data from BaseVariable/ThunkOutput wrappers
+    raw = loaded
+    if hasattr(loaded, 'data') and not isinstance(loaded, (np.ndarray, pd.DataFrame, pd.Series)):
+        raw = loaded.data
+
+    if isinstance(raw, pd.DataFrame):
+        return raw.reset_index(drop=True)
+    elif isinstance(raw, np.ndarray):
+        if raw.ndim == 1:
+            return pd.DataFrame({var_name: raw})
+        elif raw.ndim == 2:
+            cols = {f"{var_name}_{j}": raw[:, j] for j in range(raw.shape[1])}
+            return pd.DataFrame(cols)
+        else:
+            raise TypeError(
+                f"Merge constituent {label} has {raw.ndim}D array data. "
+                f"Only 1D and 2D arrays are supported."
+            )
+    elif isinstance(raw, (int, float, str, bool)):
+        return pd.DataFrame({var_name: [raw]})
+    elif isinstance(raw, list):
+        return pd.DataFrame({var_name: raw})
+    else:
+        raise TypeError(
+            f"Merge constituent {label} has unsupported data type "
+            f"{type(raw).__name__}. Supported: DataFrame, ndarray, scalar, list."
+        )
+
+
+def _merge_parts(
+    parts: list[tuple[str, "pd.DataFrame"]], param_name: str
+) -> "pd.DataFrame":
+    """Merge multiple constituent DataFrames column-wise.
+
+    Validates no column name conflicts and that all multi-row
+    constituents have the same row count. Scalars are broadcast.
+    """
+    import pandas as pd
+
+    if not parts:
+        raise ValueError(f"Merge for '{param_name}' has no constituents.")
+
+    # Check column name conflicts
+    seen_columns: set[str] = set()
+    for var_name, df in parts:
+        for col in df.columns:
+            if col in seen_columns:
+                raise KeyError(
+                    f"Column name conflict in Merge for '{param_name}': "
+                    f"column '{col}' appears in multiple constituents. "
+                    f"Use ColumnSelection to select non-conflicting columns."
+                )
+            seen_columns.add(col)
+
+    # Determine canonical row count from multi-row parts
+    row_counts = [(var_name, len(df)) for var_name, df in parts if len(df) > 1]
+
+    if row_counts:
+        unique_counts = set(n for _, n in row_counts)
+        if len(unique_counts) > 1:
+            detail = ", ".join(f"{name}={n}" for name, n in row_counts)
+            raise ValueError(
+                f"Cannot merge constituents with different row counts in "
+                f"'{param_name}': {detail}. All multi-row constituents must "
+                f"have the same number of rows."
+            )
+        target_len = row_counts[0][1]
+    else:
+        target_len = 1
+
+    # Broadcast single-row parts to target length, then concat
+    expanded = []
+    for _var_name, df in parts:
+        if len(df) == 1 and target_len > 1:
+            df = pd.concat([df] * target_len, ignore_index=True)
+        expanded.append(df)
+
+    return pd.concat(expanded, axis=1)
