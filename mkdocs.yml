@@ -14,24 +14,39 @@ theme:
     - navigation.sections
     - navigation.expand
     - content.code.copy
+    - content.tabs.link
 
 nav:
   - Home: index.md
-  - Quickstart: quickstart.md
+  - Getting Started:
+    - Quickstart: quickstart.md
+    - MATLAB Setup: matlab-setup.md
   - User Guide:
     - Variables: guide/variables.md
-    - Database: guide/database.md
+    - Database & Configuration: guide/database.md
     - Lineage Tracking: guide/lineage.md
-    - Caching: guide/caching.md
-  - API Reference: api.md
+    - Computation Caching: guide/caching.md
+    - Batch Processing: guide/for_each.md
+    - Browsing & Exporting: guide/browsing.md
+  - Walkthroughs:
+    - VO2 Max Pipeline: guide/walkthrough.md
+  - API Reference:
+    - Overview: api/index.md
+    - Variables (BaseVariable): api/variables.md
+    - Database: api/database.md
+    - Lineage (Thunk System): api/lineage.md
+    - Batch Processing (for_each): api/for-each.md
 
 markdown_extensions:
   - pymdownx.highlight:
       anchor_linenums: true
   - pymdownx.superfences
+  - pymdownx.tabbed:
+      alternate_style: true
   - admonition
   - toc:
       permalink: true
+  - attr_list
 
 plugins:
   - search
