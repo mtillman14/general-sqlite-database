@@ -111,7 +111,8 @@ class TestForEachBasic:
         )
 
         assert len(MockOutput.saved_data) == 1
-        assert MockOutput.saved_data[0]["metadata"] == {"subject": 1}
+        meta = MockOutput.saved_data[0]["metadata"]
+        assert meta["subject"] == 1
 
     def test_multiple_iterations(self):
         """Should execute for all combinations."""
@@ -339,10 +340,9 @@ class TestForEachOutput:
             session=["XYZ"],
         )
 
-        assert MockOutput.saved_data[0]["metadata"] == {
-            "subject": 42,
-            "session": "XYZ",
-        }
+        meta = MockOutput.saved_data[0]["metadata"]
+        assert meta["subject"] == 42
+        assert meta["session"] == "XYZ"
 
 
 class TestForEachWithConstants:
@@ -380,10 +380,9 @@ class TestForEachWithConstants:
             subject=[1],
         )
 
-        assert MockOutput.saved_data[0]["metadata"] == {
-            "subject": 1,
-            "smoothing": 0.2,
-        }
+        meta = MockOutput.saved_data[0]["metadata"]
+        assert meta["subject"] == 1
+        assert meta["smoothing"] == 0.2
 
     def test_constant_with_variable_inputs(self):
         """Constants and variable inputs should work together."""
@@ -404,8 +403,10 @@ class TestForEachWithConstants:
 
         # 2 iterations, both should have threshold in metadata
         assert len(MockOutput.saved_data) == 2
-        assert MockOutput.saved_data[0]["metadata"] == {"subject": 1, "threshold": 10}
-        assert MockOutput.saved_data[1]["metadata"] == {"subject": 2, "threshold": 10}
+        meta0 = MockOutput.saved_data[0]["metadata"]
+        meta1 = MockOutput.saved_data[1]["metadata"]
+        assert meta0["subject"] == 1 and meta0["threshold"] == 10
+        assert meta1["subject"] == 2 and meta1["threshold"] == 10
         assert received_args["threshold"] == 10
 
     def test_multiple_constants(self):
@@ -427,12 +428,11 @@ class TestForEachWithConstants:
         )
 
         assert MockOutput.saved_data[0]["data"] == "20-450-bandpass"
-        assert MockOutput.saved_data[0]["metadata"] == {
-            "subject": 1,
-            "low_hz": 20,
-            "high_hz": 450,
-            "method": "bandpass",
-        }
+        meta = MockOutput.saved_data[0]["metadata"]
+        assert meta["subject"] == 1
+        assert meta["low_hz"] == 20
+        assert meta["high_hz"] == 450
+        assert meta["method"] == "bandpass"
 
     def test_constant_not_loaded(self):
         """Constants should not trigger .load() calls."""
@@ -495,11 +495,10 @@ class TestForEachWithConstants:
         )
 
         assert len(MockOutput.saved_data) == 1
-        assert MockOutput.saved_data[0]["metadata"] == {
-            "subject": 1,
-            "session": "A",
-            "threshold": 5.0,
-        }
+        meta = MockOutput.saved_data[0]["metadata"]
+        assert meta["subject"] == 1
+        assert meta["session"] == "A"
+        assert meta["threshold"] == 5.0
 
 
 class TestForEachAsTable:
@@ -544,7 +543,6 @@ class TestForEachAsTable:
         assert isinstance(received["values"], pd.DataFrame)
         assert len(received["values"]) == 3
         assert "MultiResultVar" in received["values"].columns
-        assert "version_id" in received["values"].columns
 
     def test_without_as_table_returns_list(self):
         """Without as_table, multi-result loads stay as lists."""
@@ -1610,3 +1608,135 @@ class TestForEachColumnSelection:
         for val in received_values:
             assert isinstance(val, np.ndarray)
             np.testing.assert_array_equal(val, np.array([1.0, 2.0, 3.0]))
+
+
+class TestForEachConfigKeys:
+    """Tests that for_each() config is captured in saved metadata as version keys."""
+
+    def test_fn_name_in_metadata(self):
+        """__fn should be set to the function name in saved metadata."""
+
+        def my_process(x):
+            return "result"
+
+        for_each(
+            my_process,
+            inputs={"x": MockVariableA},
+            outputs=[MockOutput],
+            subject=[1],
+        )
+
+        meta = MockOutput.saved_data[0]["metadata"]
+        assert meta["__fn"] == "my_process"
+
+    def test_loadable_inputs_in_metadata(self):
+        """__inputs should capture the loadable input spec as JSON string."""
+
+        def process(x):
+            return "result"
+
+        for_each(
+            process,
+            inputs={"x": MockVariableA},
+            outputs=[MockOutput],
+            subject=[1],
+        )
+
+        meta = MockOutput.saved_data[0]["metadata"]
+        import json
+        inputs_key = json.loads(meta["__inputs"])
+        assert inputs_key == {"x": "MockVariableA"}
+
+    def test_constant_not_in_inputs_key(self):
+        """Constants should NOT appear in __inputs (they're already in save_metadata)."""
+
+        def process(x, smoothing):
+            return "result"
+
+        for_each(
+            process,
+            inputs={"x": MockVariableA, "smoothing": 0.2},
+            outputs=[MockOutput],
+            subject=[1],
+        )
+
+        meta = MockOutput.saved_data[0]["metadata"]
+        import json
+        inputs_key = json.loads(meta["__inputs"])
+        assert "smoothing" not in inputs_key
+        assert "x" in inputs_key
+
+    def test_fixed_input_serialized_in_inputs_key(self):
+        """Fixed inputs should be serialized via to_key() into __inputs."""
+
+        def process(baseline, current):
+            return "result"
+
+        for_each(
+            process,
+            inputs={"baseline": Fixed(MockVariableA, session="BL"), "current": MockVariableB},
+            outputs=[MockOutput],
+            subject=[1],
+            session=["A"],
+        )
+
+        meta = MockOutput.saved_data[0]["metadata"]
+        import json
+        inputs_key = json.loads(meta["__inputs"])
+        assert "Fixed" in inputs_key["baseline"]
+        assert "session='BL'" in inputs_key["baseline"]
+        assert inputs_key["current"] == "MockVariableB"
+
+    def test_where_not_in_metadata_when_absent(self):
+        """__where should not appear in metadata when where= is not set."""
+
+        def process(x):
+            return "result"
+
+        for_each(
+            process,
+            inputs={"x": MockVariableA},
+            outputs=[MockOutput],
+            subject=[1],
+        )
+
+        meta = MockOutput.saved_data[0]["metadata"]
+        assert "__where" not in meta
+
+    def test_different_fn_names_different_config_keys(self):
+        """Different functions should produce different __fn values."""
+
+        def fn_a(x):
+            return "a"
+
+        def fn_b(x):
+            return "b"
+
+        for_each(fn_a, inputs={"x": MockVariableA}, outputs=[MockOutput], subject=[1])
+        meta_a = MockOutput.saved_data[0]["metadata"]["__fn"]
+
+        MockOutput.reset()
+        for_each(fn_b, inputs={"x": MockVariableA}, outputs=[MockOutput], subject=[1])
+        meta_b = MockOutput.saved_data[0]["metadata"]["__fn"]
+
+        assert meta_a == "fn_a"
+        assert meta_b == "fn_b"
+        assert meta_a != meta_b
+
+    def test_schema_keys_not_affected(self):
+        """Schema metadata keys (subject, trial, etc.) should be unchanged."""
+
+        def process(x):
+            return "result"
+
+        for_each(
+            process,
+            inputs={"x": MockVariableA},
+            outputs=[MockOutput],
+            subject=[42],
+            trial=[7],
+        )
+
+        meta = MockOutput.saved_data[0]["metadata"]
+        assert meta["subject"] == 42
+        assert meta["trial"] == 7

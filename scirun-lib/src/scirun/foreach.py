@@ -5,6 +5,7 @@ from typing import Any, Callable
 
 from .column_selection import ColumnSelection
 from .fixed import Fixed
+from .foreach_config import ForEachConfig
 from .merge import Merge
 
 
@@ -55,8 +56,8 @@ def for_each(
                   - list of input names: convert only those inputs
                   - False/None/[]: no conversion (default)
                   Only applies when load() returns a list (multiple
-                  matches). The DataFrame has columns for metadata keys,
-                  version_id, and a data column named after the variable type.
+                  matches). The DataFrame has columns for metadata keys
+                  and a data column named after the variable type.
         db: Optional DatabaseManager instance to use for all load/save
             operations instead of the global database.
         distribute: If True, split each output (vector/table) by element/row
@@ -152,6 +153,17 @@ def for_each(
             loadable_inputs[param_name] = var_spec
         else:
             constant_inputs[param_name] = var_spec
+
+    # Build config version keys (once per for_each call, not per iteration)
+    config = ForEachConfig(
+        fn=fn,
+        inputs=inputs,
+        where=where,
+        distribute=distribute,
+        as_table=as_table,
+        pass_metadata=pass_metadata,
+    )
+    config_keys = config.to_version_keys()
 
     # Check distribute doesn't conflict with a constant input name
     if distribute_key is not None and distribute_key in constant_inputs:
@@ -295,8 +307,8 @@ def for_each(
         if not isinstance(result, tuple):
             result = (result,)
 
-        # Save outputs (include constants as version keys in metadata)
-        save_metadata = {**metadata, **constant_inputs}
+        # Save outputs (include constants and for_each config as version keys)
+        save_metadata = {**metadata, **constant_inputs, **config_keys}
         if save:
             db_kwargs = {"db": db} if db is not None else {}
 
@@ -434,7 +446,6 @@ def _multi_result_to_dataframe(results: list, var_type: type):
         for var in results:
             data_df = var.data
             meta = dict(var.metadata) if var.metadata else {}
-            meta["version_id"] = getattr(var, "version_id", None)
             nr = len(data_df)
             meta_df = pd.DataFrame({k: [v] * nr for k, v in meta.items()})
             parts.append(pd.concat([meta_df.reset_index(drop=True),
@@ -446,7 +457,6 @@ def _multi_result_to_dataframe(results: list, var_type: type):
         rows = []
         for var in results:
             row = dict(var.metadata) if var.metadata else {}
-            row["version_id"] = getattr(var, "version_id", None)
             row[view_name] = var.data
             rows.append(row)
         return pd.DataFrame(rows)

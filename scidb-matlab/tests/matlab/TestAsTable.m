@@ -37,12 +37,12 @@ classdef TestAsTable < matlab.unittest.TestCase
 
     methods (Test)
 
-        function test_version_id_populated_after_load(testCase)
-            %% version_id and parameter_id should be set after load
+        function test_record_id_populated_after_load(testCase)
+            %% record_id should be set after load
             ScalarVar().save(42, 'subject', 1, 'session', 'A');
             loaded = ScalarVar().load('subject', 1, 'session', 'A');
-            testCase.verifyEqual(loaded.version_id, int64(1));
-            testCase.verifyEqual(loaded.parameter_id, int64(1));
+            testCase.verifyNotEmpty(loaded.record_id);
+            testCase.verifyTrue(isstring(loaded.record_id));
         end
 
         function test_load_as_table_multi_result(testCase)
@@ -55,7 +55,6 @@ classdef TestAsTable < matlab.unittest.TestCase
             testCase.verifyEqual(height(tbl), 2);
             testCase.verifyTrue(ismember('subject', tbl.Properties.VariableNames));
             testCase.verifyTrue(ismember('session', tbl.Properties.VariableNames));
-            testCase.verifyTrue(ismember('version_id', tbl.Properties.VariableNames));
             testCase.verifyTrue(ismember('RawSignal', tbl.Properties.VariableNames));
         end
 
@@ -78,31 +77,28 @@ classdef TestAsTable < matlab.unittest.TestCase
         end
 
         function test_loadall_as_table_true_multiple_versions(testCase)
-            %% load_all(as_table=true) with multiple versions should show incrementing version_id
+            %% load_all(as_table=true) with multiple saves returns all records
             RawSignal().save([1 2 3], 'subject', 1, 'session', 'A');
             RawSignal().save([4 5 6], 'subject', 1, 'session', 'A');
 
             result = RawSignal().load_all('as_table', true, 'subject', 1, 'session', 'A');
             testCase.verifyTrue(isa(result, 'table'));
             testCase.verifyEqual(height(result), 2);
-            testCase.verifyEqual(result.version_id, [2; 1]);
         end
 
         function test_loadall_as_table_false_multiple_versions(testCase)
-            %% load_all(as_table=true) with multiple versions should show incrementing version_id
+            %% load_all(as_table=false) with multiple saves returns ThunkOutput array
             RawSignal().save([1 2 3], 'subject', 1, 'session', 'A');
             RawSignal().save([4 5 6], 'subject', 1, 'session', 'A');
 
             result = RawSignal().load_all('as_table', false, 'subject', 1, 'session', 'A');
             testCase.verifyTrue(isa(result, 'scidb.ThunkOutput'));
             testCase.verifyEqual(numel(result), 2);
-            testCase.verifyEqual([result.version_id], int64([2 1]));
 
             % test default is 'false'
             result = RawSignal().load_all('subject', 1, 'session', 'A');
             testCase.verifyTrue(isa(result, 'scidb.ThunkOutput'));
             testCase.verifyEqual(numel(result), 2);
-            testCase.verifyEqual([result.version_id], int64([2 1]));
         end
 
         function test_for_each_as_table(testCase)
@@ -164,8 +160,6 @@ classdef TestAsTable < matlab.unittest.TestCase
                 'Table should contain subject metadata column');
             testCase.verifyTrue(ismember('session', received.Properties.VariableNames), ...
                 'Table should contain session metadata column');
-            testCase.verifyTrue(ismember('version_id', received.Properties.VariableNames), ...
-                'Table should contain version_id column');
             % Must have the selected data column
             testCase.verifyTrue(ismember('signal', received.Properties.VariableNames), ...
                 'Table should contain the selected data column');
@@ -206,7 +200,6 @@ classdef TestAsTable < matlab.unittest.TestCase
             % Must have metadata columns
             testCase.verifyTrue(ismember('subject', received.Properties.VariableNames));
             testCase.verifyTrue(ismember('session', received.Properties.VariableNames));
-            testCase.verifyTrue(ismember('version_id', received.Properties.VariableNames));
             % Must have selected data columns
             testCase.verifyTrue(ismember('a', received.Properties.VariableNames));
             testCase.verifyTrue(ismember('b', received.Properties.VariableNames));

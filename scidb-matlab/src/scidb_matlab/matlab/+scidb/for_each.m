@@ -1156,8 +1156,14 @@ function s = format_value(val)
         end
     elseif ischar(val) || isstring(val)
         s = sprintf('''%s''', string(val));
+    elseif istable(val)
+        s = sprintf('<table %dx%d>', height(val), width(val));
     else
-        s = mat2str(val);
+        try
+            s = mat2str(val);
+        catch
+            s = sprintf('<%s>', class(val));
+        end
     end
 end
 
@@ -1414,13 +1420,6 @@ function tbl = fe_multi_result_to_table(results, type_name)
                 end
             end
 
-            % version_id
-            if ~isempty(results(i).version_id)
-                meta_tbl.version_id = repmat(results(i).version_id, nr, 1);
-            else
-                meta_tbl.version_id = zeros(nr, 1);
-            end
-
             % Concatenate metadata + data columns for this result
             rows{i} = [meta_tbl, data_tbl];
         end
@@ -1441,15 +1440,6 @@ function tbl = fe_multi_result_to_table(results, type_name)
             end
             tbl.(meta_fields{f}) = normalize_cell_column(col_data);
         end
-
-        % version_id column
-        vid_data = zeros(n, 1);
-        for i = 1:n
-            if ~isempty(results(i).version_id)
-                vid_data(i) = results(i).version_id;
-            end
-        end
-        tbl.version_id = vid_data;
 
         % Data column (named after the variable type)
         parts = strsplit(type_name, '.');

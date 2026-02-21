@@ -39,8 +39,7 @@ def temp_db_path(tmp_path):
 def db(tmp_path):
     """Provide a fresh configured database instance."""
     db_path = tmp_path / "test_db.duckdb"
-    pipeline_path = tmp_path / "test_pipeline.db"
-    db = configure_database(db_path, DEFAULT_TEST_SCHEMA_KEYS, pipeline_path)
+    db = configure_database(db_path, DEFAULT_TEST_SCHEMA_KEYS)
     yield db
     db.close()
 
@@ -49,8 +48,7 @@ def db(tmp_path):
 def configured_db(tmp_path):
     """Provide a configured global database."""
     db_path = tmp_path / "test_db.duckdb"
-    pipeline_path = tmp_path / "test_pipeline.db"
-    db = configure_database(db_path, DEFAULT_TEST_SCHEMA_KEYS, pipeline_path)
+    db = configure_database(db_path, DEFAULT_TEST_SCHEMA_KEYS)
     yield db
     db.close()
     # Clear the global state

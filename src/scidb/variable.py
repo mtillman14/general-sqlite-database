@@ -146,8 +146,6 @@ class BaseVariable(metaclass=VariableMeta):
         self.metadata: dict | None = None
         self.content_hash: str | None = None
         self.lineage_hash: str | None = None
-        self.version_id: int | None = None
-        self.parameter_id: int | None = None
 
     def to_db(self) -> pd.DataFrame:
         """
@@ -296,7 +294,7 @@ class BaseVariable(metaclass=VariableMeta):
         key queries to naturally return all matching rows.
 
         When as_table=True and multiple results match, returns a pandas
-        DataFrame with schema key columns, version_id, parameter key columns,
+        DataFrame with schema key columns, version key columns,
         and a data column named after the variable's class name.
 
         Args:
@@ -375,13 +373,12 @@ class BaseVariable(metaclass=VariableMeta):
     def _results_to_dataframe(cls, results: list["BaseVariable"]) -> pd.DataFrame:
         """Convert a list of loaded variables to a DataFrame.
 
-        Columns: schema key columns + version_id + parameter key columns +
+        Columns: schema key columns + version key columns +
         data column (named after cls.view_name()).
         """
         rows = []
         for var in results:
             row = dict(var.metadata) if var.metadata else {}
-            row["version_id"] = var.version_id
             row[cls.view_name()] = var.data
             rows.append(row)
         return pd.DataFrame(rows)
@@ -391,7 +388,7 @@ class BaseVariable(metaclass=VariableMeta):
         cls,
         as_df: bool = False,
         include_record_id: bool = False,
-        version_id: int | list[int] | str = "all",
+        version_id: str = "all",
         where=None,
         db=None,
         **metadata,
@@ -408,9 +405,7 @@ class BaseVariable(metaclass=VariableMeta):
             include_record_id: If True and as_df=True, include record_id column.
             version_id: Which versions to return:
                 - "all" (default): return every version
-                - "latest": return only the latest version per parameter set
-                - int: return only that specific version_id
-                - list[int]: return only those version_ids
+                - "latest": return only the latest version per (schema, version_keys)
             db: Optional DatabaseManager instance to use instead of the global
                 database. Allows one-shot operations against a specific database
                 without changing the global default.
@@ -474,7 +469,7 @@ class BaseVariable(metaclass=VariableMeta):
             return pd.DataFrame(rows)
 
     @classmethod
-    def _load_all_generator(cls, db, metadata: dict, version_id: int | list[int] | str = "all", where=None):
+    def _load_all_generator(cls, db, metadata: dict, version_id: str = "all", where=None):
         """Helper generator for load_all() to avoid making load_all a generator."""
         yield from db.load_all(cls, metadata, version_id=version_id, where=where)
 

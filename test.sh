@@ -12,7 +12,7 @@
 set -euo pipefail
 
 # ---- Configurable delay (change this once) ----
-DELAY=25200  # seconds
+DELAY=11520  # seconds
 
 # Default message if none provided
 MESSAGE="${1:-Say 'hello' only}"
@@ -20,10 +20,12 @@ MESSAGE="${1:-Say 'hello' only}"
 echo "Waiting ${DELAY} seconds before pinging Claude..."
 sleep "${DELAY}"
 
-echo "Sending message to Claude:"
-echo "\"${MESSAGE}\""
+claude --continue
 
-# Send message to Claude CLI
-claude "${MESSAGE}"
+# echo "Sending message to Claude:"
+# echo "\"${MESSAGE}\""
 
-echo "Done."
+# # Send message to Claude CLI
+# claude "${MESSAGE}"
+
+# echo "Done."

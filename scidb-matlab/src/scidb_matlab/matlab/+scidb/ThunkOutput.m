@@ -20,6 +20,8 @@ classdef ThunkOutput < handle
 %       metadata     - Metadata struct (populated after load, empty after compute)
 %       content_hash - Content hash (populated after load, empty after compute)
 %       lineage_hash - Lineage hash (populated after load, empty after compute)
+%
+%   Removed in schema v2: version_id, parameter_id (use record_id + timestamp instead)
 
     properties
         data            % MATLAB data (the actual computation result)
@@ -28,8 +30,6 @@ classdef ThunkOutput < handle
         metadata     struct     % Metadata key-value pairs (populated after load)
         content_hash string     % Content hash (populated after load)
         lineage_hash string     % Lineage hash (populated after load)
-        version_id               % Version ID (populated after load)
-        parameter_id             % Parameter ID (populated after load)
     end
 
     methods

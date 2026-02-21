@@ -475,7 +475,7 @@ classdef BaseVariable < dynamicprops
         %       Any other name-value pairs are metadata filters.
         %
         %   Returns a struct array with fields: record_id, schema,
-        %   version, created_at.
+        %   version, timestamp.
         %
         %   Example:
         %       v = ProcessedSignal().list_versions(subject=1, session="A");
@@ -494,14 +494,14 @@ classdef BaseVariable < dynamicprops
             py_list = py_db.list_versions(py_class, pyargs(py_kwargs{:}));
 
             n = int64(py.builtins.len(py_list));
-            versions = struct('record_id', {}, 'schema', {}, 'version', {}, 'created_at', {});
+            versions = struct('record_id', {}, 'schema', {}, 'version', {}, 'timestamp', {});
 
             for i = 1:n
                 py_dict = py_list{i};
                 versions(i).record_id  = string(py_dict{'record_id'});
                 versions(i).schema     = scidb.internal.pydict_to_struct(py_dict{'schema'});
                 versions(i).version    = scidb.internal.pydict_to_struct(py_dict{'version'});
-                versions(i).created_at = string(py_dict{'created_at'});
+                versions(i).timestamp  = string(py_dict{'timestamp'});
             end
 
             
@@ -697,15 +697,6 @@ classdef BaseVariable < dynamicprops
                 v.metadata = scidb.internal.pydict_to_struct(py_meta);
             end
 
-            py_vid = py.builtins.getattr(py_var, 'version_id', py.None);
-            if ~isa(py_vid, 'py.NoneType')
-                v.version_id = int64(py_vid);
-            end
-
-            py_pid = py.builtins.getattr(py_var, 'parameter_id', py.None);
-            if ~isa(py_pid, 'py.NoneType')
-                v.parameter_id = int64(py_pid);
-            end
         end
 
         function results = wrap_py_vars_batch(bulk)
@@ -734,8 +725,6 @@ classdef BaseVariable < dynamicprops
             record_ids     = splitlines(string(bulk{'record_ids'}));
             content_hashes = splitlines(string(bulk{'content_hashes'}));
             lineage_hashes = splitlines(string(bulk{'lineage_hashes'}));
-            vid_strs       = splitlines(string(bulk{'version_ids'}));
-            pid_strs       = splitlines(string(bulk{'parameter_ids'}));
 
             % Parse all metadata at once via JSON (native C decoder, no crossings)
             json_str = char(bulk{'json_meta'});
@@ -750,12 +739,6 @@ classdef BaseVariable < dynamicprops
                     end
                 end
             end
-
-            % --- Optimization A: Vectorize str2double outside the loop ---
-            vid_nums = str2double(vid_strs);
-            pid_nums = str2double(pid_strs);
-            vid_valid = ~isnan(vid_nums);
-            pid_valid = ~isnan(pid_nums);
 
             % --- Optimization B: Scalar data batch transfer ---
             % When all data values are scalars, Python packs them as a
@@ -813,13 +796,6 @@ classdef BaseVariable < dynamicprops
                 end
 
                 v.metadata = meta_arr(i);
-
-                if vid_valid(i)
-                    v.version_id = int64(vid_nums(i));
-                end
-                if pid_valid(i)
-                    v.parameter_id = int64(pid_nums(i));
-                end
 
                 results(i) = v;
             end
@@ -930,15 +906,6 @@ function tbl = multi_result_to_table(results, type_name)
             tbl.(meta_fields{f}) = col_data;
         end
     end
-
-    % version_id column
-    vid_data = zeros(n, 1);
-    for i = 1:n
-        if ~isempty(results(i).version_id)
-            vid_data(i) = results(i).version_id;
-        end
-    end
-    tbl.version_id = vid_data;
 
     % Data column (named after the variable type)
     % Strip package prefix (e.g. "mypackage.StepLength" → "StepLength")

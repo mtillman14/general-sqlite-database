@@ -37,8 +37,7 @@ class FinalResult(BaseVariable):
 def strict_db(tmp_path):
     """Provide a database configured with strict lineage mode."""
     db_path = tmp_path / "strict_test.db"
-    pipeline_path = tmp_path / "strict_pipeline.db"
-    db = configure_database(db_path, DEFAULT_TEST_SCHEMA_KEYS, pipeline_path, lineage_mode="strict")
+    db = configure_database(db_path, DEFAULT_TEST_SCHEMA_KEYS, lineage_mode="strict")
     yield db
     db.close()
     if hasattr(_local, 'database'):
@@ -49,8 +48,7 @@ def strict_db(tmp_path):
 def ephemeral_db(tmp_path):
     """Provide a database configured with ephemeral lineage mode."""
     db_path = tmp_path / "ephemeral_test.db"
-    pipeline_path = tmp_path / "ephemeral_pipeline.db"
-    db = configure_database(db_path, DEFAULT_TEST_SCHEMA_KEYS, pipeline_path, lineage_mode="ephemeral")
+    db = configure_database(db_path, DEFAULT_TEST_SCHEMA_KEYS, lineage_mode="ephemeral")
     yield db
     db.close()
     if hasattr(_local, 'database'):
@@ -77,30 +75,30 @@ class TestLineageModeConfiguration:
 
     def test_default_lineage_mode_is_strict(self, tmp_path):
         """Default lineage mode should be 'strict'."""
-        db = DatabaseManager(tmp_path / "test.db", dataset_schema_keys=DEFAULT_TEST_SCHEMA_KEYS, pipeline_db_path=tmp_path / "pipeline.db")
+        db = DatabaseManager(tmp_path / "test.db", dataset_schema_keys=DEFAULT_TEST_SCHEMA_KEYS)
         assert db.lineage_mode == "strict"
         db.close()
 
     def test_configure_strict_mode(self, tmp_path):
         """Can explicitly configure strict mode."""
-        db = DatabaseManager(tmp_path / "test.db", dataset_schema_keys=DEFAULT_TEST_SCHEMA_KEYS, pipeline_db_path=tmp_path / "pipeline.db", lineage_mode="strict")
+        db = DatabaseManager(tmp_path / "test.db", dataset_schema_keys=DEFAULT_TEST_SCHEMA_KEYS, lineage_mode="strict")
         assert db.lineage_mode == "strict"
         db.close()
 
     def test_configure_ephemeral_mode(self, tmp_path):
         """Can configure ephemeral mode."""
-        db = DatabaseManager(tmp_path / "test.db", dataset_schema_keys=DEFAULT_TEST_SCHEMA_KEYS, pipeline_db_path=tmp_path / "pipeline.db", lineage_mode="ephemeral")
+        db = DatabaseManager(tmp_path / "test.db", dataset_schema_keys=DEFAULT_TEST_SCHEMA_KEYS, lineage_mode="ephemeral")
         assert db.lineage_mode == "ephemeral"
         db.close()
 
     def test_invalid_lineage_mode_raises_error(self, tmp_path):
         """Invalid lineage mode should raise ValueError."""
         with pytest.raises(ValueError, match="lineage_mode must be one of"):
-            DatabaseManager(tmp_path / "test.db", dataset_schema_keys=DEFAULT_TEST_SCHEMA_KEYS, pipeline_db_path=tmp_path / "pipeline.db", lineage_mode="invalid")
+            DatabaseManager(tmp_path / "test.db", dataset_schema_keys=DEFAULT_TEST_SCHEMA_KEYS, lineage_mode="invalid")
 
     def test_configure_database_passes_lineage_mode(self, tmp_path):
         """configure_database should pass lineage_mode to DatabaseManager."""
-        db = configure_database(tmp_path / "test.db", DEFAULT_TEST_SCHEMA_KEYS, tmp_path / "pipeline.db", lineage_mode="ephemeral")
+        db = configure_database(tmp_path / "test.db", DEFAULT_TEST_SCHEMA_KEYS, lineage_mode="ephemeral")
         assert db.lineage_mode == "ephemeral"
         db.close()
 
@@ -351,11 +349,10 @@ class TestEphemeralMode:
         result2 = step2(intermediate)
         FinalResult.save(result2, subject=1, stage="final")
 
-        # Query the lineage table directly for ephemeral entries (now in PipelineDB/SQLite)
-        cursor = ephemeral_db._pipeline_db._conn.execute(
-            "SELECT output_record_id, output_type FROM lineage WHERE output_record_id LIKE 'ephemeral:%'"
+        # Query the _lineage table in DuckDB for ephemeral entries
+        ephemeral_entries = ephemeral_db._duck._fetchall(
+            "SELECT lineage_hash FROM _lineage WHERE lineage_hash LIKE 'ephemeral:%'"
         )
-        ephemeral_entries = cursor.fetchall()
 
         # Should have at least one ephemeral entry for the unsaved intermediate
         assert len(ephemeral_entries) >= 1
@@ -507,11 +504,11 @@ class TestEdgeCases:
         final2 = step2(intermediate)
         FinalResult.save(final2, subject=1, version=2)
 
-        # Count ephemeral entries (now in PipelineDB/SQLite)
-        cursor = ephemeral_db._pipeline_db._conn.execute(
-            "SELECT COUNT(*) FROM lineage WHERE output_record_id LIKE 'ephemeral:%'"
+        # Count ephemeral entries in DuckDB _lineage table
+        rows = ephemeral_db._duck._fetchall(
+            "SELECT COUNT(DISTINCT lineage_hash) FROM _lineage WHERE lineage_hash LIKE 'ephemeral:%'"
         )
-        count = cursor.fetchone()[0]
+        count = rows[0][0]
 
         # Should only have one ephemeral entry for the intermediate
         # (the same unsaved variable used twice should create one entry due to dedup)

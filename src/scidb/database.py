@@ -60,10 +60,8 @@ def _from_schema_str(value):
 import sys
 _project_root = Path(__file__).parent.parent.parent
 sys.path.insert(0, str(_project_root / "sciduck" / "src"))
-sys.path.insert(0, str(_project_root / "pipelinedb-lib" / "src"))
 
 from sciduck import SciDuck, _infer_duckdb_type, _python_to_storage
-from pipelinedb import PipelineDB
 
 
 # Global database instance (thread-local for safety)
@@ -398,7 +396,7 @@ def get_user_id() -> str | None:
 def configure_database(
     dataset_db_path: str | Path,
     dataset_schema_keys: list[str],
-    pipeline_db_path: str | Path,
+    pipeline_db_path: str | Path | None = None,
     lineage_mode: str = "strict",
 ) -> "DatabaseManager":
     """
@@ -414,7 +412,7 @@ def configure_database(
             logical location of data and are used for the folder hierarchy.
             Any metadata keys not in this list are treated as version parameters
             that distinguish different computational versions of the same data.
-        pipeline_db_path: Path to the SQLite database for lineage storage.
+        pipeline_db_path: Deprecated. Ignored. Lineage is now stored in DuckDB.
         lineage_mode: How to handle intermediate variables in lineage tracking.
             - "strict" (default): All upstream BaseVariables must be saved
               before saving downstream results. Raises UnsavedIntermediateError
@@ -430,10 +428,16 @@ def configure_database(
     Raises:
         ValueError: If lineage_mode is not "strict" or "ephemeral"
     """
+    if pipeline_db_path is not None:
+        warnings.warn(
+            "pipeline_db_path is deprecated and ignored. "
+            "Lineage is now stored in the DuckDB database.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
     db = DatabaseManager(
         dataset_db_path,
         dataset_schema_keys=dataset_schema_keys,
-        pipeline_db_path=pipeline_db_path,
         lineage_mode=lineage_mode,
     )
     for cls in BaseVariable._all_subclasses.values():
@@ -464,10 +468,10 @@ def get_database() -> "DatabaseManager":
 
 class DatabaseManager:
     """
-    Manages data storage (DuckDB via SciDuck) and lineage persistence (SQLite via PipelineDB).
+    Manages data storage and lineage persistence (both in DuckDB via SciDuck).
 
     Example:
-        db = configure_database("experiment.duckdb", ["subject", "session"], "pipeline.db")
+        db = configure_database("experiment.duckdb", ["subject", "session"])
 
         RawSignal.save(np.eye(3), subject=1, session=1)
         loaded = RawSignal.load(subject=1, session=1)
@@ -479,7 +483,7 @@ class DatabaseManager:
         self,
         dataset_db_path: str | Path,
         dataset_schema_keys: list[str],
-        pipeline_db_path: str | Path,
+        pipeline_db_path: str | Path | None = None,
         lineage_mode: str = "strict",
     ):
         """
@@ -491,7 +495,7 @@ class DatabaseManager:
                 (e.g., ["subject", "visit", "channel"]). These keys identify the
                 logical location of data. Any other metadata keys are treated as
                 version parameters.
-            pipeline_db_path: Path to SQLite database for lineage storage.
+            pipeline_db_path: Deprecated. Ignored.
             lineage_mode: How to handle intermediate variables ("strict" or "ephemeral")
 
         Raises:
@@ -512,18 +516,15 @@ class DatabaseManager:
                 "not a set. Schema key order defines the dataset hierarchy."
             )
         self.dataset_schema_keys = list(dataset_schema_keys)
-        self.pipeline_db_path = Path(pipeline_db_path)
         self._registered_types: dict[str, Type[BaseVariable]] = {}
 
-        # Initialize SciDuck backend for data storage
+        # Initialize SciDuck backend for data storage and lineage (all in DuckDB)
         self._duck = SciDuck(self.dataset_db_path, dataset_schema=dataset_schema_keys)
-
-        # Initialize PipelineDB for lineage storage (SQLite)
-        self._pipeline_db = PipelineDB(pipeline_db_path)
 
         # Create metadata tables for type registration (in DuckDB)
         self._ensure_meta_tables()
         self._ensure_record_metadata_table()
+        self._ensure_lineage_table()
 
         self._closed = False # Track connection open/closed state
 
@@ -545,35 +546,54 @@ class DatabaseManager:
         """Create the _record_metadata side table for record-level metadata."""
         self._duck._execute("""
             CREATE TABLE IF NOT EXISTS _record_metadata (
-                record_id VARCHAR PRIMARY KEY,
+                record_id VARCHAR NOT NULL,
+                timestamp VARCHAR NOT NULL,
                 variable_name VARCHAR NOT NULL,
-                parameter_id INTEGER NOT NULL,
-                version_id INTEGER NOT NULL DEFAULT 1,
                 schema_id INTEGER NOT NULL,
+                version_keys VARCHAR DEFAULT '{}',
                 content_hash VARCHAR,
                 lineage_hash VARCHAR,
                 schema_version INTEGER,
                 user_id VARCHAR,
-                created_at VARCHAR NOT NULL
+                PRIMARY KEY (record_id, timestamp)
+            )
+        """)
+
+    def _ensure_lineage_table(self):
+        """Create the _lineage table for type-level provenance DAG."""
+        self._duck._execute("""
+            CREATE TABLE IF NOT EXISTS _lineage (
+                lineage_hash VARCHAR NOT NULL,
+                source VARCHAR NOT NULL,
+                source_type VARCHAR NOT NULL DEFAULT 'variable',
+                target VARCHAR NOT NULL,
+                function_name VARCHAR NOT NULL,
+                function_hash VARCHAR NOT NULL,
+                timestamp VARCHAR NOT NULL,
+                PRIMARY KEY (lineage_hash, source, target, function_hash)
             )
         """)
 
     def _create_variable_view(self, variable_class: Type[BaseVariable]):
-        """Create a view joining a variable table with _schema and _variables."""
+        """Create a view joining a variable table with _schema via _record_metadata."""
         table_name = variable_class.table_name()
         view_name = variable_class.view_name()
         schema_cols = ", ".join(f's."{col}"' for col in self.dataset_schema_keys)
         self._duck._execute(f"""
             CREATE OR REPLACE VIEW "{view_name}" AS
+            WITH latest_meta AS (
+                SELECT record_id, schema_id, version_keys,
+                       ROW_NUMBER() OVER (PARTITION BY record_id ORDER BY timestamp DESC) AS rn
+                FROM _record_metadata
+                WHERE variable_name = '{table_name}'
+            )
             SELECT
                 t.*,
                 s.schema_level, {schema_cols},
-                v.version_keys, v.description
+                lm.version_keys
             FROM "{table_name}" t
-            LEFT JOIN _schema s ON t.schema_id = s.schema_id
-            LEFT JOIN _variables v
-                ON v.variable_name = '{table_name}'
-                AND t.parameter_id = v.parameter_id
+            LEFT JOIN latest_meta lm ON t.record_id = lm.record_id AND lm.rn = 1
+            LEFT JOIN _schema s ON lm.schema_id = s.schema_id
         """)
 
     def _split_metadata(self, flat_metadata: dict) -> dict:
@@ -612,110 +632,52 @@ class DatabaseManager:
     def _save_record_metadata(
         self,
         record_id: str,
+        timestamp: str,
         variable_name: str,
-        parameter_id: int,
-        version_id: int,
         schema_id: int,
-        content_hash: str,
+        version_keys: dict | None,
+        content_hash: str | None,
         lineage_hash: str | None,
         schema_version: int,
         user_id: str | None,
-        created_at: str,
     ) -> None:
-        """Insert a record into _record_metadata. Idempotent via ON CONFLICT DO NOTHING."""
+        """Insert a new audit row into _record_metadata. Always inserts (audit trail)."""
+        vk_json = json.dumps(version_keys or {}, sort_keys=True)
         self._duck._execute(
             """
             INSERT INTO _record_metadata (
-                record_id, variable_name, parameter_id, version_id, schema_id,
-                content_hash, lineage_hash, schema_version,
-                user_id, created_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            ON CONFLICT (record_id) DO NOTHING
+                record_id, timestamp, variable_name, schema_id,
+                version_keys, content_hash, lineage_hash, schema_version, user_id
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT (record_id, timestamp) DO NOTHING
             """,
             [
-                record_id, variable_name, parameter_id, version_id, schema_id,
-                content_hash, lineage_hash, schema_version,
-                user_id, created_at,
+                record_id, timestamp, variable_name, schema_id,
+                vk_json, content_hash, lineage_hash, schema_version, user_id,
             ],
         )
 
-    def _resolve_parameter_slot(
-        self,
-        table_name: str,
-        schema_id: int,
-        version_keys: dict | None = None,
-    ) -> tuple[int, int, bool]:
-        """
-        Determine (parameter_id, version_id, is_new_parameter) for a save operation.
-
-        If a _variables row exists for (table_name, version_keys) JSON,
-        reuse that parameter_id and increment version_id from _record_metadata.
-        Otherwise, allocate a new parameter_id with version_id=1.
-
-        Returns:
-            (parameter_id, version_id, is_new_parameter) where is_new_parameter
-            is True only when a brand-new parameter_id was allocated (i.e. no
-            _variables row existed). Callers should only INSERT into _variables
-            when is_new_parameter is True.
-        """
-        vk_json = json.dumps(version_keys or {}, sort_keys=True)
-
-        # Check if _variables has a matching row for this variable + version_keys
-        existing = self._duck._fetchall(
-            "SELECT parameter_id FROM _variables "
-            "WHERE variable_name = ? AND version_keys = ?",
-            [table_name, vk_json],
-        )
-
-        if existing:
-            parameter_id = existing[0][0]
-            # Increment version_id for this parameter slot at this schema location
-            version_rows = self._duck._fetchall(
-                "SELECT COALESCE(MAX(version_id), 0) FROM _record_metadata "
-                "WHERE variable_name = ? AND parameter_id = ? AND schema_id = ?",
-                [table_name, parameter_id, schema_id],
-            )
-            version_id = version_rows[0][0] + 1
-            return parameter_id, version_id, False
-        else:
-            # Allocate new parameter_id
-            param_rows = self._duck._fetchall(
-                "SELECT COALESCE(MAX(parameter_id), 0) FROM _variables "
-                "WHERE variable_name = ?",
-                [table_name],
-            )
-            parameter_id = param_rows[0][0] + 1
-            version_id = 1
-            return parameter_id, version_id, True
-
     def _save_columnar(
         self,
+        record_id: str,
         table_name: str,
         variable_class: Type[BaseVariable],
         df: pd.DataFrame,
         schema_level: str | None,
         schema_keys: dict,
         content_hash: str,
-        version_keys: dict | None = None,
         dict_of_arrays: bool = False,
         ndarray_keys: dict | None = None,
         struct_columns: dict | None = None,
-    ) -> tuple[int, int, int]:
+    ) -> int:
         """
-        Save a DataFrame into SciDuck's table format (columnar storage).
+        Save a DataFrame into a columnar table identified by record_id.
 
         Used for custom-serialized data (to_db/from_db), native DataFrames,
-        and dict-of-arrays data.
+        and dict-of-arrays data. The table uses record_id as the row identifier;
+        multiple data rows sharing the same record_id are allowed.
 
-        Creates a table with schema_id, parameter_id, version_id, and data columns.
-        Registers in _variables with appropriate dtype metadata.
-
-        Args:
-            dict_of_arrays: If True, the data originated from a dict of 1D numpy arrays.
-            ndarray_keys: When dict_of_arrays=True, maps column names to
-                {"dtype": str, "shape": list} for lossless round-tripping.
-
-        Returns (parameter_id, schema_id, version_id).
+        Returns schema_id.
         """
         _t0 = time.perf_counter()
         schema_id = (
@@ -724,20 +686,10 @@ class DatabaseManager:
             else 0
         )
 
-        # Resolve parameter_id and version_id
-        parameter_id, version_id, is_new_parameter = self._resolve_parameter_slot(
-            table_name, schema_id, version_keys
-        )
-        _t_resolve = time.perf_counter() - _t0
-        print(f"      [_save_columnar] resolve schema/param slot: {_t_resolve:.4f}s")
-
-        # Ensure table exists with SciDuck-compatible schema
-        _t0 = time.perf_counter()
+        # Ensure table exists
         if not self._duck._table_exists(table_name):
-            # Infer column types from DataFrame
             col_defs = []
             for col in df.columns:
-                # Map pandas dtypes to DuckDB types
                 dtype = df[col].dtype
                 if pd.api.types.is_integer_dtype(dtype):
                     ddb_type = "BIGINT"
@@ -746,36 +698,18 @@ class DatabaseManager:
                 elif pd.api.types.is_bool_dtype(dtype):
                     ddb_type = "BOOLEAN"
                 elif dtype == object:
-                    # Check if this column contains numeric lists/arrays
                     first_val = next(
                         (v for v in df[col]
                          if v is not None and not (isinstance(v, float) and np.isnan(v))),
                         None,
                     )
-                    # DIAGNOSTIC: Log what we find in object-dtype columns
-                    print(f"      [_save_columnar DIAG] object col {col!r}: "
-                          f"first_val type={type(first_val).__name__}"
-                          f"{f', dtype={first_val.dtype}, shape={first_val.shape}' if isinstance(first_val, np.ndarray) else ''}"
-                          f"{f', len={len(first_val)}, elem_types={set(type(x).__name__ for x in first_val[:5])}' if isinstance(first_val, list) and len(first_val) > 0 else ''}"
-                          f"{f', preview={repr(first_val)[:100]}' if isinstance(first_val, str) else ''}")
                     if isinstance(first_val, np.ndarray) and np.issubdtype(first_val.dtype, np.number):
                         ddb_type = "DOUBLE[]"
-                        print(f"      [_save_columnar DIAG]   -> DOUBLE[] (numeric ndarray)")
-                    elif isinstance(first_val, np.ndarray) and first_val.dtype.kind == 'b':
-                        # DIAGNOSTIC: Bool arrays fail np.issubdtype(bool, number)!
-                        print(f"      [_save_columnar DIAG]   -> VARCHAR (PROBLEM: bool ndarray "
-                              f"fails np.issubdtype check, should be BOOLEAN[])")
-                        ddb_type = "VARCHAR"
                     elif (isinstance(first_val, list) and len(first_val) > 0
                           and all(isinstance(x, (int, float)) for x in first_val)):
-                        # Note: isinstance(True, int) is True in Python, so bool lists pass this
-                        has_bools = any(isinstance(x, bool) for x in first_val)
                         ddb_type = "DOUBLE[]"
-                        print(f"      [_save_columnar DIAG]   -> DOUBLE[] (list of numbers"
-                              f"{', CONTAINS BOOLS - will lose bool type!' if has_bools else ''})")
                     else:
                         ddb_type = "VARCHAR"
-                        print(f"      [_save_columnar DIAG]   -> VARCHAR (fallback)")
                 else:
                     ddb_type = "VARCHAR"
                 col_defs.append(f'"{col}" {ddb_type}')
@@ -783,78 +717,69 @@ class DatabaseManager:
             data_cols_sql = ", ".join(col_defs)
             self._duck._execute(f"""
                 CREATE TABLE "{table_name}" (
-                    schema_id INTEGER NOT NULL,
-                    parameter_id INTEGER NOT NULL,
-                    version_id INTEGER NOT NULL,
+                    record_id VARCHAR NOT NULL,
                     {data_cols_sql}
                 )
             """)
             self._create_variable_view(variable_class)
-        _t_table = time.perf_counter() - _t0
-        print(f"      [_save_columnar] ensure table exists: {_t_table:.4f}s")
+        print(f"      [_save_columnar] ensure table: {time.perf_counter() - _t0:.4f}s")
 
-        # Insert all DataFrame rows with the same (schema_id, parameter_id, version_id)
+        # Only insert if this record_id doesn't already exist
         _t0 = time.perf_counter()
-        insert_df = df.copy()
-        insert_df.insert(0, "version_id", version_id)
-        insert_df.insert(0, "parameter_id", parameter_id)
-        insert_df.insert(0, "schema_id", schema_id)
-        _t_prep = time.perf_counter() - _t0
-        print(f"      [_save_columnar] DataFrame prep (copy+insert cols): {_t_prep:.4f}s")
-        print(f"      [_save_columnar] DataFrame shape: {insert_df.shape}, dtypes: {dict(insert_df.dtypes)}")
-        print(f"      [_save_columnar] DataFrame memory: {insert_df.memory_usage(deep=True).sum() / 1024:.1f} KB")
+        existing_count = self._duck._fetchall(
+            f'SELECT COUNT(*) FROM "{table_name}" WHERE record_id = ?',
+            [record_id],
+        )[0][0]
 
-        _t0 = time.perf_counter()
-        col_str = ", ".join(f'"{c}"' for c in insert_df.columns)
-        self._duck.con.execute(
-            f'INSERT INTO "{table_name}" ({col_str}) SELECT * FROM insert_df'
-        )
-        _t_insert = time.perf_counter() - _t0
-        print(f"      [_save_columnar] DuckDB INSERT: {_t_insert:.4f}s")
-
-        # Register in _variables only for truly new parameter slots
-        effective_level = schema_level or self.dataset_schema_keys[-1]
-        if is_new_parameter:
-            if dict_of_arrays:
-                dtype_json = json.dumps({
-                    "custom": True,
-                    "dict_of_arrays": True,
-                    "ndarray_keys": ndarray_keys or {},
-                })
-            elif struct_columns:
-                dtype_json = json.dumps({
-                    "custom": True,
-                    "struct_columns": struct_columns,
-                })
-            else:
-                dtype_json = json.dumps({"custom": True})
-            self._duck._execute(
-                "INSERT INTO _variables (variable_name, parameter_id, schema_level, "
-                "dtype, version_keys, description) VALUES (?, ?, ?, ?, ?, ?)",
-                [table_name, parameter_id, effective_level,
-                 dtype_json,
-                 json.dumps(version_keys or {}, sort_keys=True), ""],
+        if existing_count == 0:
+            insert_df = df.copy()
+            insert_df.insert(0, "record_id", record_id)
+            col_str = ", ".join(f'"{c}"' for c in insert_df.columns)
+            self._duck.con.execute(
+                f'INSERT INTO "{table_name}" ({col_str}) SELECT * FROM insert_df'
             )
+        print(f"      [_save_columnar] data INSERT: {time.perf_counter() - _t0:.4f}s")
 
-        return parameter_id, schema_id, version_id
+        # Upsert into _variables (one row per variable)
+        effective_level = schema_level or self.dataset_schema_keys[-1]
+        if dict_of_arrays:
+            dtype_json = json.dumps({
+                "custom": True,
+                "dict_of_arrays": True,
+                "ndarray_keys": ndarray_keys or {},
+            })
+        elif struct_columns:
+            dtype_json = json.dumps({
+                "custom": True,
+                "struct_columns": struct_columns,
+            })
+        else:
+            dtype_json = json.dumps({"custom": True})
+        self._duck._execute(
+            "INSERT INTO _variables (variable_name, schema_level, dtype, description) "
+            "VALUES (?, ?, ?, ?) "
+            "ON CONFLICT (variable_name) DO UPDATE SET dtype = excluded.dtype",
+            [table_name, effective_level, dtype_json, ""],
+        )
+
+        return schema_id
 
     def _save_single_value(
         self,
+        record_id: str,
         table_name: str,
         variable_class: Type[BaseVariable],
         data: Any,
         content_hash: str,
         schema_level: str | None = None,
         schema_keys: dict | None = None,
-        version_keys: dict | None = None,
-    ) -> tuple[int, int, int]:
+    ) -> int:
         """
-        Save native data as a single 'value' column.
+        Save native data as a single 'value' column identified by record_id.
 
-        Handles both schema-aware and schema-less storage. When schema_level
-        and schema_keys are provided, resolves a schema_id; otherwise uses 0.
+        The table uses record_id as PRIMARY KEY so identical data is stored once.
 
-        Returns (parameter_id, schema_id, version_id).
+        Returns schema_id.
         """
         _t0 = time.perf_counter()
         if schema_level is not None and schema_keys:
@@ -864,54 +789,42 @@ class DatabaseManager:
         else:
             schema_id = 0
 
-        parameter_id, version_id, is_new_parameter = self._resolve_parameter_slot(
-            table_name, schema_id, version_keys
-        )
-        print(f"      [_save_single_value] resolve slot: {time.perf_counter() - _t0:.4f}s")
-
-        _t0 = time.perf_counter()
         ddb_type, col_meta = _infer_duckdb_type(data)
-        print(f"      [_save_single_value] _infer_duckdb_type: {time.perf_counter() - _t0:.4f}s  -> {ddb_type}, python_type={col_meta.get('python_type')}")
-
-        _t0 = time.perf_counter()
         storage_value = _python_to_storage(data, col_meta)
-        print(f"      [_save_single_value] _python_to_storage: {time.perf_counter() - _t0:.4f}s  -> value type={type(storage_value).__name__}, len={len(storage_value) if isinstance(storage_value, str) else 'N/A'}")
         dtype_meta = {"mode": "single_column", "columns": {"value": col_meta}}
+        print(f"      [_save_single_value] type inference: {time.perf_counter() - _t0:.4f}s")
 
         # Ensure table exists
         _t0 = time.perf_counter()
         if not self._duck._table_exists(table_name):
             self._duck._execute(f"""
                 CREATE TABLE "{table_name}" (
-                    schema_id INTEGER NOT NULL,
-                    parameter_id INTEGER NOT NULL,
-                    version_id INTEGER NOT NULL,
+                    record_id VARCHAR PRIMARY KEY,
                     "value" {ddb_type}
                 )
             """)
             self._create_variable_view(variable_class)
         print(f"      [_save_single_value] ensure table: {time.perf_counter() - _t0:.4f}s")
 
-        # Insert data
+        # Insert data (ON CONFLICT DO NOTHING deduplicates by content)
         _t0 = time.perf_counter()
         self._duck._execute(
-            f'INSERT INTO "{table_name}" ("schema_id", "parameter_id", "version_id", "value") VALUES (?, ?, ?, ?)',
-            [schema_id, parameter_id, version_id, storage_value],
+            f'INSERT INTO "{table_name}" (record_id, "value") VALUES (?, ?) '
+            f'ON CONFLICT (record_id) DO NOTHING',
+            [record_id, storage_value],
         )
         print(f"      [_save_single_value] DuckDB INSERT: {time.perf_counter() - _t0:.4f}s")
 
-        # Register in _variables only for truly new parameter slots
+        # Upsert into _variables (one row per variable)
         effective_level = schema_level or self.dataset_schema_keys[-1]
-        if is_new_parameter:
-            self._duck._execute(
-                "INSERT INTO _variables (variable_name, parameter_id, schema_level, "
-                "dtype, version_keys, description) VALUES (?, ?, ?, ?, ?, ?)",
-                [table_name, parameter_id, effective_level,
-                 json.dumps(dtype_meta),
-                 json.dumps(version_keys or {}, sort_keys=True), ""],
-            )
+        self._duck._execute(
+            "INSERT INTO _variables (variable_name, schema_level, dtype, description) "
+            "VALUES (?, ?, ?, ?) "
+            "ON CONFLICT (variable_name) DO UPDATE SET dtype = excluded.dtype",
+            [table_name, effective_level, json.dumps(dtype_meta), ""],
+        )
 
-        return parameter_id, schema_id, version_id
+        return schema_id
 
     def save_batch(
         self,
@@ -922,8 +835,11 @@ class DatabaseManager:
         """
         Bulk-save a list of (data_value, metadata_dict) pairs for a single variable type.
 
-        Amortizes setup work (registration, table creation, parameter slot resolution)
-        and batches SQL operations using executemany for ~100x speedup over per-row save().
+        Amortizes setup work (registration, table creation) and batches SQL
+        operations using DataFrame-based inserts for speed.
+
+        Data is deduplicated by record_id (same content → same record_id → stored once).
+        Every call inserts a new (record_id, timestamp) row in _record_metadata for audit.
 
         Args:
             variable_class: The BaseVariable subclass to save as
@@ -946,8 +862,6 @@ class DatabaseManager:
 
         # --- One-time setup from first item ---
         first_data, first_meta = data_items[0]
-        nested_first = self._split_metadata(first_meta)
-        version_keys = nested_first.get("version", {})
 
         # Detect whether data is dict-of-arrays for columnar storage
         is_dict_of_arrays = _is_tabular_dict(first_data)
@@ -982,9 +896,7 @@ class DatabaseManager:
                 data_cols_sql = ", ".join(col_defs)
                 self._duck._execute(f"""
                     CREATE TABLE "{table_name}" (
-                        schema_id INTEGER NOT NULL,
-                        parameter_id INTEGER NOT NULL,
-                        version_id INTEGER NOT NULL,
+                        record_id VARCHAR NOT NULL,
                         {data_cols_sql}
                     )
                 """)
@@ -997,9 +909,7 @@ class DatabaseManager:
             if not self._duck._table_exists(table_name):
                 self._duck._execute(f"""
                     CREATE TABLE "{table_name}" (
-                        schema_id INTEGER NOT NULL,
-                        parameter_id INTEGER NOT NULL,
-                        version_id INTEGER NOT NULL,
+                        record_id VARCHAR PRIMARY KEY,
                         "value" {ddb_type}
                     )
                 """)
@@ -1007,103 +917,10 @@ class DatabaseManager:
 
         timings["1_setup"] = time.perf_counter() - t0
 
-        # --- Early fast path: skip all per-row work for re-saves ---
-        t_fast = time.perf_counter()
-        vk_json = json.dumps(version_keys or {}, sort_keys=True)
-        existing_param = self._duck._fetchall(
-            "SELECT parameter_id FROM _variables "
-            "WHERE variable_name = ? AND version_keys = ?",
-            [table_name, vk_json],
-        )
-        if existing_param:
-            fast_parameter_id = existing_param[0][0]
-            existing_count = self._duck._fetchall(
-                "SELECT COUNT(*) FROM _record_metadata "
-                "WHERE variable_name = ? AND parameter_id = ?",
-                [table_name, fast_parameter_id],
-            )[0][0]
-
-            if existing_count >= len(data_items):
-                # Query existing records with their schema key values
-                schema_col_select = ", ".join(
-                    f's."{k}"' for k in self.dataset_schema_keys
-                )
-                existing_records = self._duck._fetchall(
-                    f"SELECT r.record_id, r.content_hash, {schema_col_select} "
-                    f"FROM _record_metadata r "
-                    f"LEFT JOIN _schema s ON r.schema_id = s.schema_id "
-                    f"WHERE r.variable_name = ? AND r.parameter_id = ? "
-                    f"ORDER BY r.version_id DESC",
-                    [table_name, fast_parameter_id],
-                )
-
-                # Build lookup: schema key values -> (record_id, content_hash)
-                # Latest version wins (ORDER BY version_id DESC + first-match)
-                existing_by_keys = {}
-                for row in existing_records:
-                    rid = row[0]
-                    chash = row[1]
-                    schema_vals = tuple(
-                        _schema_str(v) if v is not None else None for v in row[2:]
-                    )
-                    if schema_vals not in existing_by_keys:
-                        existing_by_keys[schema_vals] = (rid, chash)
-
-                # Map each input row by its schema key values
-                result_ids = []
-                input_keys = []
-                all_matched = True
-                for _, flat_meta in data_items:
-                    key = tuple(
-                        _schema_str(flat_meta[k]) if k in flat_meta else None
-                        for k in self.dataset_schema_keys
-                    )
-                    input_keys.append(key)
-                    if key in existing_by_keys:
-                        result_ids.append(existing_by_keys[key][0])
-                    else:
-                        all_matched = False
-                        break
-
-                # Verify input keys are unique (otherwise ambiguous mapping)
-                if all_matched and len(set(input_keys)) == len(input_keys):
-                    # Sample-verify content hashes
-                    sample_size = min(
-                        max(10, len(data_items) // 100), len(data_items)
-                    )
-                    sample_indices = random.sample(
-                        range(len(data_items)), sample_size
-                    )
-
-                    sample_ok = True
-                    for idx in sample_indices:
-                        data_val = data_items[idx][0]
-                        actual_hash = canonical_hash(data_val)
-                        expected_hash = existing_by_keys[input_keys[idx]][1]
-                        if actual_hash != expected_hash:
-                            sample_ok = False
-                            break
-
-                    if sample_ok:
-                        if profile:
-                            timings["fast_path"] = time.perf_counter() - t_fast
-                            timings["total"] = time.perf_counter() - t0
-                            print(
-                                f"\n--- save_batch() FAST PATH "
-                                f"({len(data_items)} items, all exist) ---"
-                            )
-                            for phase, elapsed in timings.items():
-                                print(f"  {phase:30s} {elapsed:8.3f}s")
-                            print()
-                        return result_ids
-
-        timings["1b_fast_path_miss"] = time.perf_counter() - t_fast
-
         # --- Batch schema_id resolution ---
-        # Split all metadata and collect unique schema key combos
         t1 = time.perf_counter()
         all_nested = []
-        unique_schema_combos = {}  # {tuple_of_values: schema_keys_dict}
+        unique_schema_combos = {}  # {combo_key: schema_keys_dict}
         for data_val, flat_meta in data_items:
             nested = self._split_metadata(flat_meta)
             all_nested.append(nested)
@@ -1117,7 +934,6 @@ class DatabaseManager:
                 combo_key = (schema_level, key_tuple)
                 if combo_key not in unique_schema_combos:
                     unique_schema_combos[combo_key] = schema_keys
-            # else: schema_id = 0 (no schema keys)
 
         timings["2_split_metadata"] = time.perf_counter() - t1
 
@@ -1129,86 +945,17 @@ class DatabaseManager:
         )
         timings["3_schema_resolution"] = time.perf_counter() - t2
 
-        # --- Resolve parameter_id (shared across all rows) ---
-        t3 = time.perf_counter()
-        # Use the first item's schema_id to resolve the parameter slot
-        first_schema_keys = all_nested[0].get("schema", {})
-        first_schema_level = self._infer_schema_level(first_schema_keys)
-        if first_schema_level is not None and first_schema_keys:
-            first_key_tuple = tuple(
-                _schema_str(first_schema_keys.get(k, "")) for k in self.dataset_schema_keys
-                if k in first_schema_keys
-            )
-            first_schema_id = schema_id_cache[(first_schema_level, first_key_tuple)]
-        else:
-            first_schema_id = 0
-
-        vk_json = json.dumps(version_keys or {}, sort_keys=True)
-        existing = self._duck._fetchall(
-            "SELECT parameter_id FROM _variables "
-            "WHERE variable_name = ? AND version_keys = ?",
-            [table_name, vk_json],
-        )
-
-        if existing:
-            parameter_id = existing[0][0]
-            is_new_parameter = False
-        else:
-            param_rows = self._duck._fetchall(
-                "SELECT COALESCE(MAX(parameter_id), 0) FROM _variables "
-                "WHERE variable_name = ?",
-                [table_name],
-            )
-            parameter_id = param_rows[0][0] + 1
-            is_new_parameter = True
-
-        # Get current max version_id per schema_id for this parameter
-        all_schema_ids = set()
-        for nested in all_nested:
-            schema_keys = nested.get("schema", {})
-            schema_level = self._infer_schema_level(schema_keys)
-            if schema_level is not None and schema_keys:
-                key_tuple = tuple(
-                    _schema_str(schema_keys.get(k, "")) for k in self.dataset_schema_keys
-                    if k in schema_keys
-                )
-                all_schema_ids.add(schema_id_cache[(schema_level, key_tuple)])
-            else:
-                all_schema_ids.add(0)
-
-        # Batch query current max version_ids
-        version_id_map = {}  # {schema_id: next_version_id}
-        if all_schema_ids and not is_new_parameter:
-            placeholders = ", ".join(["?"] * len(all_schema_ids))
-            sid_list = list(all_schema_ids)
-            version_rows = self._duck._fetchall(
-                f"SELECT schema_id, COALESCE(MAX(version_id), 0) "
-                f"FROM _record_metadata "
-                f"WHERE variable_name = ? AND parameter_id = ? "
-                f"AND schema_id IN ({placeholders}) "
-                f"GROUP BY schema_id",
-                [table_name, parameter_id] + sid_list,
-            )
-            for sid, max_vid in version_rows:
-                version_id_map[sid] = max_vid + 1
-
-        # Default version_id for schema_ids with no existing records
-        for sid in all_schema_ids:
-            if sid not in version_id_map:
-                version_id_map[sid] = 1
-
-        timings["4_parameter_resolution"] = time.perf_counter() - t3
-
         # --- Per-row Python computation (no SQL) ---
         t4 = time.perf_counter()
-        created_at = datetime.now().isoformat()
+        timestamp = datetime.now().isoformat()
         record_ids = []
-        data_table_rows = []
-        metadata_rows = []    # tuples for _record_metadata
+        data_table_rows = []   # (record_id, ...data_cols)
+        metadata_rows = []     # tuples for _record_metadata
 
         for i, (data_val, flat_meta) in enumerate(data_items):
             nested = all_nested[i]
             schema_keys = nested.get("schema", {})
+            version_keys = nested.get("version", {})
             schema_level = self._infer_schema_level(schema_keys)
 
             if schema_level is not None and schema_keys:
@@ -1219,8 +966,6 @@ class DatabaseManager:
                 schema_id = schema_id_cache[(schema_level, key_tuple)]
             else:
                 schema_id = 0
-
-            version_id = version_id_map[schema_id]
 
             content_hash = canonical_hash(data_val)
             record_id = generate_record_id(
@@ -1235,121 +980,112 @@ class DatabaseManager:
                 # Each dict-of-arrays item expands to N rows (one per array element)
                 n_rows = len(next(iter(data_val.values())))
                 for row_idx in range(n_rows):
-                    row_data = [schema_id, parameter_id, version_id]
+                    row_data = [record_id]
                     for col in dict_columns:
                         # Use .flat[] to handle both 1D and Nx1 column vectors
                         row_data.append(data_val[col].flat[row_idx])
                     data_table_rows.append(tuple(row_data))
             else:
                 storage_value = _python_to_storage(data_val, col_meta)
-                data_table_rows.append(
-                    (schema_id, parameter_id, version_id, storage_value)
-                )
+                data_table_rows.append((record_id, storage_value))
 
+            vk_json = json.dumps(version_keys or {}, sort_keys=True)
             metadata_rows.append((
-                record_id, table_name, parameter_id, version_id, schema_id,
-                content_hash, None, schema_version, user_id, created_at,
+                record_id, timestamp, table_name, schema_id,
+                vk_json, content_hash, None, schema_version, user_id,
             ))
 
-        timings["5_per_row_hashing"] = time.perf_counter() - t4
+        timings["4_per_row_hashing"] = time.perf_counter() - t4
 
-        # --- Batch idempotency check ---
+        # --- Find which data rows are new (dedup check) ---
         t5 = time.perf_counter()
-        existing_ids = set()
-        # Query in chunks to avoid SQL parameter limits
+        existing_data_ids: set[str] = set()
         chunk_size = 500
-        for start in range(0, len(record_ids), chunk_size):
-            chunk = record_ids[start:start + chunk_size]
-            placeholders = ", ".join(["?"] * len(chunk))
-            rows = self._duck._fetchall(
-                f"SELECT record_id FROM _record_metadata "
-                f"WHERE record_id IN ({placeholders})",
-                chunk,
-            )
-            existing_ids.update(r[0] for r in rows)
-
-        # Filter out already-existing records
-        new_data_rows = []
-        new_meta_rows = []
         if is_dict_of_arrays:
-            # For dict-of-arrays, each record_id maps to N data rows
+            # For dict-of-arrays, check by record_id in the data table
+            for start in range(0, len(record_ids), chunk_size):
+                chunk = record_ids[start:start + chunk_size]
+                placeholders = ", ".join(["?"] * len(chunk))
+                rows = self._duck._fetchall(
+                    f'SELECT DISTINCT record_id FROM "{table_name}" '
+                    f'WHERE record_id IN ({placeholders})',
+                    chunk,
+                )
+                existing_data_ids.update(r[0] for r in rows)
+        # For single-value tables, ON CONFLICT DO NOTHING handles dedup
+
+        # Build new data rows (for dict-of-arrays, skip already-existing)
+        if is_dict_of_arrays:
+            new_data_rows = []
             data_row_idx = 0
             for i, rid in enumerate(record_ids):
                 data_val = data_items[i][0]
                 n_rows = len(next(iter(data_val.values())))
-                if rid not in existing_ids:
+                if rid not in existing_data_ids:
                     new_data_rows.extend(data_table_rows[data_row_idx:data_row_idx + n_rows])
-                    new_meta_rows.append(metadata_rows[i])
                 data_row_idx += n_rows
         else:
-            for i, rid in enumerate(record_ids):
-                if rid not in existing_ids:
-                    new_data_rows.append(data_table_rows[i])
-                    new_meta_rows.append(metadata_rows[i])
+            new_data_rows = data_table_rows  # ON CONFLICT handles dedup
 
-        timings["6_idempotency_check"] = time.perf_counter() - t5
+        timings["5_dedup_check"] = time.perf_counter() - t5
 
         # --- Batch inserts ---
         t6 = time.perf_counter()
-        if new_data_rows:
-            self._duck._begin()
-            try:
+        self._duck._begin()
+        try:
+            if new_data_rows:
                 if is_dict_of_arrays:
-                    data_columns = ["schema_id", "parameter_id", "version_id"] + dict_columns
+                    data_columns = ["record_id"] + dict_columns
                     data_df = pd.DataFrame(new_data_rows, columns=data_columns)
                     col_str = ", ".join(f'"{c}"' for c in data_columns)
                     self._duck.con.execute(
                         f'INSERT INTO "{table_name}" ({col_str}) SELECT * FROM data_df'
                     )
                 else:
-                    data_df = pd.DataFrame(
-                        new_data_rows,
-                        columns=["schema_id", "parameter_id", "version_id", "value"],
-                    )
+                    data_df = pd.DataFrame(new_data_rows, columns=["record_id", "value"])
                     self._duck.con.execute(
-                        f'INSERT INTO "{table_name}" '
-                        f'("schema_id", "parameter_id", "version_id", "value") '
-                        f'SELECT * FROM data_df'
+                        f'INSERT INTO "{table_name}" ("record_id", "value") '
+                        f'SELECT * FROM data_df ON CONFLICT (record_id) DO NOTHING'
                     )
 
-                meta_df = pd.DataFrame(
-                    new_meta_rows,
-                    columns=[
-                        "record_id", "variable_name", "parameter_id",
-                        "version_id", "schema_id", "content_hash",
-                        "lineage_hash", "schema_version", "user_id", "created_at",
-                    ],
-                )
-                self._duck.con.execute(
-                    "INSERT INTO _record_metadata ("
-                    "record_id, variable_name, parameter_id, version_id, schema_id, "
-                    "content_hash, lineage_hash, schema_version, user_id, created_at"
-                    ") SELECT * FROM meta_df"
-                )
+            # Always insert metadata rows (audit trail — every execution logged)
+            meta_df = pd.DataFrame(
+                metadata_rows,
+                columns=[
+                    "record_id", "timestamp", "variable_name", "schema_id",
+                    "version_keys", "content_hash", "lineage_hash",
+                    "schema_version", "user_id",
+                ],
+            )
+            self._duck.con.execute(
+                "INSERT INTO _record_metadata ("
+                "record_id, timestamp, variable_name, schema_id, "
+                "version_keys, content_hash, lineage_hash, schema_version, user_id"
+                ") SELECT * FROM meta_df "
+                "ON CONFLICT (record_id, timestamp) DO NOTHING"
+            )
 
-                self._duck._commit()
-            except Exception:
-                try:
-                    self._duck._execute("ROLLBACK")
-                except Exception:
-                    pass
-                raise
-
-        # Register in _variables for new parameter slots
-        if is_new_parameter:
+            # Upsert _variables (one row per variable)
             effective_level = (
                 self._infer_schema_level(all_nested[0].get("schema", {}))
                 or self.dataset_schema_keys[-1]
             )
             self._duck._execute(
-                "INSERT INTO _variables (variable_name, parameter_id, schema_level, "
-                "dtype, version_keys, description) VALUES (?, ?, ?, ?, ?, ?)",
-                [table_name, parameter_id, effective_level,
-                 json.dumps(dtype_meta),
-                 vk_json, ""],
+                "INSERT INTO _variables (variable_name, schema_level, dtype, description) "
+                "VALUES (?, ?, ?, ?) "
+                "ON CONFLICT (variable_name) DO UPDATE SET dtype = excluded.dtype",
+                [table_name, effective_level, json.dumps(dtype_meta), ""],
             )
 
-        timings["7_batch_inserts"] = time.perf_counter() - t6
+            self._duck._commit()
+        except Exception:
+            try:
+                self._duck._execute("ROLLBACK")
+            except Exception:
+                pass
+            raise
+
+        timings["6_batch_inserts"] = time.perf_counter() - t6
         timings["total"] = time.perf_counter() - t0
 
         if profile:
@@ -1362,39 +1098,6 @@ class DatabaseManager:
         return record_ids
 
     @staticmethod
-    def _build_bulk_where(keys: set[tuple[int, int, int]]) -> tuple[str, list]:
-        """Build an efficient WHERE clause for bulk (pid, vid, sid) lookup.
-
-        Uses per-dimension IN clauses when the key set is a full cross product,
-        otherwise falls back to tuple-IN with VALUES.
-
-        Returns (where_clause, params).
-        """
-        unique_pids = set(p for p, _, _ in keys)
-        unique_vids = set(v for _, v, _ in keys)
-        unique_sids = set(s for _, _, s in keys)
-        cross_product_size = len(unique_pids) * len(unique_vids) * len(unique_sids)
-
-        if cross_product_size == len(keys):
-            pid_ph = ", ".join("?" for _ in unique_pids)
-            vid_ph = ", ".join("?" for _ in unique_vids)
-            sid_ph = ", ".join("?" for _ in unique_sids)
-            where_clause = (
-                f"parameter_id IN ({pid_ph}) "
-                f"AND version_id IN ({vid_ph}) "
-                f"AND schema_id IN ({sid_ph})"
-            )
-            params = list(unique_pids) + list(unique_vids) + list(unique_sids)
-        else:
-            values_list = ", ".join(f"({p}, {v}, {s})" for p, v, s in keys)
-            where_clause = (
-                f"(parameter_id, version_id, schema_id) IN "
-                f"(VALUES {values_list})"
-            )
-            params = []
-        return where_clause, params
-
-    @staticmethod
     def _has_custom_serialization(variable_class: type) -> bool:
         """Check if a BaseVariable subclass overrides to_db or from_db."""
         return "to_db" in variable_class.__dict__ or "from_db" in variable_class.__dict__
@@ -1404,7 +1107,7 @@ class DatabaseManager:
         table_name: str,
         record_id: str | None = None,
         nested_metadata: dict | None = None,
-        version_id: int | list[int] | str = "all",
+        version_id: str = "all",
     ) -> pd.DataFrame:
         """
         Query _record_metadata to find matching records.
@@ -1412,13 +1115,11 @@ class DatabaseManager:
         Supports two modes:
         - By record_id: direct primary key lookup (with JOINs for full row data)
         - By metadata: filter by schema keys via JOIN with _schema, optionally
-          filter by version_keys JSON from _variables, order by created_at DESC
+          filter by version_keys JSON, order by timestamp DESC
 
         version_id controls which versions are returned:
         - "all" (default): no version filtering (return every version)
-        - "latest": only the row with max version_id per (parameter_id, schema_id)
-        - int: only that specific version_id
-        - list[int]: only those version_ids
+        - "latest": only the latest row per (variable_name, schema_id, version_keys)
 
         Schema key values and version key values may be lists, interpreted as
         "match any" (SQL IN / Python in).
@@ -1432,11 +1133,9 @@ class DatabaseManager:
 
         if record_id is not None:
             sql = (
-                f"SELECT rm.*, {schema_col_select}, v.version_keys "
+                f"SELECT rm.*, {schema_col_select} "
                 f"FROM _record_metadata rm "
                 f"LEFT JOIN _schema s ON rm.schema_id = s.schema_id "
-                f"LEFT JOIN _variables v ON rm.variable_name = v.variable_name "
-                f"AND rm.parameter_id = v.parameter_id "
                 f"WHERE rm.record_id = ? AND rm.variable_name = ?"
             )
             return self._duck._fetchdf(sql, [record_id, table_name])
@@ -1458,43 +1157,30 @@ class DatabaseManager:
                 conditions.append(f's."{key}" = ?')
                 params.append(_schema_str(value))
 
-        # Filter by specific version_id value(s) in SQL
-        if isinstance(version_id, int):
-            conditions.append("rm.version_id = ?")
-            params.append(version_id)
-        elif isinstance(version_id, (list, tuple)) and all(isinstance(v, int) for v in version_id):
-            placeholders = ", ".join(["?"] * len(version_id))
-            conditions.append(f"rm.version_id IN ({placeholders})")
-            params.extend(version_id)
-
         where = " AND ".join(conditions)
 
         if version_id == "latest":
-            sql = (
-                f"WITH ranked AS ("
-                f"SELECT rm.*, {schema_col_select}, v.version_keys, "
-                f"ROW_NUMBER() OVER ("
-                f"PARTITION BY rm.variable_name, rm.parameter_id, rm.schema_id "
-                f"ORDER BY rm.version_id DESC"
-                f") as rn "
-                f"FROM _record_metadata rm "
-                f"LEFT JOIN _schema s ON rm.schema_id = s.schema_id "
-                f"LEFT JOIN _variables v ON rm.variable_name = v.variable_name "
-                f"AND rm.parameter_id = v.parameter_id "
-                f"WHERE {where}"
-                f") SELECT * FROM ranked WHERE rn = 1 "
-                f"ORDER BY created_at DESC"
-            )
+            # One row per (variable_name, schema_id, version_keys) — latest config only
+            partition = "rm.variable_name, rm.schema_id, rm.version_keys"
         else:
-            sql = (
-                f"SELECT rm.*, {schema_col_select}, v.version_keys "
-                f"FROM _record_metadata rm "
-                f"LEFT JOIN _schema s ON rm.schema_id = s.schema_id "
-                f"LEFT JOIN _variables v ON rm.variable_name = v.variable_name "
-                f"AND rm.parameter_id = v.parameter_id "
-                f"WHERE {where} "
-                f"ORDER BY rm.created_at DESC"
-            )
+            # "all": one row per distinct record_id — deduplicates re-runs of identical
+            # data while still returning multiple distinct data records at the same
+            # schema location (different content hash → different record_id).
+            partition = "rm.record_id"
+
+        sql = (
+            f"WITH ranked AS ("
+            f"SELECT rm.*, {schema_col_select}, "
+            f"ROW_NUMBER() OVER ("
+            f"PARTITION BY {partition} "
+            f"ORDER BY rm.timestamp DESC"
+            f") as rn "
+            f"FROM _record_metadata rm "
+            f"LEFT JOIN _schema s ON rm.schema_id = s.schema_id "
+            f"WHERE {where}"
+            f") SELECT * FROM ranked WHERE rn = 1 "
+            f"ORDER BY timestamp DESC"
+        )
         df = self._duck._fetchdf(sql, params)
 
         # Filter by version keys via Python-side JSON parsing (lists → in)
@@ -1556,7 +1242,7 @@ class DatabaseManager:
         - raw: return DataFrame as-is
 
         The sub_df must already have internal columns
-        (schema_id, parameter_id, version_id) dropped.
+        (record_id) dropped.
         """
         if dtype_meta.get("dict_of_arrays"):
             ndarray_keys = dtype_meta.get("ndarray_keys", {})
@@ -1597,12 +1283,10 @@ class DatabaseManager:
         Load a variable instance given a row from _record_metadata.
 
         Determines native vs custom deserialization from _variables.dtype,
-        loads data from SciDuck, and constructs the BaseVariable instance.
+        loads data from the data table by record_id, and constructs the
+        BaseVariable instance.
         """
         table_name = row["variable_name"]
-        parameter_id = int(row["parameter_id"])
-        version_id = int(row["version_id"])
-        schema_id = int(row["schema_id"])
         record_id = row["record_id"]
         content_hash = row["content_hash"]
         lineage_hash = row["lineage_hash"]
@@ -1613,26 +1297,26 @@ class DatabaseManager:
 
         # Get dtype from _variables to determine deserialization path
         dtype_rows = self._duck._fetchall(
-            "SELECT dtype FROM _variables WHERE variable_name = ? AND parameter_id = ?",
-            [table_name, parameter_id],
+            "SELECT dtype FROM _variables WHERE variable_name = ?",
+            [table_name],
         )
 
         if not dtype_rows:
             raise NotFoundError(
-                f"No parameter_id {parameter_id} found for {table_name} in _variables"
+                f"No dtype found for {table_name} in _variables"
             )
 
         dtype_meta = json.loads(dtype_rows[0][0])
         is_custom = dtype_meta.get("custom", False)
 
         if is_custom:
-            # Custom path: direct query by parameter_id, version_id, and schema_id
+            # Custom path: query by record_id
             df = self._duck._fetchdf(
-                f'SELECT * FROM "{table_name}" WHERE parameter_id = ? AND version_id = ? AND schema_id = ?',
-                [parameter_id, version_id, schema_id],
+                f'SELECT * FROM "{table_name}" WHERE record_id = ?',
+                [record_id],
             )
-            # Drop SciDuck internal columns
-            df = df.drop(columns=["schema_id", "parameter_id", "version_id"], errors="ignore")
+            # Drop record_id column (internal identifier)
+            df = df.drop(columns=["record_id"], errors="ignore")
 
             if loc is not None:
                 if not isinstance(loc, (list, range, slice)):
@@ -1645,27 +1329,30 @@ class DatabaseManager:
 
             data = self._deserialize_custom_subdf(variable_class, df, dtype_meta)
         else:
-            # Native path: use SciDuck.load() with parameter_id, version_id and raw=True
-            schema_keys = nested_metadata.get("schema", {})
-            schema_level = self._infer_schema_level(schema_keys)
-            if schema_level is not None and schema_keys:
-                data = self._duck.load(
-                    table_name, parameter_id=parameter_id, version_id=version_id, raw=True,
-                    **{k: _schema_str(v) for k, v in schema_keys.items()},
-                )
+            # Native single-value path: query by record_id, restore type
+            row_df = self._duck._fetchdf(
+                f'SELECT * FROM "{table_name}" WHERE record_id = ?',
+                [record_id],
+            )
+            row_df = row_df.drop(columns=["record_id"], errors="ignore")
+            row_df = self._duck._restore_types(row_df, dtype_meta)
+
+            if len(row_df) == 1:
+                mode = dtype_meta.get("mode", "single_column")
+                columns_meta = dtype_meta.get("columns", {})
+                if mode == "single_column":
+                    col_name = next(iter(columns_meta))
+                    data = row_df[col_name].iloc[0]
+                else:
+                    data = row_df
             else:
-                # Non-contiguous or no schema — load directly
-                data = self._duck.load(
-                    table_name, parameter_id=parameter_id, version_id=version_id, raw=True,
-                )
+                data = row_df
 
         instance = variable_class(data)
         instance.record_id = record_id
         instance.metadata = flat_metadata
         instance.content_hash = content_hash
         instance.lineage_hash = lineage_hash
-        instance.version_id = version_id
-        instance.parameter_id = parameter_id
 
         return instance
 
@@ -1787,6 +1474,18 @@ class DatabaseManager:
                 generated_id = f"generated:{pipeline_lineage_hash[:32]}"
                 user_id = get_user_id()
                 nested_metadata = self._split_metadata(metadata)
+                # Store generated entry in _record_metadata for find_by_lineage() lookup
+                self._save_record_metadata(
+                    record_id=generated_id,
+                    timestamp=datetime.now().isoformat(),
+                    variable_name=variable_class.__name__,
+                    schema_id=0,
+                    version_keys=None,
+                    content_hash=None,
+                    lineage_hash=pipeline_lineage_hash,
+                    schema_version=variable_class.schema_version,
+                    user_id=user_id,
+                )
                 self._save_lineage(
                     output_record_id=generated_id,
                     output_type=variable_class.__name__,
@@ -1887,7 +1586,7 @@ class DatabaseManager:
             lineage: Optional lineage record if data came from a thunk
             lineage_hash: Optional pre-computed lineage hash (stored in DuckDB
                 for input classification when this variable is reused later)
-            pipeline_lineage_hash: Optional lineage hash for PipelineDB cache
+            pipeline_lineage_hash: Optional pre-computed lineage hash for cache
                 lookup. If None, falls back to lineage_hash.
             index: Optional index to set on the DataFrame
 
@@ -1940,18 +1639,6 @@ class DatabaseManager:
         )
         _t_genid = time.perf_counter() - _t0
         print(f"    [save] generate_record_id: {_t_genid:.4f}s")
-
-        # Idempotency: check if record already exists in _record_metadata
-        _t0 = time.perf_counter()
-        existing = self._duck._fetchall(
-            "SELECT 1 FROM _record_metadata WHERE record_id = ?",
-            [record_id],
-        )
-        _t_idempotency = time.perf_counter() - _t0
-        print(f"    [save] idempotency check: {_t_idempotency:.4f}s")
-        if existing:
-            print(f"    [save] record already exists, returning early")
-            return record_id
 
         # Wrap all writes in a single transaction to avoid repeated
         # WAL checkpoints (each auto-committed statement can trigger a
@@ -2008,9 +1695,9 @@ class DatabaseManager:
                         )
                     df.index = index
 
-                parameter_id, schema_id, version_id = self._save_columnar(
-                    table_name, type(variable), df, schema_level, schema_keys, content_hash,
-                    version_keys=version_keys,
+                schema_id = self._save_columnar(
+                    record_id, table_name, type(variable), df,
+                    schema_level, schema_keys, content_hash,
                 )
             elif isinstance(variable.data, pd.DataFrame):
                 # Native DataFrame: store directly as multi-column DuckDB table
@@ -2035,9 +1722,9 @@ class DatabaseManager:
                 if struct_columns_info:
                     print(f"    [save] flattened dtypes={dict(df.dtypes)}")
 
-                parameter_id, schema_id, version_id = self._save_columnar(
-                    table_name, type(variable), df, schema_level, schema_keys, content_hash,
-                    version_keys=version_keys,
+                schema_id = self._save_columnar(
+                    record_id, table_name, type(variable), df,
+                    schema_level, schema_keys, content_hash,
                     struct_columns=struct_columns_info if struct_columns_info else None,
                 )
             elif _is_tabular_dict(variable.data):
@@ -2055,9 +1742,9 @@ class DatabaseManager:
                 }
                 df = pd.DataFrame(squeezed)
                 print(f"    [save] pd.DataFrame(dict): {time.perf_counter() - _t_df:.4f}s  shape={df.shape}")
-                parameter_id, schema_id, version_id = self._save_columnar(
-                    table_name, type(variable), df, schema_level, schema_keys, content_hash,
-                    version_keys=version_keys,
+                schema_id = self._save_columnar(
+                    record_id, table_name, type(variable), df,
+                    schema_level, schema_keys, content_hash,
                     dict_of_arrays=True,
                     ndarray_keys={
                         k: {"dtype": str(v.dtype), "shape": list(v.shape)}
@@ -2067,10 +1754,9 @@ class DatabaseManager:
             else:
                 # Native single-value storage (scalars, arrays, lists, dicts)
                 print(f"    [save] path=single_value (data_type={data_type})")
-                parameter_id, schema_id, version_id = self._save_single_value(
-                    table_name, type(variable), variable.data, content_hash,
+                schema_id = self._save_single_value(
+                    record_id, table_name, type(variable), variable.data, content_hash,
                     schema_level=schema_level, schema_keys=schema_keys,
-                    version_keys=version_keys,
                 )
             _t_data_save = time.perf_counter() - _t0
             print(f"    [save] data write (DuckDB): {_t_data_save:.4f}s")
@@ -2078,15 +1764,14 @@ class DatabaseManager:
             _t0 = time.perf_counter()
             self._save_record_metadata(
                 record_id=record_id,
+                timestamp=created_at,
                 variable_name=table_name,
-                parameter_id=parameter_id,
-                version_id=version_id,
                 schema_id=schema_id,
+                version_keys=version_keys,
                 content_hash=content_hash,
-                lineage_hash=lineage_hash,
+                lineage_hash=pipeline_lineage_hash if pipeline_lineage_hash is not None else lineage_hash,
                 schema_version=variable.schema_version,
                 user_id=user_id,
-                created_at=created_at,
             )
             _t_record_meta = time.perf_counter() - _t0
             print(f"    [save] _save_record_metadata: {_t_record_meta:.4f}s")
@@ -2127,19 +1812,29 @@ class DatabaseManager:
         schema_keys: dict | None = None,
         output_content_hash: str | None = None,
     ) -> None:
-        """Save lineage record for a variable to PipelineDB (SQLite)."""
-        self._pipeline_db.save_lineage(
-            output_record_id=output_record_id,
-            output_type=output_type,
-            function_name=lineage.function_name,
-            function_hash=lineage.function_hash,
-            inputs=lineage.inputs,
-            constants=lineage.constants,
-            lineage_hash=lineage_hash,
-            user_id=user_id,
-            schema_keys=schema_keys,
-            output_content_hash=output_content_hash,
-        )
+        """Save lineage edges to DuckDB _lineage table."""
+        lh = lineage_hash or output_record_id
+        timestamp = datetime.now().isoformat()
+
+        rows = []
+        for inp in lineage.inputs:
+            source_type = inp.get("source_type", "variable")
+            source = inp.get("type", "unknown")
+            rows.append((lh, source, source_type, output_type,
+                         lineage.function_name, lineage.function_hash, timestamp))
+
+        for const in lineage.constants:
+            value_repr = const.get("value_repr", repr(const))
+            rows.append((lh, value_repr, "constant", output_type,
+                         lineage.function_name, lineage.function_hash, timestamp))
+
+        for row in rows:
+            self._duck._execute(
+                "INSERT INTO _lineage "
+                "(lineage_hash, source, source_type, target, function_name, function_hash, timestamp) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?) ON CONFLICT DO NOTHING",
+                list(row),
+            )
 
     def save_ephemeral_lineage(
         self,
@@ -2149,17 +1844,28 @@ class DatabaseManager:
         user_id: str | None = None,
         schema_keys: dict | None = None,
     ) -> None:
-        """Save an ephemeral lineage record for an unsaved intermediate variable."""
-        self._pipeline_db.save_ephemeral(
-            ephemeral_id=ephemeral_id,
-            variable_type=variable_type,
-            function_name=lineage.function_name,
-            function_hash=lineage.function_hash,
-            inputs=lineage.inputs,
-            constants=lineage.constants,
-            user_id=user_id,
-            schema_keys=schema_keys,
-        )
+        """Save an ephemeral lineage record to DuckDB _lineage table."""
+        timestamp = datetime.now().isoformat()
+
+        rows = []
+        for inp in lineage.inputs:
+            source_type = inp.get("source_type", "variable")
+            source = inp.get("type", "unknown")
+            rows.append((ephemeral_id, source, source_type, variable_type,
+                         lineage.function_name, lineage.function_hash, timestamp))
+
+        for const in lineage.constants:
+            value_repr = const.get("value_repr", repr(const))
+            rows.append((ephemeral_id, value_repr, "constant", variable_type,
+                         lineage.function_name, lineage.function_hash, timestamp))
+
+        for row in rows:
+            self._duck._execute(
+                "INSERT INTO _lineage "
+                "(lineage_hash, source, source_type, target, function_name, function_hash, timestamp) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?) ON CONFLICT DO NOTHING",
+                list(row),
+            )
 
     def load(
         self,
@@ -2227,7 +1933,7 @@ class DatabaseManager:
         self,
         variable_class: Type[BaseVariable],
         metadata: dict,
-        version_id="all",
+        version_id: str = "all",
         where=None,
     ):
         """
@@ -2238,9 +1944,7 @@ class DatabaseManager:
             metadata: Flat metadata dict
             version_id: Which versions to return:
                 - "all" (default): return every version
-                - "latest": return only the latest version per parameter set
-                - int: return only that specific version_id
-                - list[int]: return only those version_ids
+                - "latest": return only the latest version per (schema_id, version_keys)
 
         Yields:
             BaseVariable instances matching the metadata
@@ -2249,7 +1953,9 @@ class DatabaseManager:
         nested_metadata = self._split_metadata(metadata)
 
         try:
-            records = self._find_record(table_name, nested_metadata=nested_metadata, version_id=version_id)
+            records = self._find_record(
+                table_name, nested_metadata=nested_metadata, version_id=version_id
+            )
         except Exception:
             return  # No data
 
@@ -2265,123 +1971,79 @@ class DatabaseManager:
 
         # --- Bulk loading path ---
 
-        # 1. Bulk dtype lookup: one query per unique parameter_id
-        unique_pids = records["parameter_id"].unique()
-        dtype_by_pid = {}
-        for pid in unique_pids:
-            pid = int(pid)
-            dtype_rows = self._duck._fetchall(
-                "SELECT dtype FROM _variables WHERE variable_name = ? AND parameter_id = ?",
-                [table_name, pid],
-            )
-            if dtype_rows:
-                dtype_by_pid[pid] = json.loads(dtype_rows[0][0])
+        # 1. Get dtype from _variables (one row per variable)
+        dtype_rows = self._duck._fetchall(
+            "SELECT dtype FROM _variables WHERE variable_name = ?",
+            [table_name],
+        )
+        if not dtype_rows:
+            return
+        dtype_meta = json.loads(dtype_rows[0][0])
+        is_custom = dtype_meta.get("custom", False)
 
-        if not dtype_by_pid:
+        # 2. Collect all unique record_ids to fetch
+        all_record_ids = records["record_id"].tolist()
+        if not all_record_ids:
             return
 
-        # Partition parameter_ids into custom vs native
-        custom_pids = {pid for pid, dm in dtype_by_pid.items() if dm.get("custom", False)}
-        native_pids = {pid for pid, dm in dtype_by_pid.items() if not dm.get("custom", False)}
+        # 3. Batch fetch data rows by record_id
+        data_lookup: dict[str, Any] = {}  # record_id -> deserialized value
 
-        # Vectorized key extraction
-        pids_arr = records["parameter_id"].values.astype(int)
-        vids_arr = records["version_id"].values.astype(int)
-        sids_arr = records["schema_id"].values.astype(int)
-        all_keys = set(zip(pids_arr.tolist(), vids_arr.tolist(), sids_arr.tolist()))
-        if not all_keys:
-            return
+        chunk_size = 500
+        for start in range(0, len(all_record_ids), chunk_size):
+            chunk = all_record_ids[start:start + chunk_size]
+            placeholders = ", ".join(["?"] * len(chunk))
 
-        data_lookup = {}  # (pid, vid, sid) -> (value, dtype_meta)  for native
-        custom_data_lookup = {}  # (pid, vid, sid) -> value  for custom
+            if is_custom:
+                # Custom (columnar) path: fetch all rows for this chunk
+                sql = f'SELECT * FROM "{table_name}" WHERE record_id IN ({placeholders})'
+                chunk_df = self._duck._fetchdf(sql, chunk)
 
-        # 2a. Bulk data fetch for CUSTOM pids
-        if custom_pids:
-            custom_keys = {k for k in all_keys if k[0] in custom_pids}
-            where_clause, params = self._build_bulk_where(custom_keys)
-
-            sql = f'SELECT * FROM "{table_name}" WHERE {where_clause}'
-            all_custom_df = self._duck._fetchdf(sql, params)
-
-            # Group by (pid, vid, sid) and deserialize per-record
-            if len(all_custom_df) > 0:
-                grouped = all_custom_df.groupby(
-                    ["parameter_id", "version_id", "schema_id"],
-                    sort=False,
+                if len(chunk_df) > 0:
+                    grouped = chunk_df.groupby("record_id", sort=False)
+                    for rid, sub_df in grouped:
+                        sub_df = sub_df.drop(
+                            columns=["record_id"], errors="ignore"
+                        ).reset_index(drop=True)
+                        data_lookup[rid] = self._deserialize_custom_subdf(
+                            variable_class, sub_df, dtype_meta,
+                        )
+            else:
+                # Native single-value path
+                data_cols = list(dtype_meta.get("columns", {}).keys())
+                data_select = ", ".join(f'"{c}"' for c in data_cols)
+                sql = (
+                    f'SELECT record_id, {data_select} FROM "{table_name}" '
+                    f'WHERE record_id IN ({placeholders})'
                 )
-                for (pid, vid, sid), sub_df in grouped:
-                    pid, vid, sid = int(pid), int(vid), int(sid)
-                    sub_df = sub_df.drop(
-                        columns=["schema_id", "parameter_id", "version_id"],
-                        errors="ignore",
-                    ).reset_index(drop=True)
-                    dtype_meta = dtype_by_pid[pid]
-                    custom_data_lookup[(pid, vid, sid)] = self._deserialize_custom_subdf(
-                        variable_class, sub_df, dtype_meta,
-                    )
+                chunk_df = self._duck._fetchdf(sql, chunk)
 
-        # 2b. Bulk data fetch for NATIVE pids (existing optimized path)
-        if native_pids:
-            native_keys = {k for k in all_keys if k[0] in native_pids}
+                if len(chunk_df) > 0:
+                    # Restore types on data columns
+                    restored = chunk_df[data_cols].copy()
+                    restored = self._duck._restore_types(restored, dtype_meta)
 
-            first_native_dtype = dtype_by_pid[next(iter(native_pids))]
-            data_cols = list(first_native_dtype["columns"].keys())
-            data_select = ", ".join(f'"{c}"' for c in data_cols)
+                    mode = dtype_meta.get("mode", "single_column")
+                    columns_meta = dtype_meta.get("columns", {})
 
-            where_clause, params = self._build_bulk_where(native_keys)
-            sql = (
-                f'SELECT parameter_id, version_id, schema_id, {data_select} '
-                f'FROM "{table_name}" '
-                f'WHERE {where_clause}'
-            )
-            all_data_df = self._duck._fetchdf(sql, params)
+                    if mode == "single_column":
+                        col_name = next(iter(columns_meta))
+                        for i, rid in enumerate(chunk_df["record_id"].tolist()):
+                            data_lookup[rid] = restored[col_name].iloc[i]
+                    else:
+                        col_names = list(columns_meta.keys())
+                        for i, rid in enumerate(chunk_df["record_id"].tolist()):
+                            data_lookup[rid] = {c: restored[c].iloc[i] for c in col_names}
 
-            # Restore types per parameter_id group, then build lookup
-            for pid in native_pids:
-                pid_mask = all_data_df["parameter_id"] == pid
-                pid_df = all_data_df[pid_mask]
-                if len(pid_df) == 0:
-                    continue
-                dtype_meta = dtype_by_pid[pid]
-                restored = pid_df[data_cols].copy()
-                restored = self._duck._restore_types(restored, dtype_meta)
-
-                pid_keys_p = pid_df["parameter_id"].values.astype(int)
-                pid_keys_v = pid_df["version_id"].values.astype(int)
-                pid_keys_s = pid_df["schema_id"].values.astype(int)
-
-                mode = dtype_meta.get("mode", "single_column")
-                columns_meta = dtype_meta.get("columns", {})
-
-                if mode == "single_column":
-                    col_name = next(iter(columns_meta))
-                    col_values = restored[col_name].tolist()
-                    for i in range(len(col_values)):
-                        key = (int(pid_keys_p[i]), int(pid_keys_v[i]), int(pid_keys_s[i]))
-                        data_lookup[key] = (col_values[i], dtype_meta)
-                else:
-                    col_lists = {c: restored[c].tolist() for c in columns_meta}
-                    for i in range(len(pid_df)):
-                        key = (int(pid_keys_p[i]), int(pid_keys_v[i]), int(pid_keys_s[i]))
-                        data_lookup[key] = ({c: col_lists[c][i] for c in columns_meta}, dtype_meta)
-
-        # 3. Construct instances using itertuples + inline metadata
-        _count = 0
+        # 4. Construct instances using itertuples + inline metadata
         schema_keys = self.dataset_schema_keys
         for row in records.itertuples(index=False):
-            pid = int(row.parameter_id)
-            vid = int(row.version_id)
-            sid = int(row.schema_id)
-            key = (pid, vid, sid)
+            record_id = row.record_id
 
-            if key in custom_data_lookup:
-                data_value = custom_data_lookup[key]
-            elif key in data_lookup:
-                data_value, _ = data_lookup[key]
-            else:
+            if record_id not in data_lookup:
                 continue
 
-            record_id = row.record_id
+            data_value = data_lookup[record_id]
             content_hash = row.content_hash
             lineage_hash = row.lineage_hash
             if lineage_hash is not None and not isinstance(lineage_hash, str):
@@ -2392,7 +2054,7 @@ class DatabaseManager:
                 val = getattr(row, sk, None)
                 if val is not None and not (isinstance(val, float) and pd.isna(val)):
                     flat_metadata[sk] = _from_schema_str(val)
-            vk_raw = getattr(row, 'version_keys', None)
+            vk_raw = getattr(row, "version_keys", None)
             if vk_raw is not None and isinstance(vk_raw, str):
                 flat_metadata.update(json.loads(vk_raw))
 
@@ -2401,9 +2063,6 @@ class DatabaseManager:
             instance.metadata = flat_metadata
             instance.content_hash = content_hash
             instance.lineage_hash = lineage_hash
-            instance.version_id = vid
-            instance.parameter_id = pid
-            _count += 1
 
             yield instance
 
@@ -2437,11 +2096,11 @@ class DatabaseManager:
                 "record_id": row["record_id"],
                 "schema": nested.get("schema", {}),
                 "version": nested.get("version", {}),
-                "created_at": row["created_at"],
+                "timestamp": row["timestamp"],
             })
 
-        # Sort by created_at descending
-        results.sort(key=lambda x: x["created_at"], reverse=True)
+        # Sort by timestamp descending
+        results.sort(key=lambda x: x["timestamp"], reverse=True)
         return results
 
     def get_provenance(
@@ -2463,15 +2122,39 @@ class DatabaseManager:
             var = self.load(variable_class, metadata)
             record_id = var.record_id
 
-        lineage = self._pipeline_db.get_lineage(record_id)
-        if not lineage:
+        # Get lineage_hash from _record_metadata
+        rows = self._duck._fetchall(
+            "SELECT lineage_hash FROM _record_metadata WHERE record_id = ?",
+            [record_id],
+        )
+        if not rows or not rows[0][0]:
+            return None
+        lineage_hash = rows[0][0]
+
+        # Query _lineage for edges with this lineage_hash
+        edge_rows = self._duck._fetchall(
+            "SELECT source, source_type, function_name, function_hash "
+            "FROM _lineage WHERE lineage_hash = ?",
+            [lineage_hash],
+        )
+        if not edge_rows:
             return None
 
+        function_name = edge_rows[0][2]
+        function_hash = edge_rows[0][3]
+        inputs = []
+        constants = []
+        for source, source_type, _, _ in edge_rows:
+            if source_type == "constant":
+                constants.append({"value_repr": source})
+            else:
+                inputs.append({"source_type": source_type, "type": source})
+
         return {
-            "function_name": lineage["function_name"],
-            "function_hash": lineage["function_hash"],
-            "inputs": lineage["inputs"],
-            "constants": lineage["constants"],
+            "function_name": function_name,
+            "function_hash": function_hash,
+            "inputs": inputs,
+            "constants": constants,
         }
 
     def get_provenance_by_schema(self, **schema_keys) -> list[dict]:
@@ -2484,7 +2167,46 @@ class DatabaseManager:
         Returns:
             List of lineage record dicts matching the schema keys
         """
-        return self._pipeline_db.find_by_schema(**schema_keys)
+        # Build query to find records matching schema_keys with lineage
+        conditions = ["rm.lineage_hash IS NOT NULL"]
+        params: list[Any] = []
+        for key, value in schema_keys.items():
+            conditions.append(f's."{key}" = ?')
+            params.append(_schema_str(value))
+
+        where = " AND ".join(conditions)
+        rows = self._duck._fetchall(
+            f"SELECT rm.record_id, rm.variable_name, rm.lineage_hash "
+            f"FROM _record_metadata rm "
+            f"LEFT JOIN _schema s ON rm.schema_id = s.schema_id "
+            f"WHERE {where}",
+            params,
+        )
+
+        results = []
+        for record_id, variable_name, lineage_hash in rows:
+            edge_rows = self._duck._fetchall(
+                "SELECT source, source_type, function_name, function_hash "
+                "FROM _lineage WHERE lineage_hash = ?",
+                [lineage_hash],
+            )
+            if not edge_rows:
+                continue
+            function_name = edge_rows[0][2]
+            function_hash = edge_rows[0][3]
+            inputs = [{"source_type": st, "type": src}
+                      for src, st, _, _ in edge_rows if st != "constant"]
+            constants = [{"value_repr": src}
+                         for src, st, _, _ in edge_rows if st == "constant"]
+            results.append({
+                "output_record_id": record_id,
+                "output_type": variable_name,
+                "function_name": function_name,
+                "function_hash": function_hash,
+                "inputs": inputs,
+                "constants": constants,
+            })
+        return results
 
     def get_pipeline_structure(self) -> list[dict]:
         """
@@ -2498,11 +2220,34 @@ class DatabaseManager:
             List of dicts with keys: function_name, function_hash, output_type,
             input_types (list of type names)
         """
-        return self._pipeline_db.get_pipeline_structure()
+        rows = self._duck._fetchall(
+            "SELECT DISTINCT target, function_name, function_hash FROM _lineage"
+        )
+        results = []
+        for target, function_name, function_hash in rows:
+            input_rows = self._duck._fetchall(
+                "SELECT DISTINCT source FROM _lineage "
+                "WHERE target = ? AND function_name = ? AND function_hash = ? "
+                "AND source_type != 'constant'",
+                [target, function_name, function_hash],
+            )
+            input_types = [r[0] for r in input_rows]
+            results.append({
+                "function_name": function_name,
+                "function_hash": function_hash,
+                "output_type": target,
+                "input_types": input_types,
+            })
+        return results
 
     def has_lineage(self, record_id: str) -> bool:
         """Check if a variable has lineage information."""
-        return self._pipeline_db.has_lineage(record_id)
+        rows = self._duck._fetchall(
+            "SELECT lineage_hash FROM _record_metadata "
+            "WHERE record_id = ? AND lineage_hash IS NOT NULL",
+            [record_id],
+        )
+        return len(rows) > 0 and bool(rows[0][0])
 
     # -------------------------------------------------------------------------
     # Export Methods
@@ -2541,9 +2286,8 @@ class DatabaseManager:
         Find output values by computation lineage.
 
         Given a PipelineThunk (function + inputs), finds any previously
-        computed outputs that match by:
-        1. Querying PipelineDB (SQLite) for matching lineage_hash
-        2. Loading data from SciDuck (DuckDB) using the record_ids
+        computed outputs that match by querying _record_metadata for
+        matching lineage_hash.
 
         Args:
             pipeline_thunk: The computation to look up
@@ -2553,36 +2297,36 @@ class DatabaseManager:
         """
         lineage_hash = pipeline_thunk.compute_lineage_hash()
 
-        # Query PipelineDB (SQLite) for matching lineage
-        records = self._pipeline_db.find_by_lineage_hash(lineage_hash)
+        # Query _record_metadata for matching lineage_hash
+        records = self._duck._fetchall(
+            "SELECT record_id, variable_name FROM _record_metadata WHERE lineage_hash = ?",
+            [lineage_hash],
+        )
         if not records:
             return None
 
         results = []
         has_generated = False
-        for record in records:
-            output_record_id = record["output_record_id"]
-            output_type = record["output_type"]
-
-            # Skip ephemeral entries (no data stored in SciDuck)
-            if output_record_id.startswith("ephemeral:"):
+        for record_id, variable_name in records:
+            # Skip ephemeral entries (no data stored)
+            if record_id.startswith("ephemeral:"):
                 continue
 
             # Track generated entries (lineage-only, no data stored)
-            if output_record_id.startswith("generated:"):
+            if record_id.startswith("generated:"):
                 has_generated = True
                 continue
 
-            var_class = self._get_variable_class(output_type)
+            var_class = self._get_variable_class(variable_name)
             if var_class is None:
                 return None
 
             try:
-                # Load data from SciDuck (DuckDB)
-                var = self.load(var_class, {}, version=output_record_id)
+                # Load data from DuckDB
+                var = self.load(var_class, {}, version=record_id)
                 results.append(var.data)
             except (KeyError, NotFoundError):
-                # Record not found in SciDuck
+                # Record not found
                 return None
 
         if results:
@@ -2701,12 +2445,11 @@ class DatabaseManager:
         return classes
 
     def close(self):
-        """Close the database connections and reset Thunk.query if it points to self."""
+        """Close the database connection and reset Thunk.query if it points to self."""
         from .thunk import Thunk
         if getattr(Thunk, "query", None) is self:
             Thunk.query = None
         self._duck.close()
-        self._pipeline_db.close()
         # remove global reference
         if getattr(_local, "database", None) is self:
             self._closed = True
@@ -2715,9 +2458,6 @@ class DatabaseManager:
         # reopen DuckDB
         if self._duck is None:
             self._duck = SciDuck(self.dataset_db_path, dataset_schema=self.dataset_schema_keys)
-        # reopen PipelineDB
-        if self._pipeline_db is None:
-            self._pipeline_db = PipelineDB(self.pipeline_db_path)
         self._closed = False
 
     def set_current_db(self):

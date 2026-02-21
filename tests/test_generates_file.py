@@ -136,13 +136,15 @@ class TestSaveBehavior:
         result = make_plot(loaded)
         record_id = Figure.save(result, subject=1, session="A")
 
-        # Verify lineage is stored with schema keys
-        lineage = db._pipeline_db.find_by_lineage_hash(
-            result.pipeline_thunk.compute_lineage_hash()
+        # Verify lineage is stored by querying _record_metadata via find_by_lineage
+        lineage_hash = result.pipeline_thunk.compute_lineage_hash()
+        rows = db._duck._fetchall(
+            "SELECT record_id FROM _record_metadata WHERE lineage_hash = ?",
+            [lineage_hash],
         )
-        assert lineage is not None
-        assert len(lineage) > 0
-        assert lineage[0]["output_record_id"] == record_id
+        assert rows is not None
+        assert len(rows) > 0
+        assert rows[0][0] == record_id
 
 
 # --- Cache hit tests ---
@@ -281,7 +283,6 @@ class TestPersistence:
     def test_cache_hit_survives_reconnect(self, tmp_path):
         """Cache hit should work after closing and reopening database."""
         db_path = tmp_path / "persist.duckdb"
-        pipeline_path = tmp_path / "persist_pipeline.db"
 
         call_count = 0
 
@@ -292,7 +293,7 @@ class TestPersistence:
             return None
 
         # First connection — save data and lineage
-        db1 = configure_database(db_path, DEFAULT_TEST_SCHEMA_KEYS, pipeline_path)
+        db1 = configure_database(db_path, DEFAULT_TEST_SCHEMA_KEYS)
         RawSignal.save(np.array([1, 2, 3]), subject=1)
         loaded = RawSignal.load(subject=1)
         result = make_plot(loaded)
@@ -301,7 +302,7 @@ class TestPersistence:
         db1.close()
 
         # Second connection — cache hit should still work
-        db2 = configure_database(db_path, DEFAULT_TEST_SCHEMA_KEYS, pipeline_path)
+        db2 = configure_database(db_path, DEFAULT_TEST_SCHEMA_KEYS)
         reloaded = RawSignal.load(subject=1)
         cached = make_plot(reloaded)
         assert call_count == 1  # NOT called again

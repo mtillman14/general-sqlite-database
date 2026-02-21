@@ -40,6 +40,15 @@ class Filter(ABC):
         return NotFilter(self)
 
     @abstractmethod
+    def to_key(self) -> str:
+        """Return a canonical string representation for use as a version key.
+
+        Used to serialize filter configs into _record_metadata.version_keys
+        so that different where= configurations produce distinct version groups.
+        """
+        ...
+
+    @abstractmethod
     def resolve(
         self,
         db: "DatabaseManager",
@@ -104,15 +113,13 @@ def _resolve_variable_schema_ids(
         WITH ranked AS (
             SELECT rm.schema_id,
                    ROW_NUMBER() OVER (
-                       PARTITION BY rm.variable_name, rm.parameter_id, rm.schema_id
-                       ORDER BY rm.version_id DESC
+                       PARTITION BY rm.variable_name, rm.schema_id, rm.version_keys
+                       ORDER BY rm.timestamp DESC
                    ) AS rn,
                    t.*
             FROM _record_metadata rm
             JOIN "{filter_table_name}" t
-                ON t.parameter_id = rm.parameter_id
-               AND t.version_id   = rm.version_id
-               AND t.schema_id    = rm.schema_id
+                ON t.record_id = rm.record_id
             WHERE rm.variable_name = ?
         )
         SELECT DISTINCT schema_id
@@ -141,8 +148,8 @@ def _get_all_schema_ids_for_variable(
         WITH ranked AS (
             SELECT rm.schema_id,
                    ROW_NUMBER() OVER (
-                       PARTITION BY rm.variable_name, rm.parameter_id, rm.schema_id
-                       ORDER BY rm.version_id DESC
+                       PARTITION BY rm.variable_name, rm.schema_id, rm.version_keys
+                       ORDER BY rm.timestamp DESC
                    ) AS rn
             FROM _record_metadata rm
             WHERE rm.variable_name = ?
@@ -331,6 +338,9 @@ class VariableFilter(Filter):
     def __repr__(self) -> str:
         return f"VariableFilter({self.variable_class.__name__} {self.op} {self.value!r})"
 
+    def to_key(self) -> str:
+        return f"{self.variable_class.__name__} {self.op} {self.value!r}"
+
     def resolve(
         self,
         db: "DatabaseManager",
@@ -407,6 +417,9 @@ class ColumnFilter(Filter):
             f"{self.op} {self.value!r})"
         )
 
+    def to_key(self) -> str:
+        return f"{self.variable_class.__name__}['{self.column}'] {self.op} {self.value!r}"
+
     def isin(self, values) -> "InFilter":
         """Create an InFilter for set membership testing."""
         return InFilter(self.variable_class, self.column, list(values))
@@ -474,6 +487,10 @@ class InFilter(Filter):
         col = self.column or "value"
         return f"InFilter({self.variable_class.__name__}[{col!r}] IN {self.values!r})"
 
+    def to_key(self) -> str:
+        col = self.column or "value"
+        return f"{self.variable_class.__name__}['{col}'] IN {sorted(self.values)}"
+
     def resolve(
         self,
         db: "DatabaseManager",
@@ -539,6 +556,9 @@ class CompoundFilter(Filter):
     def __repr__(self) -> str:
         return f"CompoundFilter({self.left!r} {self.op} {self.right!r})"
 
+    def to_key(self) -> str:
+        return f"({self.left.to_key()}) {self.op} ({self.right.to_key()})"
+
     def resolve(
         self,
         db: "DatabaseManager",
@@ -568,6 +588,9 @@ class NotFilter(Filter):
 
     def __repr__(self) -> str:
         return f"NotFilter({self.inner!r})"
+
+    def to_key(self) -> str:
+        return f"NOT ({self.inner.to_key()})"
 
     def resolve(
         self,
@@ -599,6 +622,9 @@ class RawFilter(Filter):
     def __repr__(self) -> str:
         return f"RawFilter({self.sql!r})"
 
+    def to_key(self) -> str:
+        return f"RAW: {self.sql}"
+
     def resolve(
         self,
         db: "DatabaseManager",
@@ -614,15 +640,13 @@ class RawFilter(Filter):
                 WITH ranked AS (
                     SELECT rm.schema_id,
                            ROW_NUMBER() OVER (
-                               PARTITION BY rm.variable_name, rm.parameter_id, rm.schema_id
-                               ORDER BY rm.version_id DESC
+                               PARTITION BY rm.variable_name, rm.schema_id, rm.version_keys
+                               ORDER BY rm.timestamp DESC
                            ) AS rn,
                            t.*
                     FROM _record_metadata rm
                     JOIN "{target_table_name}" t
-                        ON t.parameter_id = rm.parameter_id
-                       AND t.version_id   = rm.version_id
-                       AND t.schema_id    = rm.schema_id
+                        ON t.record_id = rm.record_id
                     WHERE rm.variable_name = ?
                 )
                 SELECT DISTINCT schema_id

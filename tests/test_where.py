@@ -134,7 +134,7 @@ class TestBasicEqualityFilter:
         df = StepLength.load_all(as_df=True, where=Side == "L")
         assert len(df) == 2
         # All returned data should be left-side step lengths
-        assert set(df["data"].tolist()) == pytest.approx({0.65, 0.68})
+        assert sorted(df["data"].tolist()) == pytest.approx(sorted([0.65, 0.68]))
 
     def test_filter_no_matches_raises_not_found(self, populated_db):
         """Filter that matches nothing raises NotFoundError on load."""

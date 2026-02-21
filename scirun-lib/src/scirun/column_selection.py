@@ -75,5 +75,9 @@ class ColumnSelection:
         from scidb.filters import InFilter
         return InFilter(self.var_type, self.columns[0], list(values))
 
+    def to_key(self) -> str:
+        """Return a canonical string for use as a version key."""
+        return f"{self.var_type.__name__}[{self.columns!r}]"
+
     def __hash__(self):
         return hash((self.var_type, tuple(self.columns)))

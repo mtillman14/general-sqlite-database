@@ -347,8 +347,6 @@ def wrap_batch_bridge(py_vars_list):
         record_ids     : str   — newline-joined
         content_hashes : str   — newline-joined
         lineage_hashes : str   — newline-joined ('' for None)
-        version_ids    : str   — newline-joined int strings ('' for None)
-        parameter_ids  : str   — newline-joined int strings ('' for None)
         json_meta      : str   — JSON array of metadata dicts
         scalar_data    : numpy.ndarray (optional) — present when all data are scalars
     """
@@ -361,8 +359,6 @@ def wrap_batch_bridge(py_vars_list):
     record_ids = []
     content_hashes = []
     lineage_hashes = []
-    version_ids = []
-    parameter_ids = []
     meta_dicts = []
     data = []
 
@@ -371,10 +367,6 @@ def wrap_batch_bridge(py_vars_list):
         content_hashes.append(v.content_hash or '')
         lh = v.lineage_hash
         lineage_hashes.append(lh if lh is not None else '')
-        vid = getattr(v, 'version_id', None)
-        version_ids.append(str(vid) if vid is not None else '')
-        pid = getattr(v, 'parameter_id', None)
-        parameter_ids.append(str(pid) if pid is not None else '')
         meta = v.metadata
         meta_dicts.append(dict(meta) if meta is not None else {})
         data.append(v.data)
@@ -389,8 +381,6 @@ def wrap_batch_bridge(py_vars_list):
         'record_ids': '\n'.join(record_ids),
         'content_hashes': '\n'.join(content_hashes),
         'lineage_hashes': '\n'.join(lineage_hashes),
-        'version_ids': '\n'.join(version_ids),
-        'parameter_ids': '\n'.join(parameter_ids),
         'json_meta': json.dumps(meta_dicts),
     }
 

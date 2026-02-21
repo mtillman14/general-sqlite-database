@@ -239,7 +239,7 @@ classdef TestSaveLoad < matlab.unittest.TestCase
             testCase.verifyTrue(isfield(versions, 'record_id'));
             testCase.verifyTrue(isfield(versions, 'schema'));
             testCase.verifyTrue(isfield(versions, 'version'));
-            testCase.verifyTrue(isfield(versions, 'created_at'));
+            testCase.verifyTrue(isfield(versions, 'timestamp'));
         end
 
         function test_list_versions_record_id_matches_saved(testCase)

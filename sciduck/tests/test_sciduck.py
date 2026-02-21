@@ -168,7 +168,7 @@ class TestSaveLoadModeA:
             "trial": ["1", "2", "1", "2"],
             "value": [10, 20, 30, 40],
         })
-        vid = duck.save("df_var", df)
+        duck.save("df_var", df)
 
         # Load specific entry
         loaded = duck.load("df_var", subject="S01", session="A", trial="1")
@@ -221,47 +221,22 @@ class TestSaveLoadModeC:
 class TestVersioning:
     """Test version management features."""
 
-    def test_auto_increment_version(self, duck):
-        """Save multiple versions, version_id should auto-increment."""
-        v1 = duck.save("versioned", 10, subject="S01", session="A", trial="1", force=True)
-        v2 = duck.save("versioned", 20, subject="S01", session="A", trial="1", force=True)
-        v3 = duck.save("versioned", 30, subject="S01", session="A", trial="1", force=True)
-
-        assert v1 == 1
-        assert v2 == 2
-        assert v3 == 3
-
-    def test_latest_version_loaded_by_default(self, duck):
-        """Load should return the latest version by default."""
-        duck.save("versioned", 10, subject="S01", session="A", trial="1", force=True)
-        duck.save("versioned", 20, subject="S01", session="A", trial="1", force=True)
-        duck.save("versioned", 30, subject="S01", session="A", trial="1", force=True)
+    def test_latest_value_loaded_by_default(self, duck):
+        """Re-saving to same schema entry replaces the previous value."""
+        duck.save("versioned", 10, subject="S01", session="A", trial="1")
+        duck.save("versioned", 20, subject="S01", session="A", trial="1")
+        duck.save("versioned", 30, subject="S01", session="A", trial="1")
 
         loaded = duck.load("versioned", subject="S01", session="A", trial="1")
         assert loaded == 30
 
-    def test_load_specific_version(self, duck):
-        """Load a specific parameter set by parameter_id."""
-        duck.save("versioned", 10, subject="S01", session="A", trial="1", force=True)
-        duck.save("versioned", 20, subject="S01", session="A", trial="1", force=True)
-
-        loaded = duck.load("versioned", parameter_id=1, subject="S01", session="A", trial="1")
-        assert loaded == 10
-
     def test_list_versions(self, duck):
-        """Should list all versions of a variable."""
-        duck.save("versioned", 10, subject="S01", session="A", trial="1", force=True)
-        duck.save("versioned", 20, subject="S01", session="A", trial="1", force=True)
+        """list_versions should return one row per variable."""
+        duck.save("versioned", 10, subject="S01", session="A", trial="1")
+        duck.save("versioned", 20, subject="S01", session="A", trial="1")
 
         versions = duck.list_versions("versioned")
-        assert len(versions) == 2
-
-    def test_saving_same_data_creates_new_version(self, duck):
-        """Saving identical data creates a new version (no hash dedup)."""
-        v1 = duck.save("dedup", 42, subject="S01", session="A", trial="1")
-        v2 = duck.save("dedup", 42, subject="S01", session="A", trial="1")
-
-        assert v2 == v1 + 1  # New version created each time
+        assert len(versions) == 1
 
 
 # ---------------------------------------------------------------------------
@@ -272,7 +247,7 @@ class TestDelete:
     """Test delete functionality."""
 
     def test_delete_variable(self, duck):
-        """Should delete a variable and all its versions."""
+        """Should delete a variable and all its data."""
         duck.save("to_delete", 42, subject="S01", session="A", trial="1")
         duck.delete("to_delete")
 
@@ -282,17 +257,6 @@ class TestDelete:
         # Should not appear in list_variables
         var_list = duck.list_variables()
         assert len(var_list[var_list["variable_name"] == "to_delete"]) == 0
-
-    def test_delete_specific_version(self, duck):
-        """Should delete only the specified parameter set."""
-        duck.save("multi_ver", 10, subject="S01", session="A", trial="1", force=True)
-        duck.save("multi_ver", 20, subject="S01", session="A", trial="1", force=True)
-
-        duck.delete("multi_ver", parameter_id=1)
-
-        versions = duck.list_versions("multi_ver")
-        assert len(versions) == 1
-        assert versions["parameter_id"].iloc[0] == 2
 
 
 # ---------------------------------------------------------------------------
@@ -363,15 +327,6 @@ class TestListInspect:
         names = list(var_list["variable_name"])
         assert "alpha" in names
         assert "beta" in names
-
-    def test_list_variables_shows_version_count(self, duck):
-        """list_variables should show the number of versions."""
-        duck.save("counted", 1, subject="S01", session="A", trial="1", force=True)
-        duck.save("counted", 2, subject="S01", session="A", trial="1", force=True)
-
-        var_list = duck.list_variables()
-        row = var_list[var_list["variable_name"] == "counted"].iloc[0]
-        assert row["num_versions"] == 2
 
 
 # ---------------------------------------------------------------------------
@@ -467,21 +422,20 @@ class TestPersistence:
 
         assert loaded == 42
 
-    def test_versions_survive_reconnect(self, tmp_path):
-        """Version history should survive reconnection."""
+    def test_variable_survives_reconnect(self, tmp_path):
+        """Variable metadata should survive reconnection."""
         db_path = tmp_path / "persist_ver.duckdb"
         schema = ["subject"]
 
         db1 = SciDuck(db_path, dataset_schema=schema)
-        db1.save("versioned", 10, subject="S01", force=True)
-        db1.save("versioned", 20, subject="S01", force=True)
+        db1.save("versioned", 10, subject="S01")
         db1.close()
 
         db2 = SciDuck(db_path, dataset_schema=schema)
         versions = db2.list_versions("versioned")
         db2.close()
 
-        assert len(versions) == 2
+        assert len(versions) == 1
 
 
 # ---------------------------------------------------------------------------
@@ -519,11 +473,10 @@ class TestNonContiguousSchemaKeys:
 
     def test_save_with_non_contiguous_keys(self, wide_duck):
         """Should save with keys that skip intermediate levels."""
-        pid = wide_duck.save(
+        wide_duck.save(
             "cohens_d", 0.85,
             subject="S01", intervention="RMT30", speed="SSV",
         )
-        assert pid == 1
 
     def test_load_non_contiguous_round_trip(self, wide_duck):
         """Should round-trip data saved with non-contiguous keys."""
@@ -596,8 +549,8 @@ class TestNonContiguousSchemaKeys:
         speeds = set(schema_rows["speed"])
         assert speeds == {"SSV", "FV"}
 
-    def test_load_resolves_latest_parameter_id_per_schema_keys(self, wide_duck):
-        """load() should find the latest parameter_id that matches the given schema keys."""
+    def test_load_resolves_correct_schema_keys(self, wide_duck):
+        """load() should return the value matching the given schema keys."""
         wide_duck.save(
             "cohens_d", 0.85,
             subject="S01", intervention="RMT30", speed="SSV",
@@ -606,8 +559,6 @@ class TestNonContiguousSchemaKeys:
             "cohens_d", 0.92,
             subject="S01", intervention="RMT30", speed="FV",
         )
-        # Each save has a different parameter_id, but load should resolve
-        # to the one whose schema_id matches the requested keys
         v1 = wide_duck.load("cohens_d", subject="S01", speed="SSV")
         v2 = wide_duck.load("cohens_d", subject="S01", speed="FV")
         assert abs(v1 - 0.85) < 1e-10
