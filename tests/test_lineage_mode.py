@@ -351,7 +351,7 @@ class TestEphemeralMode:
 
         # Query the _lineage table in DuckDB for ephemeral entries
         ephemeral_entries = ephemeral_db._duck._fetchall(
-            "SELECT lineage_hash FROM _lineage WHERE lineage_hash LIKE 'ephemeral:%'"
+            "SELECT output_record_id FROM _lineage WHERE output_record_id LIKE 'ephemeral:%'"
         )
 
         # Should have at least one ephemeral entry for the unsaved intermediate
@@ -506,7 +506,7 @@ class TestEdgeCases:
 
         # Count ephemeral entries in DuckDB _lineage table
         rows = ephemeral_db._duck._fetchall(
-            "SELECT COUNT(DISTINCT lineage_hash) FROM _lineage WHERE lineage_hash LIKE 'ephemeral:%'"
+            "SELECT COUNT(DISTINCT output_record_id) FROM _lineage WHERE output_record_id LIKE 'ephemeral:%'"
         )
         count = rows[0][0]
 
@@ -578,6 +578,39 @@ class TestProvenanceQueries:
         # Input should be tracked as unsaved_variable
         assert len(provenance["inputs"]) == 1
         assert provenance["inputs"][0]["source_type"] == "unsaved_variable"
+
+    def test_get_provenance_includes_named_constants(self, strict_db):
+        """Constants should be stored with their parameter names."""
+        @thunk
+        def scale(x, factor, offset):
+            return x * factor + offset
+
+        RawData.save(np.array([1.0, 2.0, 3.0]), subject=1)
+        raw = RawData.load(subject=1)
+        result = scale(raw, factor=2.0, offset=0.5)
+        ProcessedData.save(result, subject=1)
+
+        provenance = strict_db.get_provenance(ProcessedData, subject=1)
+        assert provenance["function_name"] == "scale"
+        constants_by_name = {c["name"]: c["value_repr"] for c in provenance["constants"]}
+        assert "factor" in constants_by_name
+        assert "offset" in constants_by_name
+
+    def test_get_provenance_includes_input_record_id(self, strict_db):
+        """Variable inputs should be stored with their record_id and type."""
+        @thunk
+        def double(x):
+            return x * 2
+
+        record_id = RawData.save(np.array([1.0, 2.0, 3.0]), subject=1)
+        raw = RawData.load(subject=1)
+        result = double(raw)
+        ProcessedData.save(result, subject=1)
+
+        provenance = strict_db.get_provenance(ProcessedData, subject=1)
+        assert len(provenance["inputs"]) == 1
+        assert provenance["inputs"][0]["type"] == "RawData"
+        assert provenance["inputs"][0]["record_id"] == record_id
 
     def test_has_lineage_works_both_modes(self, strict_db, tmp_path):
         """has_lineage should work correctly in both modes."""

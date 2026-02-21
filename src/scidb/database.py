@@ -560,17 +560,17 @@ class DatabaseManager:
         """)
 
     def _ensure_lineage_table(self):
-        """Create the _lineage table for type-level provenance DAG."""
+        """Create the _lineage table for computation provenance."""
         self._duck._execute("""
             CREATE TABLE IF NOT EXISTS _lineage (
-                lineage_hash VARCHAR NOT NULL,
-                source VARCHAR NOT NULL,
-                source_type VARCHAR NOT NULL DEFAULT 'variable',
-                target VARCHAR NOT NULL,
-                function_name VARCHAR NOT NULL,
-                function_hash VARCHAR NOT NULL,
-                timestamp VARCHAR NOT NULL,
-                PRIMARY KEY (lineage_hash, source, target, function_hash)
+                output_record_id VARCHAR PRIMARY KEY,
+                lineage_hash     VARCHAR NOT NULL,
+                target           VARCHAR NOT NULL,
+                function_name    VARCHAR NOT NULL,
+                function_hash    VARCHAR NOT NULL,
+                inputs           VARCHAR NOT NULL DEFAULT '[]',
+                constants        VARCHAR NOT NULL DEFAULT '[]',
+                timestamp        VARCHAR NOT NULL
             )
         """)
 
@@ -1812,29 +1812,21 @@ class DatabaseManager:
         schema_keys: dict | None = None,
         output_content_hash: str | None = None,
     ) -> None:
-        """Save lineage edges to DuckDB _lineage table."""
+        """Save one lineage row to DuckDB _lineage table."""
         lh = lineage_hash or output_record_id
+        inputs_json = json.dumps(lineage.inputs, sort_keys=True)
+        constants_json = json.dumps(lineage.constants, sort_keys=True)
         timestamp = datetime.now().isoformat()
 
-        rows = []
-        for inp in lineage.inputs:
-            source_type = inp.get("source_type", "variable")
-            source = inp.get("type", "unknown")
-            rows.append((lh, source, source_type, output_type,
-                         lineage.function_name, lineage.function_hash, timestamp))
-
-        for const in lineage.constants:
-            value_repr = const.get("value_repr", repr(const))
-            rows.append((lh, value_repr, "constant", output_type,
-                         lineage.function_name, lineage.function_hash, timestamp))
-
-        for row in rows:
-            self._duck._execute(
-                "INSERT INTO _lineage "
-                "(lineage_hash, source, source_type, target, function_name, function_hash, timestamp) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?) ON CONFLICT DO NOTHING",
-                list(row),
-            )
+        self._duck._execute(
+            "INSERT INTO _lineage "
+            "(output_record_id, lineage_hash, target, function_name, function_hash, "
+            " inputs, constants, timestamp) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?) "
+            "ON CONFLICT (output_record_id) DO NOTHING",
+            [output_record_id, lh, output_type, lineage.function_name,
+             lineage.function_hash, inputs_json, constants_json, timestamp],
+        )
 
     def save_ephemeral_lineage(
         self,
@@ -1844,28 +1836,20 @@ class DatabaseManager:
         user_id: str | None = None,
         schema_keys: dict | None = None,
     ) -> None:
-        """Save an ephemeral lineage record to DuckDB _lineage table."""
+        """Save an ephemeral lineage row to DuckDB _lineage table."""
+        inputs_json = json.dumps(lineage.inputs, sort_keys=True)
+        constants_json = json.dumps(lineage.constants, sort_keys=True)
         timestamp = datetime.now().isoformat()
 
-        rows = []
-        for inp in lineage.inputs:
-            source_type = inp.get("source_type", "variable")
-            source = inp.get("type", "unknown")
-            rows.append((ephemeral_id, source, source_type, variable_type,
-                         lineage.function_name, lineage.function_hash, timestamp))
-
-        for const in lineage.constants:
-            value_repr = const.get("value_repr", repr(const))
-            rows.append((ephemeral_id, value_repr, "constant", variable_type,
-                         lineage.function_name, lineage.function_hash, timestamp))
-
-        for row in rows:
-            self._duck._execute(
-                "INSERT INTO _lineage "
-                "(lineage_hash, source, source_type, target, function_name, function_hash, timestamp) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?) ON CONFLICT DO NOTHING",
-                list(row),
-            )
+        self._duck._execute(
+            "INSERT INTO _lineage "
+            "(output_record_id, lineage_hash, target, function_name, function_hash, "
+            " inputs, constants, timestamp) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?) "
+            "ON CONFLICT (output_record_id) DO NOTHING",
+            [ephemeral_id, ephemeral_id, variable_type, lineage.function_name,
+             lineage.function_hash, inputs_json, constants_json, timestamp],
+        )
 
     def load(
         self,
@@ -2105,7 +2089,7 @@ class DatabaseManager:
 
     def get_provenance(
         self,
-        variable_class: Type[BaseVariable],
+        variable_class: Type[BaseVariable] | None,
         version: str | None = None,
         **metadata,
     ) -> dict | None:
@@ -2122,39 +2106,20 @@ class DatabaseManager:
             var = self.load(variable_class, metadata)
             record_id = var.record_id
 
-        # Get lineage_hash from _record_metadata
         rows = self._duck._fetchall(
-            "SELECT lineage_hash FROM _record_metadata WHERE record_id = ?",
+            "SELECT function_name, function_hash, inputs, constants "
+            "FROM _lineage WHERE output_record_id = ?",
             [record_id],
         )
-        if not rows or not rows[0][0]:
-            return None
-        lineage_hash = rows[0][0]
-
-        # Query _lineage for edges with this lineage_hash
-        edge_rows = self._duck._fetchall(
-            "SELECT source, source_type, function_name, function_hash "
-            "FROM _lineage WHERE lineage_hash = ?",
-            [lineage_hash],
-        )
-        if not edge_rows:
+        if not rows:
             return None
 
-        function_name = edge_rows[0][2]
-        function_hash = edge_rows[0][3]
-        inputs = []
-        constants = []
-        for source, source_type, _, _ in edge_rows:
-            if source_type == "constant":
-                constants.append({"value_repr": source})
-            else:
-                inputs.append({"source_type": source_type, "type": source})
-
+        function_name, function_hash, inputs_json, constants_json = rows[0]
         return {
             "function_name": function_name,
             "function_hash": function_hash,
-            "inputs": inputs,
-            "constants": constants,
+            "inputs": json.loads(inputs_json),
+            "constants": json.loads(constants_json),
         }
 
     def get_provenance_by_schema(self, **schema_keys) -> list[dict]:
@@ -2167,7 +2132,6 @@ class DatabaseManager:
         Returns:
             List of lineage record dicts matching the schema keys
         """
-        # Build query to find records matching schema_keys with lineage
         conditions = ["rm.lineage_hash IS NOT NULL"]
         params: list[Any] = []
         for key, value in schema_keys.items():
@@ -2176,35 +2140,24 @@ class DatabaseManager:
 
         where = " AND ".join(conditions)
         rows = self._duck._fetchall(
-            f"SELECT rm.record_id, rm.variable_name, rm.lineage_hash "
-            f"FROM _record_metadata rm "
+            f"SELECT l.output_record_id, rm.variable_name, "
+            f"l.function_name, l.function_hash, l.inputs, l.constants "
+            f"FROM _lineage l "
+            f"JOIN _record_metadata rm ON l.output_record_id = rm.record_id "
             f"LEFT JOIN _schema s ON rm.schema_id = s.schema_id "
             f"WHERE {where}",
             params,
         )
 
         results = []
-        for record_id, variable_name, lineage_hash in rows:
-            edge_rows = self._duck._fetchall(
-                "SELECT source, source_type, function_name, function_hash "
-                "FROM _lineage WHERE lineage_hash = ?",
-                [lineage_hash],
-            )
-            if not edge_rows:
-                continue
-            function_name = edge_rows[0][2]
-            function_hash = edge_rows[0][3]
-            inputs = [{"source_type": st, "type": src}
-                      for src, st, _, _ in edge_rows if st != "constant"]
-            constants = [{"value_repr": src}
-                         for src, st, _, _ in edge_rows if st == "constant"]
+        for record_id, variable_name, function_name, function_hash, inputs_json, constants_json in rows:
             results.append({
                 "output_record_id": record_id,
                 "output_type": variable_name,
                 "function_name": function_name,
                 "function_hash": function_hash,
-                "inputs": inputs,
-                "constants": constants,
+                "inputs": json.loads(inputs_json),
+                "constants": json.loads(constants_json),
             })
         return results
 
@@ -2221,23 +2174,25 @@ class DatabaseManager:
             input_types (list of type names)
         """
         rows = self._duck._fetchall(
-            "SELECT DISTINCT target, function_name, function_hash FROM _lineage"
+            "SELECT DISTINCT target, function_name, function_hash, inputs FROM _lineage"
         )
+        seen = set()
         results = []
-        for target, function_name, function_hash in rows:
-            input_rows = self._duck._fetchall(
-                "SELECT DISTINCT source FROM _lineage "
-                "WHERE target = ? AND function_name = ? AND function_hash = ? "
-                "AND source_type != 'constant'",
-                [target, function_name, function_hash],
-            )
-            input_types = [r[0] for r in input_rows]
-            results.append({
-                "function_name": function_name,
-                "function_hash": function_hash,
-                "output_type": target,
-                "input_types": input_types,
-            })
+        for target, function_name, function_hash, inputs_json in rows:
+            inputs = json.loads(inputs_json)
+            input_types = tuple(sorted(
+                inp.get("type", inp.get("source_function", "unknown"))
+                for inp in inputs
+            ))
+            key = (function_name, function_hash, target, input_types)
+            if key not in seen:
+                seen.add(key)
+                results.append({
+                    "function_name": function_name,
+                    "function_hash": function_hash,
+                    "output_type": target,
+                    "input_types": list(input_types),
+                })
         return results
 
     def has_lineage(self, record_id: str) -> bool:
