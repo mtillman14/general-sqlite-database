@@ -1454,34 +1454,60 @@ function tbl = fe_multi_result_to_table(results, type_name)
     if all_tables
         % Flatten mode: metadata columns + data columns merged into one table.
         % Each result may have multiple rows; metadata is replicated per row.
-        rows = cell(n, 1);
-        for i = 1:n
-            data_tbl = results(i).data;
-            nr = height(data_tbl);
+        %
+        % Optimized: pre-allocate metadata arrays and vertcat data tables
+        % in bulk, then build the final table once (avoids N horizontal
+        % table concats which are the dominant cost).
 
-            % Build metadata columns for this result (replicated per row)
-            meta_tbl = table();
-            meta_fields = fieldnames(results(i).metadata);
-            for f = 1:numel(meta_fields)
+        % Compute row counts and total rows
+        row_counts = zeros(n, 1);
+        data_parts = cell(n, 1);
+        for i = 1:n
+            data_parts{i} = results(i).data;
+            row_counts(i) = height(data_parts{i});
+        end
+        total_rows = sum(row_counts);
+
+        % Vertcat all data tables in one call
+        data_tbl = vertcat(data_parts{:});
+
+        % Build metadata columns as pre-allocated arrays
+        meta_fields = fieldnames(results(1).metadata);
+        meta_tbl = table();
+        for f = 1:numel(meta_fields)
+            % Determine type from first result
+            val1 = results(1).metadata.(meta_fields{f});
+            if isnumeric(val1)
+                col = zeros(total_rows, 1);
+            elseif isstring(val1) || ischar(val1)
+                col = strings(total_rows, 1);
+            else
+                col = cell(total_rows, 1);
+            end
+
+            row_offset = 0;
+            for i = 1:n
+                nr = row_counts(i);
+                idx = row_offset + (1:nr);
                 if isfield(results(i).metadata, meta_fields{f})
                     val = results(i).metadata.(meta_fields{f});
                 else
                     val = missing;
                 end
                 if isnumeric(val)
-                    meta_tbl.(meta_fields{f}) = repmat(double(val), nr, 1);
+                    col(idx) = double(val);
                 elseif isstring(val) || ischar(val)
-                    meta_tbl.(meta_fields{f}) = repmat(string(val), nr, 1);
+                    col(idx) = string(val);
                 else
-                    meta_tbl.(meta_fields{f}) = repmat({val}, nr, 1);
+                    col(idx) = repmat({val}, nr, 1);
                 end
+                row_offset = row_offset + nr;
             end
-
-            % Concatenate metadata + data columns for this result
-            rows{i} = [meta_tbl, data_tbl];
+            meta_tbl.(meta_fields{f}) = col;
         end
 
-        tbl = vertcat(rows{:});
+        % One horizontal concat instead of N
+        tbl = [meta_tbl, data_tbl];
     else
         % Non-table data: nest into a cell column named after the variable type
         meta_fields = fieldnames(results(1).metadata);
