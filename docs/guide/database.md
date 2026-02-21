@@ -1,6 +1,6 @@
 # Database
 
-The `DatabaseManager` handles all storage operations. SciDB uses DuckDB (via SciDuck) for data storage and SQLite (via PipelineDB) for lineage persistence.
+The `DatabaseManager` handles all storage operations. SciDB uses DuckDB (via SciDuck) for data and lineage storage.
 
 ## Configuration
 
@@ -14,7 +14,6 @@ from scidb import configure_database, get_database
 db = configure_database(
     "experiment.duckdb",
     dataset_schema_keys=["subject", "trial", "condition"],
-    pipeline_db_path="pipeline.db",
 )
 
 # Access anywhere
@@ -141,27 +140,21 @@ if db.has_lineage(record_id):
 
 See [Caching Guide](caching.md) for details.
 
-Caching is handled automatically through `Thunk.query`, which is set to the `DatabaseManager` instance during `configure_database()`. The `DatabaseManager.find_by_lineage()` method looks up previously computed results by lineage hash in PipelineDB (SQLite), then loads the data from SciDuck (DuckDB).
+Caching is handled automatically through `Thunk.query`, which is set to the `DatabaseManager` instance during `configure_database()`. The `DatabaseManager.find_by_lineage()` method looks up previously computed results by lineage hash, then loads the data from DuckDB.
 
 ## Database Schema
 
-SciDB uses two databases:
-
-**DuckDB (data storage via SciDuck):**
+SciDB uses a single DuckDB database for both data and lineage:
 
 | Table               | Purpose                     |
 |---------------------|-----------------------------|
 | `_registered_types` | Type registry               |
 | `_schema`           | Dataset schema entries      |
 | `_variables`        | Variable version metadata   |
+| `_record_metadata`  | Record audit trail          |
+| `_lineage`          | Provenance DAG              |
 | `_variable_groups`  | Named groups of variables   |
-| `{VariableName}`    | One per registered type     |
-
-**SQLite (lineage storage via PipelineDB):**
-
-| Table     | Purpose            |
-|-----------|--------------------|
-| `lineage` | Provenance records |
+| `{VariableName}_data` | One per registered type   |
 
 ## Storage Format
 

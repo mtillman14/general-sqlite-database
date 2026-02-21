@@ -84,11 +84,9 @@ def _clear_global_state():
 def server_app(tmp_path):
     """Create a FastAPI app backed by a temporary database."""
     db_path = tmp_path / "test.duckdb"
-    pipeline_path = tmp_path / "test_pipeline.db"
     app = create_app(
         dataset_db_path=str(db_path),
         dataset_schema_keys=TEST_SCHEMA_KEYS,
-        pipeline_db_path=str(pipeline_path),
     )
     yield app
     app.state.db.close()

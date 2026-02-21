@@ -6,7 +6,7 @@ The `DatabaseManager` handles all storage operations. You create it once via `co
 
 ## `configure_database()`
 
-Creates and globally registers the database. Call this once at startup — it connects to both the DuckDB data store and the SQLite lineage store, and enables caching for all `@thunk` functions.
+Creates and globally registers the database. Call this once at startup — it connects to DuckDB for data and lineage storage, and enables caching for all `@thunk` functions.
 
 === "Python"
 
@@ -14,9 +14,8 @@ Creates and globally registers the database. Call this once at startup — it co
     from scidb import configure_database
 
     db = configure_database(
-        "experiment.duckdb",                      # DuckDB file for data
+        "experiment.duckdb",                        # DuckDB file for data + lineage
         dataset_schema_keys=["subject", "session"], # which keys identify dataset location
-        pipeline_db_path="pipeline.db",            # SQLite file for lineage
     )
     ```
 
@@ -26,7 +25,6 @@ Creates and globally registers the database. Call this once at startup — it co
     db = configure_database(
         "experiment.duckdb",
         dataset_schema_keys=["subject", "session"],
-        pipeline_db_path="pipeline.db",
         lineage_mode="strict",   # default: raise error on unsaved intermediates
         # lineage_mode="ephemeral"  # allow unsaved intermediates without error
     )
@@ -37,8 +35,7 @@ Creates and globally registers the database. Call this once at startup — it co
     ```matlab
     db = scidb.configure_database( ...
         "experiment.duckdb", ...           % DuckDB file
-        ["subject", "session"], ...        % schema keys (string array)
-        "pipeline.db");                    % SQLite lineage file
+        ["subject", "session"]);           % schema keys (string array)
     ```
 
 **Parameters:**
@@ -47,7 +44,6 @@ Creates and globally registers the database. Call this once at startup — it co
 |-----------|------|-------------|
 | `dataset_db_path` | `str \| Path` | Path to the DuckDB database file (created if it doesn't exist) |
 | `dataset_schema_keys` | `list[str]` | **Required.** Keys that identify dataset location vs. computational variants |
-| `pipeline_db_path` | `str \| Path` | **Required.** Path to the SQLite lineage file |
 | `lineage_mode` | `str` | `"strict"` (default) or `"ephemeral"` |
 
 **Returns:** `DatabaseManager`

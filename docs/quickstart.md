@@ -50,7 +50,6 @@ from scidb import configure_database
 db = configure_database(
     "my_experiment.duckdb",
     dataset_schema_keys=["subject", "trial", "condition"],
-    pipeline_db_path="pipeline.db",
 )
 ```
 

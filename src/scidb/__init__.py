@@ -5,15 +5,15 @@ A lightweight database framework for scientific computing that provides:
 - Type-safe serialization of numpy arrays, DataFrames, and custom types
 - Automatic content-based versioning
 - Flexible metadata-based addressing
-- DuckDB storage for data (via SciDuck) and SQLite for lineage (via PipelineDB)
+- DuckDB storage for data and lineage (via SciDuck)
 - Automatic lineage tracking via thunks
 
 Example:
     from scidb import configure_database, BaseVariable, thunk
     import numpy as np
 
-    # Setup (DuckDB for data, SQLite for lineage, auto-registers types)
-    db = configure_database("experiment.duckdb", ["subject", "session"], "pipeline.db")
+    # Setup (single DuckDB file for data + lineage, auto-registers types)
+    db = configure_database("experiment.duckdb", ["subject", "session"])
 
     class RawSignal(BaseVariable):
         schema_version = 1

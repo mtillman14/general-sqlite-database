@@ -40,9 +40,8 @@ Every project starts by configuring a database. You do this once.
 from scidb import configure_database
 
 db = configure_database(
-    "my_experiment_data.duckdb",                  # Where your data is stored
+    "my_experiment_data.duckdb",                  # DuckDB file for data + lineage
     dataset_schema_keys=["subject", "session"],   # How your dataset is organized
-    pipeline_db_path="pipeline.db",               # Where lineage is tracked
 )
 ```
 

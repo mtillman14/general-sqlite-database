@@ -396,7 +396,6 @@ def get_user_id() -> str | None:
 def configure_database(
     dataset_db_path: str | Path,
     dataset_schema_keys: list[str],
-    pipeline_db_path: str | Path | None = None,
     lineage_mode: str = "strict",
 ) -> "DatabaseManager":
     """
@@ -412,7 +411,6 @@ def configure_database(
             logical location of data and are used for the folder hierarchy.
             Any metadata keys not in this list are treated as version parameters
             that distinguish different computational versions of the same data.
-        pipeline_db_path: Deprecated. Ignored. Lineage is now stored in DuckDB.
         lineage_mode: How to handle intermediate variables in lineage tracking.
             - "strict" (default): All upstream BaseVariables must be saved
               before saving downstream results. Raises UnsavedIntermediateError
@@ -428,13 +426,6 @@ def configure_database(
     Raises:
         ValueError: If lineage_mode is not "strict" or "ephemeral"
     """
-    if pipeline_db_path is not None:
-        warnings.warn(
-            "pipeline_db_path is deprecated and ignored. "
-            "Lineage is now stored in the DuckDB database.",
-            DeprecationWarning,
-            stacklevel=2,
-        )
     db = DatabaseManager(
         dataset_db_path,
         dataset_schema_keys=dataset_schema_keys,
@@ -483,7 +474,6 @@ class DatabaseManager:
         self,
         dataset_db_path: str | Path,
         dataset_schema_keys: list[str],
-        pipeline_db_path: str | Path | None = None,
         lineage_mode: str = "strict",
     ):
         """
@@ -495,7 +485,6 @@ class DatabaseManager:
                 (e.g., ["subject", "visit", "channel"]). These keys identify the
                 logical location of data. Any other metadata keys are treated as
                 version parameters.
-            pipeline_db_path: Deprecated. Ignored.
             lineage_mode: How to handle intermediate variables ("strict" or "ephemeral")
 
         Raises:

@@ -52,13 +52,12 @@ class MyVariable(BaseVariable):
 
 ### `DatabaseManager`
 
-Manages database connection and operations using DuckDB (via SciDuck) for data storage and SQLite (via PipelineDB) for lineage persistence.
+Manages database connection and operations using DuckDB (via SciDuck) for data and lineage storage.
 
 ```python
 db = DatabaseManager(
     "path/to/db.duckdb",
     dataset_schema_keys=["subject", "trial", "condition"],
-    pipeline_db_path="pipeline.db",
 )
 ```
 
@@ -68,7 +67,6 @@ db = DatabaseManager(
 | ---------------------- | ------------- | ---------------------------------------------------------------- |
 | `dataset_db_path`      | `str \| Path` | Path to DuckDB database file                                     |
 | `dataset_schema_keys`  | `list[str]`   | **Required.** Metadata keys that identify dataset location       |
-| `pipeline_db_path`     | `str \| Path` | **Required.** Path to SQLite database file for lineage storage   |
 | `lineage_mode`         | `str`         | `"strict"` (default) or `"ephemeral"`                            |
 
 **Methods:**
@@ -92,7 +90,7 @@ db = DatabaseManager(
 
 ## Configuration Functions
 
-### `configure_database(dataset_db_path, dataset_schema_keys, pipeline_db_path, lineage_mode="strict")`
+### `configure_database(dataset_db_path, dataset_schema_keys, lineage_mode="strict")`
 
 Configure the global database.
 
@@ -100,7 +98,6 @@ Configure the global database.
 db = configure_database(
     "experiment.duckdb",
     dataset_schema_keys=["subject", "trial", "condition"],
-    pipeline_db_path="pipeline.db",
 )
 ```
 
@@ -110,7 +107,6 @@ db = configure_database(
 | ---------------------- | ------------- | ---------------------------------------------------------------- |
 | `dataset_db_path`      | `str \| Path` | Path to DuckDB database file                                     |
 | `dataset_schema_keys`  | `list[str]`   | **Required.** Metadata keys that identify dataset location       |
-| `pipeline_db_path`     | `str \| Path` | **Required.** Path to SQLite database file for lineage storage   |
 | `lineage_mode`         | `str`         | `"strict"` (default) or `"ephemeral"`                            |
 
 **Returns:** `DatabaseManager`

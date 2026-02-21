@@ -142,18 +142,10 @@ In `compute_rolling_vo2`, the `window_seconds=30` and `sample_interval=5` argume
 db = configure_database(
     dataset_db_path="vo2max_data.duckdb",
     dataset_schema_keys=["subject"],
-    pipeline_db_path="vo2max_lineage.db",
 )
 ```
 
-### Why two database files?
-
-SciDB deliberately separates **data** (DuckDB) from **lineage** (SQLite):
-
-- **DuckDB** is optimized for columnar data storage — fast reads, native array types, browsable in DBeaver
-- **SQLite** is optimized for the tree-structured lineage records — simple key-value lookups, lightweight
-
-This separation means you can delete the lineage database without losing data, or vice versa. It also means the lineage tracking doesn't slow down data queries.
+SciDB stores both data and lineage in a single DuckDB file. Data is stored in columnar format with native array types, and the lineage DAG is stored alongside it for transactional consistency.
 
 ### What are `dataset_schema_keys`?
 

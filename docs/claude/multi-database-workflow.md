@@ -84,13 +84,11 @@ def bandpass_filter(signal, low_hz, high_hz):
 db1 = configure_database(
     "aim1_data.duckdb",
     dataset_schema_keys=["subject", "intervention", "timepoint", "speed", "trial", "cycle"],
-    pipeline_db_path="aim1_pipeline.db",
 )
 
 db2 = configure_database(
     "aim2_data.duckdb",
     dataset_schema_keys=["subject", "session", "speed", "trial", "cycle"],
-    pipeline_db_path="aim2_pipeline.db",
 )
 
 # --- Process AIM 1 ---

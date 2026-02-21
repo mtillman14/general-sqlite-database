@@ -15,9 +15,9 @@ Your analysis code                   scidb-server process
   RemoteDatabaseManager  --- HTTP -->  FastAPI app
        |                                    |
   RawSignal.save(...)                  DatabaseManager
-  RawSignal.load(...)                     |       |
-  Thunk caching                      DuckDB    SQLite
-                                     (data)   (lineage)
+  RawSignal.load(...)                       |
+  Thunk caching                          DuckDB
+                                     (data + lineage)
 ```
 
 All existing user code works unchanged. The only difference is a single
@@ -81,7 +81,6 @@ programmatic approach.
 ```bash
 export SCIDB_DATASET_DB_PATH=/data/experiment.duckdb
 export SCIDB_DATASET_SCHEMA_KEYS='["subject", "session"]'
-export SCIDB_PIPELINE_DB_PATH=/data/pipeline.db
 
 scidb-server
 ```
@@ -106,7 +105,6 @@ import uvicorn
 app = create_app(
     dataset_db_path="/data/experiment.duckdb",
     dataset_schema_keys=["subject", "session"],
-    pipeline_db_path="/data/pipeline.db",
 )
 
 uvicorn.run(app, host="0.0.0.0", port=8000)
@@ -167,9 +165,8 @@ environment variables for the CLI.
 
 | Environment Variable | `create_app()` Argument | Required | Default | Description |
 |---|---|---|---|---|
-| `SCIDB_DATASET_DB_PATH` | `dataset_db_path` | Yes | — | Path to the DuckDB file for data storage |
+| `SCIDB_DATASET_DB_PATH` | `dataset_db_path` | Yes | — | Path to the DuckDB file for data and lineage storage |
 | `SCIDB_DATASET_SCHEMA_KEYS` | `dataset_schema_keys` | Yes | — | JSON list of metadata keys (e.g. `'["subject", "session"]'`) |
-| `SCIDB_PIPELINE_DB_PATH` | `pipeline_db_path` | Yes | — | Path to the SQLite file for lineage tracking |
 | `SCIDB_LINEAGE_MODE` | `lineage_mode` | No | `"strict"` | `"strict"` or `"ephemeral"` |
 | `SCIDB_HOST` | — | No | `"0.0.0.0"` | Bind address (CLI only) |
 | `SCIDB_PORT` | — | No | `8000` | Port number (CLI only) |

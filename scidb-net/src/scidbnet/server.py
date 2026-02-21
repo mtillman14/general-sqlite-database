@@ -61,7 +61,6 @@ def _error_response(status_code: int, message: str) -> JSONResponse:
 def create_app(
     dataset_db_path: str,
     dataset_schema_keys: list[str],
-    pipeline_db_path: str,
     lineage_mode: str = "strict",
 ) -> FastAPI:
     """Create a FastAPI application wrapping a DatabaseManager.
@@ -69,7 +68,6 @@ def create_app(
     Args:
         dataset_db_path: Path to DuckDB database file.
         dataset_schema_keys: List of metadata keys defining the dataset schema.
-        pipeline_db_path: Path to SQLite database for lineage storage.
         lineage_mode: "strict" or "ephemeral".
 
     Returns:
@@ -80,7 +78,6 @@ def create_app(
     db = DatabaseManager(
         dataset_db_path=dataset_db_path,
         dataset_schema_keys=dataset_schema_keys,
-        pipeline_db_path=pipeline_db_path,
         lineage_mode=lineage_mode,
     )
     # Store on app state so tests can access it
@@ -347,13 +344,12 @@ def main():
 
     dataset_db_path = os.environ.get("SCIDB_DATASET_DB_PATH")
     schema_keys_json = os.environ.get("SCIDB_DATASET_SCHEMA_KEYS")
-    pipeline_db_path = os.environ.get("SCIDB_PIPELINE_DB_PATH")
     lineage_mode = os.environ.get("SCIDB_LINEAGE_MODE", "strict")
 
-    if not dataset_db_path or not schema_keys_json or not pipeline_db_path:
+    if not dataset_db_path or not schema_keys_json:
         raise SystemExit(
             "Required env vars: SCIDB_DATASET_DB_PATH, "
-            "SCIDB_DATASET_SCHEMA_KEYS (JSON list), SCIDB_PIPELINE_DB_PATH"
+            "SCIDB_DATASET_SCHEMA_KEYS (JSON list)"
         )
 
     dataset_schema_keys = json.loads(schema_keys_json)
@@ -361,7 +357,6 @@ def main():
     app = create_app(
         dataset_db_path=dataset_db_path,
         dataset_schema_keys=dataset_schema_keys,
-        pipeline_db_path=pipeline_db_path,
         lineage_mode=lineage_mode,
     )
 

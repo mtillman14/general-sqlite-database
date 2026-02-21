@@ -64,12 +64,10 @@ def main():
 
     with tempfile.TemporaryDirectory() as tmpdir:
         db_path = os.path.join(tmpdir, "bench.duckdb")
-        pipe_path = os.path.join(tmpdir, "bench_pipeline.db")
 
         db = configure_database(
             db_path,
             dataset_schema_keys=["subject", "intervention", "speed", "timepoint", "trial", "cycle"],
-            pipeline_db_path=pipe_path,
             lineage_mode="ephemeral",
         )
 

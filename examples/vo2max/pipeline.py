@@ -225,23 +225,18 @@ if __name__ == "__main__":
     db_dir = project_folder
 
     data_filename = "vo2max_data.duckdb"
-    pipeline_filename = "vo2max_lineage.db"
 
     # Clean up previous runs for a fresh demo
     for f in db_dir.glob(f"{data_filename}*"):
         f.unlink()
-    if (db_dir / pipeline_filename).exists():
-        (db_dir / pipeline_filename).unlink()
 
     db = configure_database(
         dataset_db_path=db_dir / data_filename,
         dataset_schema_keys=["subject"],
-        pipeline_db_path=db_dir / pipeline_filename,
     )
 
     print("Database configured.")
     print(f"  Data storage (DuckDB): {db_dir / data_filename}")
-    print(f"  Lineage storage (SQLite): {db_dir / pipeline_filename}")
     print(f"  Schema keys: {db.dataset_schema_keys}")
     print()
 
