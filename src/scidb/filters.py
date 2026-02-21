@@ -127,7 +127,7 @@ def _resolve_variable_schema_ids(
         WHERE rn = 1
           AND ({condition_sql})
     """
-    params = [filter_table_name] + list(condition_params)
+    params = [filter_table_name.removesuffix("_data")] + list(condition_params)
     try:
         rows = db._duck._fetchall(sql, params)
     except Exception as e:
@@ -156,7 +156,7 @@ def _get_all_schema_ids_for_variable(
         )
         SELECT DISTINCT schema_id FROM ranked WHERE rn = 1
     """
-    rows = db._duck._fetchall(sql, [table_name])
+    rows = db._duck._fetchall(sql, [table_name.removesuffix("_data")])
     return {int(row[0]) for row in rows}
 
 
@@ -654,7 +654,7 @@ class RawFilter(Filter):
                 WHERE rn = 1
                   AND ({self.sql})
             """
-            rows = db._duck._fetchall(query, [target_table_name])
+            rows = db._duck._fetchall(query, [target_table_name.removesuffix("_data")])
         except Exception as e:
             raise ValueError(f"Invalid where= SQL: {e}") from e
 

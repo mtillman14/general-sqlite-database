@@ -176,7 +176,7 @@ class TestIdempotentSaves:
 
         # Should only have one unique record_id in database
         rows = db._duck._fetchall(
-            "SELECT DISTINCT record_id FROM _record_metadata WHERE variable_name = 'ScalarValue_data'"
+            "SELECT DISTINCT record_id FROM _record_metadata WHERE variable_name = 'ScalarValue'"
         )
         assert len(rows) == 1
 
@@ -272,7 +272,6 @@ class TestDatabasePersistence:
 class TestCacheHitAfterReload:
     """Test that reloaded variables produce cache hits."""
 
-    @pytest.mark.skip(reason="lineage_hash/pipeline_lineage_hash ambiguity not yet resolved")
     def test_reload_and_rerun_hits_cache(self, db, scalar_class, array_class):
         """Saving a thunk result, reloading it, and re-running the same
         thunk with the reloaded input should hit the cache."""
@@ -303,7 +302,6 @@ class TestCacheHitAfterReload:
         assert call_count == 1
         np.testing.assert_array_equal(result2.data, result1.data)
 
-    @pytest.mark.skip(reason="lineage_hash/pipeline_lineage_hash ambiguity not yet resolved")
     def test_chained_reload_hits_cache(self, db, scalar_class, array_class):
         """Multi-step pipeline: save intermediates, reload, re-run → cache hits."""
         from scidb import thunk

@@ -538,8 +538,7 @@ classdef BaseVariable < dynamicprops
                 py_db = db_val;
             end
             if version ~= "latest"
-                disp('what to do with syntax py_kwargs{:}?')
-                % py_result = py_db.get_provenance(py_class, version=char(version), pyargs(py_kwargs{:}));
+                py_result = py_db.get_provenance(py.None, pyargs('version', char(version)));
             else
                 py_result = py_db.get_provenance(py_class, pyargs(py_kwargs{:}));
             end

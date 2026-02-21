@@ -191,5 +191,45 @@ classdef TestProvenance < matlab.unittest.TestCase
 
             testCase.verifyNotEqual(r1.lineage_hash, r2.lineage_hash);
         end
+
+        function test_provenance_constants_have_name_field(testCase)
+            % Constants in provenance carry a 'name' field (arg_0, arg_1, ...)
+            % and a 'value_repr' field — the new JSON column design preserves both.
+            RawSignal().save([1 2 3], 'subject', 1, 'session', 'A');
+            raw = RawSignal().load('subject', 1, 'session', 'A');
+
+            thunk = scidb.Thunk(@add_offset);
+            result = thunk(raw, 10);
+            ProcessedSignal().save(result, 'subject', 1, 'session', 'A');
+
+            prov = ProcessedSignal().provenance('subject', 1, 'session', 'A');
+            % raw -> input, 10 -> constant
+            testCase.verifyEqual(numel(prov.constants), 1);
+
+            const_info = prov.constants{1};
+            testCase.verifyTrue(isstruct(const_info));
+            testCase.verifyTrue(isfield(const_info, 'name'));
+            testCase.verifyFalse(isempty(const_info.name));
+            testCase.verifyTrue(isfield(const_info, 'value_repr'));
+        end
+
+        function test_provenance_inputs_have_record_id(testCase)
+            % Variable inputs in provenance carry the source record_id,
+            % allowing exact tracing back to the specific saved variable used.
+            record_id = RawSignal().save([1 2 3], 'subject', 1, 'session', 'A');
+            raw = RawSignal().load('subject', 1, 'session', 'A');
+
+            thunk = scidb.Thunk(@add_offset);
+            result = thunk(raw, 10);
+            ProcessedSignal().save(result, 'subject', 1, 'session', 'A');
+
+            prov = ProcessedSignal().provenance('subject', 1, 'session', 'A');
+            testCase.verifyEqual(numel(prov.inputs), 1);
+
+            input_info = prov.inputs{1};
+            testCase.verifyTrue(isstruct(input_info));
+            testCase.verifyTrue(isfield(input_info, 'record_id'));
+            testCase.verifyEqual(string(input_info.record_id), string(record_id));
+        end
     end
 end

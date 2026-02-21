@@ -585,7 +585,7 @@ class DatabaseManager:
                 SELECT record_id, schema_id, version_keys,
                        ROW_NUMBER() OVER (PARTITION BY record_id ORDER BY timestamp DESC) AS rn
                 FROM _record_metadata
-                WHERE variable_name = '{table_name}'
+                WHERE variable_name = '{view_name}'
             )
             SELECT
                 t.*,
@@ -991,7 +991,7 @@ class DatabaseManager:
 
             vk_json = json.dumps(version_keys or {}, sort_keys=True)
             metadata_rows.append((
-                record_id, timestamp, table_name, schema_id,
+                record_id, timestamp, type_name, schema_id,
                 vk_json, content_hash, None, schema_version, user_id,
             ))
 
@@ -1104,7 +1104,7 @@ class DatabaseManager:
 
     def _find_record(
         self,
-        table_name: str,
+        type_name: str,
         record_id: str | None = None,
         nested_metadata: dict | None = None,
         version_id: str = "all",
@@ -1138,14 +1138,14 @@ class DatabaseManager:
                 f"LEFT JOIN _schema s ON rm.schema_id = s.schema_id "
                 f"WHERE rm.record_id = ? AND rm.variable_name = ?"
             )
-            return self._duck._fetchdf(sql, [record_id, table_name])
+            return self._duck._fetchdf(sql, [record_id, type_name])
 
         # By metadata
         schema_keys = nested_metadata.get("schema", {}) if nested_metadata else {}
         version_keys = nested_metadata.get("version", {}) if nested_metadata else {}
 
         conditions = ["rm.variable_name = ?"]
-        params: list[Any] = [table_name]
+        params: list[Any] = [type_name]
 
         # Filter schema keys via _schema columns in SQL (lists → IN)
         for key, value in schema_keys.items():
@@ -1286,7 +1286,8 @@ class DatabaseManager:
         loads data from the data table by record_id, and constructs the
         BaseVariable instance.
         """
-        table_name = row["variable_name"]
+        type_name = row["variable_name"]
+        table_name = type_name + "_data"
         record_id = row["record_id"]
         content_hash = row["content_hash"]
         lineage_hash = row["lineage_hash"]
@@ -1765,11 +1766,11 @@ class DatabaseManager:
             self._save_record_metadata(
                 record_id=record_id,
                 timestamp=created_at,
-                variable_name=table_name,
+                variable_name=type_name,
                 schema_id=schema_id,
                 version_keys=version_keys,
                 content_hash=content_hash,
-                lineage_hash=pipeline_lineage_hash if pipeline_lineage_hash is not None else lineage_hash,
+                lineage_hash=lineage_hash,
                 schema_version=variable.schema_version,
                 user_id=user_id,
             )
@@ -1878,13 +1879,13 @@ class DatabaseManager:
         try:
             if version != "latest" and version is not None:
                 # Load by specific record_id
-                records = self._find_record(table_name, record_id=version)
+                records = self._find_record(variable_class.__name__, record_id=version)
                 if len(records) == 0:
                     raise NotFoundError(f"No data found with record_id '{version}'")
             else:
                 # Load by metadata (latest version per parameter set)
                 nested_metadata = self._split_metadata(metadata)
-                records = self._find_record(table_name, nested_metadata=nested_metadata, version_id="latest")
+                records = self._find_record(variable_class.__name__, nested_metadata=nested_metadata, version_id="latest")
                 if len(records) == 0:
                     raise NotFoundError(
                         f"No {variable_class.__name__} found matching metadata: {metadata}"
@@ -1938,7 +1939,7 @@ class DatabaseManager:
 
         try:
             records = self._find_record(
-                table_name, nested_metadata=nested_metadata, version_id=version_id
+                variable_class.__name__, nested_metadata=nested_metadata, version_id=version_id
             )
         except Exception:
             return  # No data
@@ -2069,7 +2070,7 @@ class DatabaseManager:
         nested_metadata = self._split_metadata(metadata)
 
         try:
-            records = self._find_record(table_name, nested_metadata=nested_metadata, version_id="all")
+            records = self._find_record(variable_class.__name__, nested_metadata=nested_metadata, version_id="all")
         except Exception:
             return []
 
@@ -2252,9 +2253,15 @@ class DatabaseManager:
         """
         lineage_hash = pipeline_thunk.compute_lineage_hash()
 
-        # Query _record_metadata for matching lineage_hash
+        # Join _record_metadata to _lineage on pipeline lineage_hash.
+        # _lineage.lineage_hash stores pipeline_lineage_hash (same for all outputs
+        # of a multi-output thunk), while _record_metadata.lineage_hash stores the
+        # per-output ThunkOutput.hash so that downstream input tracking is correct.
         records = self._duck._fetchall(
-            "SELECT record_id, variable_name FROM _record_metadata WHERE lineage_hash = ?",
+            "SELECT DISTINCT rm.record_id, rm.variable_name "
+            "FROM _record_metadata rm "
+            "JOIN _lineage l ON rm.record_id = l.output_record_id "
+            "WHERE l.lineage_hash = ?",
             [lineage_hash],
         )
         if not records:
@@ -2291,7 +2298,7 @@ class DatabaseManager:
         return None
 
     def _get_variable_class(self, type_name: str):
-        """Get a variable class by name."""
+        """Get a variable class by name (class name, not table name)."""
         if type_name in self._registered_types:
             return self._registered_types[type_name]
 
