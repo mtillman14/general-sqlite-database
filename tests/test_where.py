@@ -288,7 +288,6 @@ class TestFilterErrorCases:
         db = configure_database(
             tmp_path / "test.duckdb",
             ["subject", "trial"],
-            tmp_path / "pipeline.db",
         )
 
         # SubjectHeight is at "subject" level (coarser)
@@ -346,7 +345,6 @@ class TestCoarseFilterExpansion:
         db = configure_database(
             tmp_path / "test.duckdb",
             ["subject", "trial"],
-            tmp_path / "pipeline.db",
         )
 
         class SubjectHeight(BaseVariable):

@@ -71,12 +71,10 @@ _local = threading.local()
 def _is_tabular_dict(data):
     """Return True if data is a dict where ALL values are 1D (or Nx1 column-vector) numpy arrays of equal length."""
     if not isinstance(data, dict) or len(data) == 0:
-        print(f"    [_is_tabular_dict] FAIL: not dict or empty (type={type(data).__name__}, len={len(data) if isinstance(data, dict) else 'N/A'})")
         return False
     lengths = set()
     for k, v in data.items():
         if not isinstance(v, np.ndarray):
-            print(f"    [_is_tabular_dict] FAIL: key={k!r} is {type(v).__name__}, not ndarray")
             return False
         # Accept 1D arrays, Nx1 column vectors, and 1xN row vectors (from MATLAB)
         if v.ndim == 1:
@@ -86,14 +84,8 @@ def _is_tabular_dict(data):
         elif v.ndim == 2 and v.shape[1] == 1:
             lengths.add(v.shape[0])
         else:
-            print(f"    [_is_tabular_dict] FAIL: key={k!r} has shape={v.shape}, ndim={v.ndim}")
             return False
-    result = len(lengths) == 1
-    if result:
-        print(f"    [_is_tabular_dict] OK: {len(data)} keys, uniform length={lengths.pop()}")
-    else:
-        print(f"    [_is_tabular_dict] FAIL: unequal lengths={lengths}")
-    return result
+    return len(lengths) == 1
 
 
 def _get_leaf_paths(d, prefix=()):
@@ -173,9 +165,6 @@ def _flatten_struct_columns(df):
         if not leaf_paths:
             continue
 
-        print(f"    [_flatten_struct_columns] column {col!r}: "
-              f"{len(leaf_paths)} leaf paths detected")
-
         array_leaves = {}  # dot_path -> {"dtype": ..., "shape": ...}
 
         for path in leaf_paths:
@@ -208,8 +197,6 @@ def _flatten_struct_columns(df):
                     values.append(leaf)
 
             new_col_data[flat_col_name] = values
-            print(f"      -> {flat_col_name} "
-                  f"({'array' if dot_path in array_leaves else 'scalar'})")
 
         cols_to_drop.append(col)
         struct_info[col] = {
@@ -225,8 +212,6 @@ def _flatten_struct_columns(df):
     for name, values in new_col_data.items():
         result[name] = values
 
-    print(f"    [_flatten_struct_columns] flattened {len(cols_to_drop)} struct column(s) "
-          f"into {len(new_col_data)} flat columns")
     return result, struct_info
 
 
@@ -266,38 +251,19 @@ def _unflatten_struct_columns(df, struct_info):
         existing_flat = [c for c in flat_col_names if c in result.columns]
 
         if not existing_flat:
-            print(f"    [_unflatten_struct_columns] WARNING: no flat columns found "
-                  f"for {col_name!r}, skipping")
             continue
-
-        print(f"    [_unflatten_struct_columns] reconstituting {col_name!r} "
-              f"from {len(existing_flat)} flat columns")
 
         # Build nested dicts row by row
         nested_values = []
         n_rows = len(result)
 
-        # DIAGNOSTIC: Log array_leaves metadata
-        print(f"    [_unflatten DIAG] col {col_name!r}: "
-              f"array_leaves keys={list(array_leaves.keys())}, "
-              f"array_leaves={array_leaves}")
-
         for row_idx in range(n_rows):
             row_dict = {}
             for path, flat_col in zip(paths, flat_col_names):
                 if flat_col not in result.columns:
-                    if row_idx == 0:
-                        print(f"    [_unflatten DIAG]   flat_col {flat_col!r} NOT in result columns!")
                     continue
                 val = result[flat_col].iloc[row_idx]
-
-                # DIAGNOSTIC: Log each leaf value on first row
                 dot_path = ".".join(path)
-                if row_idx == 0:
-                    print(f"    [_unflatten DIAG]   path={dot_path!r}, "
-                          f"raw val type={type(val).__name__}, "
-                          f"in_array_leaves={dot_path in array_leaves}, "
-                          f"val_preview={repr(val)[:120]}")
 
                 # Restore arrays from JSON
                 if dot_path in array_leaves and val is not None:
@@ -314,13 +280,6 @@ def _unflatten_struct_columns(df, struct_info):
                         if (expected_shape and list(val.shape) != expected_shape
                                 and val.size == np.prod(expected_shape)):
                             val = val.reshape(expected_shape)
-                    if row_idx == 0:
-                        print(f"    [_unflatten DIAG]   RESTORED: type={type(val).__name__}"
-                              f"{f', dtype={val.dtype}, shape={val.shape}' if isinstance(val, np.ndarray) else ''}")
-                elif row_idx == 0 and isinstance(val, str) and val.strip().startswith('['):
-                    print(f"    [_unflatten DIAG]   WARNING: string starting with '[' but "
-                          f"dot_path {dot_path!r} NOT in array_leaves! "
-                          f"This value will remain a string.")
 
                 _set_nested_value(row_dict, path, val)
             nested_values.append(row_dict)
@@ -347,24 +306,12 @@ def _unflatten_struct_columns(df, struct_info):
         if first_val is None:
             continue
 
-        # DIAGNOSTIC: Log what we find in post-unflatten object columns
-        print(f"    [_unflatten DIAG postprocess] col {col!r}: "
-              f"first_val type={type(first_val).__name__}"
-              f"{f', is_dict={True}' if isinstance(first_val, dict) else ''}"
-              f"{f', dtype={first_val.dtype}' if isinstance(first_val, np.ndarray) else ''}"
-              f"{f', preview={repr(first_val)[:100]}' if isinstance(first_val, str) else ''}")
-
         if isinstance(first_val, (list, np.ndarray)):
             # DuckDB DOUBLE[] returns as lists or numpy arrays — ensure numpy
-            # DIAGNOSTIC: Check if we're losing bool type
-            if isinstance(first_val, list) and any(isinstance(x, bool) for x in first_val):
-                print(f"    [_unflatten DIAG postprocess]   WARNING: list contains bools "
-                      f"but converting to dtype=float, losing bool type!")
             result[col] = result[col].apply(
                 lambda v: np.array(v, dtype=float) if isinstance(v, list) else v)
         elif isinstance(first_val, str) and first_val.strip().startswith('['):
             # Backwards compat: parse VARCHAR strings from old saves
-            print(f"    [_unflatten DIAG postprocess]   Parsing string as JSON -> float array")
             def _parse_list_str(v):
                 if not isinstance(v, str):
                     return v
@@ -668,7 +615,6 @@ class DatabaseManager:
 
         Returns schema_id.
         """
-        _t0 = time.perf_counter()
         schema_id = (
             self._duck._get_or_create_schema_id(schema_level, schema_keys)
             if schema_level is not None and schema_keys
@@ -711,10 +657,8 @@ class DatabaseManager:
                 )
             """)
             self._create_variable_view(variable_class)
-        print(f"      [_save_columnar] ensure table: {time.perf_counter() - _t0:.4f}s")
 
         # Only insert if this record_id doesn't already exist
-        _t0 = time.perf_counter()
         existing_count = self._duck._fetchall(
             f'SELECT COUNT(*) FROM "{table_name}" WHERE record_id = ?',
             [record_id],
@@ -727,7 +671,6 @@ class DatabaseManager:
             self._duck.con.execute(
                 f'INSERT INTO "{table_name}" ({col_str}) SELECT * FROM insert_df'
             )
-        print(f"      [_save_columnar] data INSERT: {time.perf_counter() - _t0:.4f}s")
 
         # Upsert into _variables (one row per variable)
         effective_level = schema_level or self.dataset_schema_keys[-1]
@@ -770,7 +713,6 @@ class DatabaseManager:
 
         Returns schema_id.
         """
-        _t0 = time.perf_counter()
         if schema_level is not None and schema_keys:
             schema_id = self._duck._get_or_create_schema_id(
                 schema_level, {k: _schema_str(v) for k, v in schema_keys.items()}
@@ -781,10 +723,8 @@ class DatabaseManager:
         ddb_type, col_meta = _infer_duckdb_type(data)
         storage_value = _python_to_storage(data, col_meta)
         dtype_meta = {"mode": "single_column", "columns": {"value": col_meta}}
-        print(f"      [_save_single_value] type inference: {time.perf_counter() - _t0:.4f}s")
 
         # Ensure table exists
-        _t0 = time.perf_counter()
         if not self._duck._table_exists(table_name):
             self._duck._execute(f"""
                 CREATE TABLE "{table_name}" (
@@ -793,16 +733,13 @@ class DatabaseManager:
                 )
             """)
             self._create_variable_view(variable_class)
-        print(f"      [_save_single_value] ensure table: {time.perf_counter() - _t0:.4f}s")
 
         # Insert data (ON CONFLICT DO NOTHING deduplicates by content)
-        _t0 = time.perf_counter()
         self._duck._execute(
             f'INSERT INTO "{table_name}" (record_id, "value") VALUES (?, ?) '
             f'ON CONFLICT (record_id) DO NOTHING',
             [record_id, storage_value],
         )
-        print(f"      [_save_single_value] DuckDB INSERT: {time.perf_counter() - _t0:.4f}s")
 
         # Upsert into _variables (one row per variable)
         effective_level = schema_level or self.dataset_schema_keys[-1]
@@ -1434,22 +1371,6 @@ class DatabaseManager:
         from .lineage import extract_lineage, find_unsaved_variables, get_raw_value
         from .exceptions import UnsavedIntermediateError
 
-        _t_total = time.perf_counter()
-        _t0 = time.perf_counter()
-
-        print(f"  [save_variable] ENTRY: variable_class={variable_class.__name__}, "
-              f"data type={type(data).__name__}")
-        if isinstance(data, pd.DataFrame):
-            print(f"  [save_variable] DataFrame columns={data.columns.tolist()}, "
-                  f"dtypes={dict(data.dtypes)}, shape={data.shape}")
-            for col in data.columns:
-                if data[col].dtype == object:
-                    first_val = data[col].dropna().iloc[0] if len(data[col].dropna()) > 0 else None
-                    print(f"  [save_variable] object column {col!r}: "
-                          f"first_val type={type(first_val).__name__}")
-                    if isinstance(first_val, dict):
-                        print(f"  [save_variable]   dict keys={list(first_val.keys())}")
-
         # Normalize input: extract raw data and lineage info based on input type
         lineage = None
         lineage_hash = None
@@ -1533,28 +1454,16 @@ class DatabaseManager:
         else:
             raw_data = data
 
-        _t_normalize = time.perf_counter() - _t0
-        print(f"  [save_variable] input normalization: {_t_normalize:.4f}s")
-
-        _t0 = time.perf_counter()
         instance = variable_class(raw_data)
-        _t_instantiate = time.perf_counter() - _t0
-        print(f"  [save_variable] variable instantiation: {_t_instantiate:.4f}s")
 
-        _t0 = time.perf_counter()
         record_id = self.save(
             instance, metadata, lineage=lineage, lineage_hash=lineage_hash,
             pipeline_lineage_hash=pipeline_lineage_hash, index=index,
         )
-        _t_save = time.perf_counter() - _t0
-        print(f"  [save_variable] self.save() call: {_t_save:.4f}s")
 
         instance.record_id = record_id
         instance.metadata = metadata
         instance.lineage_hash = lineage_hash
-
-        _t_total_elapsed = time.perf_counter() - _t_total
-        print(f"  [save_variable] TOTAL: {_t_total_elapsed:.4f}s")
 
         return record_id
 
@@ -1583,8 +1492,6 @@ class DatabaseManager:
         Returns:
             The record_id of the saved data
         """
-        _t0 = time.perf_counter()
-
         table_name = self._ensure_registered(type(variable))
         type_name = variable.__class__.__name__
         user_id = get_user_id()
@@ -1602,33 +1509,23 @@ class DatabaseManager:
                 stacklevel=2,
             )
 
-        _t_setup = time.perf_counter() - _t0
-        print(f"    [save] setup (register/metadata/user_id): {_t_setup:.4f}s")
-
         # Normalize array.array values to numpy arrays (MATLAB bridge can produce these)
         import array as _array_mod
         if isinstance(variable.data, dict):
             for k, v in variable.data.items():
                 if isinstance(v, _array_mod.array):
-                    print(f"    [save] converting array.array key={k!r} (typecode={v.typecode}, len={len(v)}) -> np.ndarray")
                     variable.data[k] = np.array(v)
 
         # Compute content hash
-        _t0 = time.perf_counter()
         content_hash = canonical_hash(variable.data)
-        _t_hash = time.perf_counter() - _t0
-        print(f"    [save] canonical_hash: {_t_hash:.4f}s")
 
         # Generate record_id
-        _t0 = time.perf_counter()
         record_id = generate_record_id(
             class_name=type_name,
             schema_version=variable.schema_version,
             content_hash=content_hash,
             metadata=nested_metadata,
         )
-        _t_genid = time.perf_counter() - _t0
-        print(f"    [save] generate_record_id: {_t_genid:.4f}s")
 
         # Wrap all writes in a single transaction to avoid repeated
         # WAL checkpoints (each auto-committed statement can trigger a
@@ -1641,39 +1538,8 @@ class DatabaseManager:
             schema_level = self._infer_schema_level(schema_keys)
             created_at = datetime.now().isoformat()
 
-            _t0 = time.perf_counter()
-            data_type = type(variable.data).__name__
-            print(f"    [save] ENTRY: data_type={data_type}, "
-                  f"is_DataFrame={isinstance(variable.data, pd.DataFrame)}, "
-                  f"is_dict={isinstance(variable.data, dict)}, "
-                  f"has_custom_ser={self._has_custom_serialization(type(variable))}")
-            if isinstance(variable.data, pd.DataFrame):
-                print(f"    [save] DataFrame cols={variable.data.columns.tolist()}, "
-                      f"shape={variable.data.shape}")
-                for col in variable.data.columns:
-                    if variable.data[col].dtype == object:
-                        nonnull = variable.data[col].dropna()
-                        if len(nonnull) > 0:
-                            fv = nonnull.iloc[0]
-                            print(f"    [save] object col {col!r}: "
-                                  f"first_val type={type(fv).__name__}, "
-                                  f"is_dict={isinstance(fv, dict)}")
-                            if isinstance(fv, dict):
-                                print(f"    [save]   keys={list(fv.keys())[:10]}")
-            elif isinstance(variable.data, dict):
-                print(f"    [save] dict keys={list(variable.data.keys())[:10]}")
-                for k, v in list(variable.data.items())[:5]:
-                    vtype = type(v).__name__
-                    extra = ""
-                    if isinstance(v, np.ndarray):
-                        extra = f" shape={v.shape} dtype={v.dtype}"
-                    elif isinstance(v, dict):
-                        extra = f" keys={list(v.keys())[:5]}"
-                    print(f"    [save]   key={k!r}: {vtype}{extra}")
-
             if self._has_custom_serialization(type(variable)):
                 # Custom serialization: user provides to_db() → DataFrame
-                print(f"    [save] path=custom_serialization")
                 df = variable.to_db()
 
                 if index is not None:
@@ -1691,7 +1557,6 @@ class DatabaseManager:
                 )
             elif isinstance(variable.data, pd.DataFrame):
                 # Native DataFrame: store directly as multi-column DuckDB table
-                print(f"    [save] path=native_dataframe")
                 df = variable.data.copy()
 
                 if index is not None:
@@ -1704,13 +1569,7 @@ class DatabaseManager:
                     df.index = index
 
                 # Flatten nested struct columns (e.g., MATLAB table with struct cells)
-                print(f"    [save] calling _flatten_struct_columns on DataFrame "
-                      f"cols={df.columns.tolist()}, dtypes={dict(df.dtypes)}")
                 df, struct_columns_info = _flatten_struct_columns(df)
-                print(f"    [save] after flatten: cols={df.columns.tolist()}, "
-                      f"struct_columns_info keys={list(struct_columns_info.keys()) if struct_columns_info else 'none'}")
-                if struct_columns_info:
-                    print(f"    [save] flattened dtypes={dict(df.dtypes)}")
 
                 schema_id = self._save_columnar(
                     record_id, table_name, type(variable), df,
@@ -1719,19 +1578,12 @@ class DatabaseManager:
                 )
             elif _is_tabular_dict(variable.data):
                 # Dict-of-arrays: convert to DataFrame for efficient columnar storage
-                n_keys = len(variable.data)
-                first_len = len(next(iter(variable.data.values())))
-                print(f"    [save] path=dict_of_arrays ({n_keys} fields, {first_len} rows each, data_type={data_type})")
-                for k, v in variable.data.items():
-                    print(f"      [dict_of_arrays save] key={k!r}: dtype={v.dtype}, shape={v.shape}, ndim={v.ndim}")
-                _t_df = time.perf_counter()
                 # Squeeze Nx1 column vectors to 1D so DataFrame gets one column per key
                 squeezed = {
                     k: v.squeeze() if v.ndim == 2 else v
                     for k, v in variable.data.items()
                 }
                 df = pd.DataFrame(squeezed)
-                print(f"    [save] pd.DataFrame(dict): {time.perf_counter() - _t_df:.4f}s  shape={df.shape}")
                 schema_id = self._save_columnar(
                     record_id, table_name, type(variable), df,
                     schema_level, schema_keys, content_hash,
@@ -1743,15 +1595,11 @@ class DatabaseManager:
                 )
             else:
                 # Native single-value storage (scalars, arrays, lists, dicts)
-                print(f"    [save] path=single_value (data_type={data_type})")
                 schema_id = self._save_single_value(
                     record_id, table_name, type(variable), variable.data, content_hash,
                     schema_level=schema_level, schema_keys=schema_keys,
                 )
-            _t_data_save = time.perf_counter() - _t0
-            print(f"    [save] data write (DuckDB): {_t_data_save:.4f}s")
 
-            _t0 = time.perf_counter()
             self._save_record_metadata(
                 record_id=record_id,
                 timestamp=created_at,
@@ -1763,11 +1611,8 @@ class DatabaseManager:
                 schema_version=variable.schema_version,
                 user_id=user_id,
             )
-            _t_record_meta = time.perf_counter() - _t0
-            print(f"    [save] _save_record_metadata: {_t_record_meta:.4f}s")
 
             # Save lineage if provided
-            _t0 = time.perf_counter()
             if lineage is not None:
                 effective_plh = pipeline_lineage_hash if pipeline_lineage_hash is not None else lineage_hash
                 self._save_lineage(
@@ -1775,13 +1620,8 @@ class DatabaseManager:
                     schema_keys=nested_metadata.get("schema"),
                     output_content_hash=content_hash,
                 )
-            _t_lineage = time.perf_counter() - _t0
-            print(f"    [save] _save_lineage: {_t_lineage:.4f}s")
 
-            _t0 = time.perf_counter()
             self._duck._commit()
-            _t_commit = time.perf_counter() - _t0
-            print(f"    [save] transaction commit: {_t_commit:.4f}s")
 
         except Exception:
             try:

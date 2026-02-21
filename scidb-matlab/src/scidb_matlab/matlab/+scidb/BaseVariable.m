@@ -131,19 +131,6 @@ classdef BaseVariable < dynamicprops
             else
                 py_db = db_val;
             end
-            fprintf('  [save] py_data class=%s, py_kwargs size=[%s]\n', ...
-                class(py_data), num2str(size(py_kwargs)));
-            for ki = 1:2:numel(py_kwargs)
-                val = py_kwargs{ki+1};
-                try
-                    val_str = mat2str(val);
-                catch
-                    val_str = sprintf('[%s object]', class(val));
-                end
-                fprintf('  [save]   kwarg %s = %s (class=%s)\n', ...
-                    py_kwargs{ki}, val_str, class(py_kwargs{ki+1}));
-            end
-            fprintf('  [save] calling save_variable...\n');
             py_record_id = py_db.save_variable(py_class, py_data, pyargs(py_kwargs{:}));
             record_id = char(py_record_id);
 
@@ -221,7 +208,7 @@ classdef BaseVariable < dynamicprops
                 % Generic fallback: convert each element individually
                 py_data = py.list();
                 for i = 1:height(tbl)
-                    py_data.append(scidb.internal.to_python(data_col(i)));
+                    py_data.append(scidb.internal.to_python(data_col{i}));
                 end
             end
 

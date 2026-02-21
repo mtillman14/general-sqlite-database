@@ -415,6 +415,20 @@ function for_each(fn, inputs, outputs, varargin)
     completed = 0;
     skipped = 0;
 
+    % Batch save: accumulate data+metadata in py.list objects, flush after
+    % the loop via for_each_batch_save.  Thunks have lineage that requires
+    % the per-record save path, so batch save is only for plain functions.
+    use_batch_save = do_save && ~isa(fn, 'scidb.Thunk');
+
+    if use_batch_save
+        batch_accum = cell(1, n_outputs);
+        for o = 1:n_outputs
+            batch_accum{o}.py_data = py.list();
+            batch_accum{o}.py_metas = py.list();
+            batch_accum{o}.count = 0;
+        end
+    end
+
     for c = 1:numel(combos)
         combo = combos{c};
 
@@ -669,19 +683,33 @@ function for_each(fn, inputs, outputs, varargin)
                                 else
                                     save_meta = [meta_nv, constant_nv, {dist_key_char, char(string(dist_val))}];
                                 end
-                                out_inst.save(row_data, save_meta{:}, db_nv{:});
-                                fprintf('[save] %s, %s=%s: %s (distribute row %d)\n', ...
-                                    metadata_str, dist_key_char, num2str(dist_val), class(out_inst), rowIdx);
+                                if use_batch_save
+                                    batch_accum{o}.py_data.append(scidb.internal.to_python(row_data));
+                                    batch_accum{o}.py_metas.append(scidb.internal.metadata_to_pydict(save_meta{:}));
+                                    batch_accum{o}.count = batch_accum{o}.count + 1;
+                                else
+                                    out_inst.save(row_data, save_meta{:}, db_nv{:});
+                                    fprintf('[save] %s, %s=%s: %s (distribute row %d)\n', ...
+                                        metadata_str, dist_key_char, num2str(dist_val), class(out_inst), rowIdx);
+                                end
                             end
                         else
                             % Non-table: split by element/row and save each piece
                             pieces = split_for_distribute(raw_value);
                             for k = 1:numel(pieces)
                                 save_meta = [meta_nv, constant_nv, {dist_key_char, k}];
-                                out_inst.save(pieces{k}, save_meta{:}, db_nv{:});
+                                if use_batch_save
+                                    batch_accum{o}.py_data.append(scidb.internal.to_python(pieces{k}));
+                                    batch_accum{o}.py_metas.append(scidb.internal.metadata_to_pydict(save_meta{:}));
+                                    batch_accum{o}.count = batch_accum{o}.count + 1;
+                                else
+                                    out_inst.save(pieces{k}, save_meta{:}, db_nv{:});
+                                end
                             end
-                            fprintf('[save] %s: distributed %d pieces by ''%s''\n', ...
-                                metadata_str, numel(pieces), distribute_key);
+                            if ~use_batch_save
+                                fprintf('[save] %s: distributed %d pieces by ''%s''\n', ...
+                                    metadata_str, numel(pieces), distribute_key);
+                            end
                         end
                     catch err
                         fprintf('[error] %s: cannot distribute %s: %s\n', ...
@@ -693,18 +721,47 @@ function for_each(fn, inputs, outputs, varargin)
                 % Normal mode: save each output directly
                 for o = 1:min(n_outputs, numel(result))
                     out_inst = outputs{o};
-                    try
-                        out_inst.save(result{o}, save_nv{:}, db_nv{:});
-                        fprintf('[save] %s: %s\n', metadata_str, class(out_inst));
-                    catch err
-                        fprintf('[error] %s: failed to save %s: %s\n', ...
-                            metadata_str, class(out_inst), err.message);
+                    if use_batch_save
+                        try
+                            raw_value = result{o};
+                            if isa(raw_value, 'scidb.ThunkOutput') || isa(raw_value, 'scidb.BaseVariable')
+                                raw_value = raw_value.data;
+                            end
+                            batch_accum{o}.py_data.append(scidb.internal.to_python(raw_value));
+                            batch_accum{o}.py_metas.append(scidb.internal.metadata_to_pydict(save_nv{:}));
+                            batch_accum{o}.count = batch_accum{o}.count + 1;
+                        catch err
+                            fprintf('[error] %s: failed to convert %s for batch: %s\n', ...
+                                metadata_str, class(out_inst), err.message);
+                        end
+                    else
+                        try
+                            out_inst.save(result{o}, save_nv{:}, db_nv{:});
+                            fprintf('[save] %s: %s\n', metadata_str, class(out_inst));
+                        catch err
+                            fprintf('[error] %s: failed to save %s: %s\n', ...
+                                metadata_str, class(out_inst), err.message);
+                        end
                     end
                 end
             end
         end
 
         completed = completed + 1;
+    end
+
+    % --- Batch save flush ---
+    if use_batch_save && ~dry_run
+        for o = 1:n_outputs
+            if batch_accum{o}.count > 0
+                type_name = class(outputs{o});
+                scidb.internal.ensure_registered(type_name);
+                py.scidb_matlab.bridge.for_each_batch_save( ...
+                    type_name, batch_accum{o}.py_data, ...
+                    batch_accum{o}.py_metas, py_db);
+                fprintf('[save] %s: %d items (batch)\n', type_name, batch_accum{o}.count);
+            end
+        end
     end
 
     % --- Summary ---
@@ -1471,10 +1528,11 @@ function result = apply_column_selection(loaded_val, cols, param_name)
             tbl = loaded_val.data;
         else
             if istable(loaded_val(1).data)
-                tbl = table;
+                parts = cell(numel(loaded_val), 1);
                 for i = 1:numel(loaded_val)
-                    tbl = [tbl; loaded_val(i).data];
+                    parts{i} = loaded_val(i).data;
                 end
+                tbl = vertcat(parts{:});
             else
                 % Array of ThunkOutputs — not yet supported for column selection
                 error('scidb:for_each', ...
