@@ -4,14 +4,25 @@ function data = from_python(py_obj)
 %   Handles numpy ndarrays, Python scalars (float, int, str, bool),
 %   lists, and dicts.
 
-    % MATLAB's Python bridge auto-converts Python True/False to native MATLAB
-    % logical before this function is called (e.g. when reading dict values).
-    % Return such values directly; without this guard they fall through to the
-    % double() fallback and lose their logical type.
-    if islogical(py_obj)
-        data = py_obj;
+    % MATLAB's Python bridge auto-converts certain Python types to native
+    % MATLAB types before this function is called (e.g. when reading dict
+    % values or extracting elements from cell(py.list(...))).  Detect these
+    % early so they never fall through to the expensive py.* isa() checks
+    % and the exception-throwing fallback path.
+    %
+    % IMPORTANT: isnumeric/isstring can return true for Python proxy objects
+    % (e.g. py.int, py.str) in some MATLAB versions.  Guard with a class
+    % name check to ensure we only short-circuit native MATLAB types.
+    cl = class(py_obj);
+    is_python = numel(cl) >= 3 && cl(1) == 'p' && cl(2) == 'y' && cl(3) == '.';
+    if ~is_python
+        if islogical(py_obj) || isnumeric(py_obj) || isstring(py_obj)
+            data = py_obj;
+            return;
+        end
+    end
 
-    elseif isa(py_obj, 'py.NoneType')
+    if isa(py_obj, 'py.NoneType')
         data = [];
 
     elseif isa(py_obj, 'py.numpy.ndarray')
@@ -57,6 +68,23 @@ function data = from_python(py_obj)
         data = datetime(string(py_obj.isoformat()), 'InputFormat', 'yyyy-MM-dd''T''HH:mm:ss');
 
     elseif isa(py_obj, 'py.list')
+        % Fast path: try converting the entire list to a numpy array in one
+        % Python call.  This avoids N individual boundary crossings when the
+        % list contains homogeneous numeric values (the common case for
+        % DOUBLE[] columns loaded from DuckDB).
+        try
+            py_arr = py.numpy.asarray(py_obj);
+            dtype_kind = string(py_arr.dtype.kind);
+            if dtype_kind ~= "O"
+                % Successfully converted to a typed numpy array — use the
+                % ndarray path which handles bool/numeric in bulk.
+                data = scidb.internal.from_python(py_arr);
+                return;
+            end
+        catch
+            % Fall through to element-by-element conversion below
+        end
+
         c = cell(py_obj);
         n = numel(c);
         data = cell(1, n);

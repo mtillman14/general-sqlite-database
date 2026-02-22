@@ -2182,6 +2182,13 @@ end
 function s = schema_str(value)
 %SCHEMA_STR  Stringify a schema key value for comparison with DB strings.
 %   Matches Python's _schema_str: whole-number floats become ints.
+%   Handles both native MATLAB types and Python proxy objects that may
+%   leak through from cell(py.list(...)) extraction.
+    % Convert Python proxy objects to native MATLAB types first
+    cl = class(value);
+    if numel(cl) >= 3 && cl(1) == 'p' && cl(2) == 'y' && cl(3) == '.'
+        value = scidb.internal.from_python(value);
+    end
     if isnumeric(value) && isscalar(value)
         if value == floor(value)
             s = sprintf('%d', int64(value));

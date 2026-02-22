@@ -177,5 +177,29 @@ classdef TestForEachSchemaFiltering < matlab.unittest.TestCase
             testCase.verifySubstring(output, '2 iterations');
         end
 
+        function test_string_schema_values_survive_combo_filtering(testCase)
+            % Regression: schema_str must handle string values returned by
+            % distinct_schema_values.  In some MATLAB versions, Python
+            % proxy objects (py.str) can satisfy isnumeric(), causing
+            % floor() to fail.  This test verifies the combo filtering path
+            % works when session values are strings resolved via [].
+            RawSignal().save([1 2 3], 'subject', 1, 'session', 'X');
+            RawSignal().save([4 5 6], 'subject', 2, 'session', 'Y');
+            RawSignal().save([7 8 9], 'subject', 1, 'session', 'Y');
+
+            % Both keys use [] → DB resolution → combo filtering.
+            % Session values "X", "Y" must be stringified correctly by
+            % schema_str; subject values 1, 2 must be handled as numerics.
+            scidb.for_each(@double_values, ...
+                struct('x', RawSignal()), ...
+                {ProcessedSignal()}, ...
+                'subject', [], ...
+                'session', []);
+
+            % 3 of 4 possible combos exist: (1,X), (2,Y), (1,Y)
+            all_results = ProcessedSignal().load_all();
+            testCase.verifyEqual(numel(all_results), 3);
+        end
+
     end
 end

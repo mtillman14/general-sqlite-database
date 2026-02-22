@@ -124,3 +124,143 @@ This applies anywhere a numpy array crosses the Python→MATLAB boundary outside
 | Variable wrapping | ~20.7s (~250K crossings) | ~5-8s (~17K crossings) |
 | DB queries (tables/custom) | ~10s (5500 queries for 2741 records) | <1s (3 queries) |
 | **Total** | **~107s** | **~7-10s** |
+
+
+## Optimization 4: from_python Auto-Conversion Early Exit
+
+### Problem: MATLAB Auto-Converts Python Scalars Before from_python Sees Them
+
+When MATLAB extracts elements from a Python list via `cell(py.list(...))`, it
+auto-converts certain Python types to native MATLAB types:
+
+- `py.float` → MATLAB `double`
+- `py.bool` → MATLAB `logical`
+- `py.str` → MATLAB `string` (in some MATLAB versions)
+
+This means that by the time `from_python(elem)` is called, the argument is already
+a plain MATLAB `double`, not a `py.float`. The original `from_python` code had no
+early check for native MATLAB types — the value would fall through all 10+
+`isa(py_obj, 'py.*')` checks and reach the `else` fallback branch, which:
+
+1. Tries `py.builtins.isinstance(py_obj, py.pandas.DataFrame)` — throws a
+   `PyException` because you can't pass a MATLAB double to a Python function
+   expecting a Python object
+2. Catches the exception silently
+3. Tries `double(py_obj)` — succeeds (it's already a double)
+
+**Each auto-converted element = 1 PyException construction + 2 stack trace operations.**
+
+### Impact on Wide DOUBLE[] Tables
+
+For a table like GAITRiteLoaded (54 columns, many of type DOUBLE[]):
+
+- The concat_df optimization successfully merges all records into one DataFrame
+- `convert_dataframe()` processes each column:
+  - DOUBLE columns → `from_python(col.to_numpy())` → fast numeric bulk path
+  - DOUBLE[] columns → pandas `object` dtype → element-by-element `from_python`
+- Each DOUBLE[] cell is a Python list of floats
+- `from_python` on the list → `cell(py.list)` → elements are auto-converted to
+  MATLAB doubles → recursive `from_python` on each double → exception fallback
+
+With ~30 DOUBLE[] columns × N records × ~15 elements per array = ~50K exceptions:
+
+| Overhead source | Calls | Self Time |
+|---|---|---|
+| PyException constructor | 50,836 | 14.8s |
+| PyException.getStack | 101,672 | 31.8s |
+| ExternalException | 50,836 | 7.6s |
+| **Total exception overhead** | — | **54.2s** |
+
+The actual user function only needed 0.374s; the rest was all interop overhead.
+
+### Fix 1: Native Type Early-Exit Guards (from_python.m lines 12-23)
+
+Added at the very top of `from_python`, before any `py.*` checks:
+
+```matlab
+cl = class(py_obj);
+is_python = numel(cl) >= 3 && cl(1) == 'p' && cl(2) == 'y' && cl(3) == '.';
+if ~is_python
+    if islogical(py_obj) || isnumeric(py_obj) || isstring(py_obj)
+        data = py_obj;
+        return;
+    end
+end
+```
+
+**Critical pitfall**: `isnumeric()` and `isstring()` can return `true` for Python
+proxy objects (`py.int`, `py.str`) in some MATLAB versions.  The class-name prefix
+check (`cl(1:3) == 'py.'`) is the only reliable way to distinguish native MATLAB
+types from Python proxy objects.  An earlier version used `~isa(py_obj, 'py.type')`
+which was insufficient — `py.int(5)` is an *instance* not a *type*, so
+`isa(py.int(5), 'py.type')` returns `false`.
+
+This eliminates **all exception overhead** (~54s) for auto-converted values. The
+`islogical` check was already present but lacked a `return` statement, so it fell
+into the subsequent `elseif` chain instead of exiting early.
+
+### Fix 2: Bulk List-to-Numpy Conversion (from_python.m lines 70-86)
+
+For `py.list` objects, try converting the entire list to a numpy array in one
+Python call before falling back to element-by-element conversion:
+
+```matlab
+elseif isa(py_obj, 'py.list')
+    try
+        py_arr = py.numpy.asarray(py_obj);
+        dtype_kind = string(py_arr.dtype.kind);
+        if dtype_kind ~= "O"
+            data = scidb.internal.from_python(py_arr);
+            return;
+        end
+    catch
+    end
+    % ... original element-by-element fallback ...
+```
+
+When a Python list contains homogeneous numeric values (the common case for
+DOUBLE[] columns from DuckDB), `numpy.asarray()` converts the entire list to a
+typed ndarray in one call. This replaces N boundary crossings (one per element)
+with 1 boundary crossing for the whole array.
+
+Falls through gracefully for:
+- Heterogeneous lists (mixed types) → numpy returns object array → `dtype_kind == "O"` → skip
+- Lists of nested structures → numpy raises → caught and falls through
+
+### Combined Impact
+
+For the GAITRiteLoaded case (54 columns, many DOUBLE[], 221 iterations):
+
+| Component | Before fixes | After fixes |
+|---|---|---|
+| Exception overhead | ~54s | ~0s |
+| Element-by-element from_python | ~30s | ~2s (bulk numpy) |
+| Remaining interop (to_python, etc.) | ~10s | ~10s (unchanged) |
+| **Total** | **~142s** | **~12-15s** |
+
+### Why the Second for_each Call Was Already Fast
+
+```matlab
+scidb.for_each(@calculateLRSymmetryTwoVectorsNoTable, ...
+    struct('v1', GAITRiteLoadedCycle("StepLengths_GR"), 'formulaNum', 6), ...
+    {StepLengthSymmetry()}, ...
+    subject=[], session=[], speed=[], trial=[], distribute=true);
+```
+
+This selects a **single column** (`"StepLengths_GR"`) via the column selection
+syntax `GAITRiteLoadedCycle("StepLengths_GR")`. The preloaded concat_df has only
+1 column instead of 54, so the recursive from_python overhead scales down ~54x.
+Even without the fix, it was tolerable.
+
+### Diagnostic Pattern
+
+When `from_python` is a bottleneck, the MATLAB Profiler will show these correlated
+signatures:
+
+- `from_python`: very high call count (10K-100K+)
+- `PyException.getStack`: ~2× the `PyException` call count
+- `flipud`: same count as `PyException.getStack` (MATLAB flips Python stack traces)
+- `ExternalException`: same count as `PyException`
+
+If these appear, check whether auto-converted MATLAB native types are reaching the
+`else` fallback branch in `from_python`.
