@@ -175,7 +175,11 @@ def _infer_duckdb_type(value: Any) -> Tuple[str, dict]:
 
 
 def _convert_for_json(value: Any) -> Any:
-    """Recursively convert ndarrays to lists for JSON serialization."""
+    """Recursively convert ndarrays/DataFrames to lists for JSON serialization."""
+    if isinstance(value, pd.DataFrame):
+        return _convert_for_json(value.to_dict("list"))
+    if isinstance(value, pd.Series):
+        return value.tolist()
     if isinstance(value, np.ndarray):
         return value.tolist()
     if isinstance(value, dict):
@@ -273,6 +277,37 @@ def _storage_to_python(value: Any, meta: dict) -> Any:
         return str(value) if value is not None else None
 
     return value
+
+
+def _flatten_dict(d, _prefix=()):
+    """Flatten a nested dict into {dot.separated.key: leaf_value} pairs.
+    Returns (flat_dict, path_map) where path_map maps each dot-key
+    to its tuple-of-keys path for faithful reconstruction."""
+    flat = {}
+    paths = {}
+    for k, v in d.items():
+        current = _prefix + (k,)
+        if isinstance(v, dict):
+            sub_flat, sub_paths = _flatten_dict(v, current)
+            flat.update(sub_flat)
+            paths.update(sub_paths)
+        else:
+            dot_key = ".".join(current)
+            flat[dot_key] = v
+            paths[dot_key] = list(current)
+    return flat, paths
+
+
+def _unflatten_dict(flat, path_map):
+    """Reconstruct a nested dict from flat dot-keys using stored path_map."""
+    result = {}
+    for dot_key, value in flat.items():
+        path = path_map.get(dot_key, dot_key.split("."))
+        current = result
+        for key in path[:-1]:
+            current = current.setdefault(key, {})
+        current[path[-1]] = value
+    return result
 
 
 # ---------------------------------------------------------------------------
@@ -681,31 +716,59 @@ class SciDuck:
           - data_col_types: dict of {col_name: duckdb_type_str}
           - dtype_meta: metadata dict for round-trip restoration
         """
-        if isinstance(sample_value, dict) and not isinstance(
-            next(iter(sample_value.values()), None), (dict, list, np.ndarray)
-        ):
-            # Multi-column mode: dict of scalar values from Mode A
+        # DataFrame mode: each DataFrame column → its own DuckDB column
+        if isinstance(sample_value, pd.DataFrame):
+            col_types = {}
+            meta = {"mode": "dataframe", "columns": {}, "df_columns": list(sample_value.columns)}
+            for col_name in sample_value.columns:
+                col_data = sample_value[col_name].to_numpy()
+                ddb_type, col_meta = _infer_duckdb_type(col_data)
+                col_types[col_name] = ddb_type
+                meta["columns"][col_name] = col_meta
+            return col_types, meta
+
+        # Dict mode: each key → its own DuckDB column (nested dicts are flattened)
+        if isinstance(sample_value, dict):
+            has_nested = any(isinstance(v, dict) for v in sample_value.values())
+            if has_nested:
+                flat, path_map = _flatten_dict(sample_value)
+            else:
+                flat = sample_value
+                path_map = {k: [k] for k in sample_value}
             col_types = {}
             meta = {"mode": "multi_column", "columns": {}}
-            for col_name, val in sample_value.items():
+            if has_nested:
+                meta["nested"] = True
+                meta["path_map"] = path_map
+            for col_name, val in flat.items():
                 ddb_type, col_meta = _infer_duckdb_type(val)
                 col_types[col_name] = ddb_type
                 meta["columns"][col_name] = col_meta
             return col_types, meta
-        else:
-            # Single-column mode — use provided name or default to "value"
-            col_name = data_col_name or "value"
-            ddb_type, col_meta = _infer_duckdb_type(sample_value)
-            meta = {"mode": "single_column", "columns": {col_name: col_meta}}
-            return {col_name: ddb_type}, meta
+
+        # Single-column mode — use provided name or default to "value"
+        col_name = data_col_name or "value"
+        ddb_type, col_meta = _infer_duckdb_type(sample_value)
+        meta = {"mode": "single_column", "columns": {col_name: col_meta}}
+        return {col_name: ddb_type}, meta
 
     def _value_to_storage_row(self, value: Any, dtype_meta: dict) -> list:
         """Convert a data value to a list of storage-ready column values."""
         mode = dtype_meta.get("mode", "single_column")
         col_metas = dtype_meta["columns"]
-        if mode == "multi_column":
+
+        if mode == "dataframe":
             return [
-                _python_to_storage(value[col], col_metas[col])
+                _python_to_storage(value[col].to_numpy(), col_metas[col])
+                for col in col_metas
+            ]
+        elif mode == "multi_column":
+            if dtype_meta.get("nested"):
+                flat, _ = _flatten_dict(value)
+            else:
+                flat = value
+            return [
+                _python_to_storage(flat[col], col_metas[col])
                 for col in col_metas
             ]
         else:
@@ -804,10 +867,19 @@ class SciDuck:
                 col_meta = columns_meta[col_name]
                 raw_val = df[col_name].iloc[0]
                 return _storage_to_python(raw_val, col_meta)
-            else:
+            elif mode == "dataframe":
                 result = {}
                 for c, meta in columns_meta.items():
                     result[c] = _storage_to_python(df[c].iloc[0], meta)
+                # Reconstruct DataFrame preserving original column order
+                df_columns = dtype_meta.get("df_columns", list(columns_meta.keys()))
+                return pd.DataFrame(result, columns=df_columns)
+            else:  # multi_column
+                result = {}
+                for c, meta in columns_meta.items():
+                    result[c] = _storage_to_python(df[c].iloc[0], meta)
+                if dtype_meta.get("nested"):
+                    return _unflatten_dict(result, dtype_meta["path_map"])
                 return result
 
         return df

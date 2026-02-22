@@ -43,7 +43,11 @@ function py_dict = metadata_to_pydict(varargin)
         elseif ischar(val)
             py_dict{key} = py.str(val);
         else
-            py_dict{key} = val;
+            try
+                py_dict{key} = val;
+            catch
+                py_dict{key} = jsonencode(val);
+            end
         end
     end
 end

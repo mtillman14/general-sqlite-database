@@ -127,9 +127,9 @@ function py_obj = to_python(data)
                         py_val = py.list({py_val});
                     end
                 end
-                fprintf('  [to_python table] col %d/%d "%s": class=%s size=[%s] -> %s OK\n', ...
-                    i, numel(col_names), col_names{i}, orig_class, ...
-                    num2str(orig_size), class(py_val));
+                %fprintf('  [to_python table] col %d/%d "%s": class=%s size=[%s] -> %s OK\n', ...
+                    %i, numel(col_names), col_names{i}, orig_class, ...
+                    %num2str(orig_size), class(py_val));
             catch ME
                 % Report which column failed and what the element looks like
                 detail = sprintf('class=%s size=[%s]', orig_class, num2str(orig_size));
@@ -147,16 +147,16 @@ function py_obj = to_python(data)
         try
             py_obj = py.pandas.DataFrame(py_dict);
         catch ME
-            fprintf('  [to_python table] pd.DataFrame failed: %s\n', ME.message);
-            fprintf('  [to_python table] Testing columns individually...\n');
+            %fprintf('  [to_python table] pd.DataFrame failed: %s\n', ME.message);
+            %fprintf('  [to_python table] Testing columns individually...\n');
             for i = 1:numel(col_names)
                 key = col_names{i};
                 one = py.dict(pyargs(key, py.operator.getitem(py_dict, key)));
                 try
                     py.pandas.DataFrame(one);
-                    fprintf('  [to_python table]   col "%s": OK\n', key);
+                    %fprintf('  [to_python table]   col "%s": OK\n', key);
                 catch ME2
-                    fprintf('  [to_python table]   col "%s": FAILED - %s\n', key, ME2.message);
+                    %fprintf('  [to_python table]   col "%s": FAILED - %s\n', key, ME2.message);
                 end
             end
             rethrow(ME);

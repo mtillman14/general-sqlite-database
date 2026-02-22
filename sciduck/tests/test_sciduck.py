@@ -192,6 +192,129 @@ class TestSaveLoadModeA:
 
 
 # ---------------------------------------------------------------------------
+# Per-column storage: DataFrames as data, dicts (flat & nested)
+# ---------------------------------------------------------------------------
+
+class TestPerColumnStorage:
+    """Test that DataFrames and dicts are stored as native DuckDB columns."""
+
+    # --- DataFrame as Mode B data value ---
+
+    def test_dataframe_data_roundtrip(self, duck):
+        """A pd.DataFrame saved as Mode B data should load back as a DataFrame."""
+        original = pd.DataFrame({
+            "force": [1.0, 2.0, 3.0],
+            "velocity": [4.0, 5.0, 6.0],
+            "label": ["a", "b", "c"],
+        })
+        duck.save("gait_data", original, subject="S01", session="A", trial="1")
+        loaded = duck.load("gait_data", subject="S01", session="A", trial="1")
+
+        assert isinstance(loaded, pd.DataFrame)
+        assert list(loaded.columns) == ["force", "velocity", "label"]
+        np.testing.assert_array_almost_equal(loaded["force"].to_numpy(), [1.0, 2.0, 3.0])
+        np.testing.assert_array_almost_equal(loaded["velocity"].to_numpy(), [4.0, 5.0, 6.0])
+        assert list(loaded["label"]) == ["a", "b", "c"]
+
+    def test_dataframe_stored_as_separate_columns(self, duck):
+        """The DuckDB table should have one column per DataFrame column."""
+        original = pd.DataFrame({"x": [1.0, 2.0], "y": [3.0, 4.0]})
+        duck.save("df_cols", original, subject="S01", session="A", trial="1")
+
+        # Check the actual DuckDB table columns
+        cols = [
+            row[0] for row in duck._fetchall(
+                "SELECT column_name FROM information_schema.columns "
+                "WHERE table_name = 'df_cols' ORDER BY ordinal_position"
+            )
+        ]
+        assert "x" in cols
+        assert "y" in cols
+        # Should NOT have a single "value" column
+        assert "value" not in cols
+
+    def test_dataframe_column_order_preserved(self, duck):
+        """Column order of the original DataFrame should be preserved on load."""
+        original = pd.DataFrame({"z": [1], "a": [2], "m": [3]})
+        duck.save("col_order", original, subject="S01", session="A", trial="1")
+        loaded = duck.load("col_order", subject="S01", session="A", trial="1")
+        assert list(loaded.columns) == ["z", "a", "m"]
+
+    # --- Flat dict with non-scalar values ---
+
+    def test_dict_with_arrays_stored_as_columns(self, duck):
+        """A dict with array values should use per-column storage, not JSON."""
+        original = {"weights": np.array([0.1, 0.2, 0.3]), "bias": 0.5}
+        duck.save("params", original, subject="S01", session="A", trial="1")
+
+        # Verify per-column layout in DuckDB
+        cols = [
+            row[0] for row in duck._fetchall(
+                "SELECT column_name FROM information_schema.columns "
+                "WHERE table_name = 'params' ORDER BY ordinal_position"
+            )
+        ]
+        assert "weights" in cols
+        assert "bias" in cols
+
+        loaded = duck.load("params", subject="S01", session="A", trial="1")
+        np.testing.assert_array_almost_equal(loaded["weights"], original["weights"])
+        assert loaded["bias"] == 0.5
+
+    def test_dict_with_list_values_stored_as_columns(self, duck):
+        """A dict with list values should use per-column storage."""
+        original = {"key1": "value1", "key2": 42, "key3": [1, 2, 3]}
+        duck.save("mixed_dict", original, subject="S01", session="A", trial="1")
+
+        cols = [
+            row[0] for row in duck._fetchall(
+                "SELECT column_name FROM information_schema.columns "
+                "WHERE table_name = 'mixed_dict' ORDER BY ordinal_position"
+            )
+        ]
+        assert "key1" in cols
+        assert "key2" in cols
+        assert "key3" in cols
+
+        loaded = duck.load("mixed_dict", subject="S01", session="A", trial="1")
+        assert loaded["key1"] == "value1"
+        assert loaded["key2"] == 42
+        assert loaded["key3"] == pytest.approx([1, 2, 3])
+
+    # --- Nested dicts ---
+
+    def test_nested_dict_roundtrip(self, duck):
+        """A nested dict should flatten to columns and unflatten on load."""
+        original = {
+            "a": {"b": 1, "c": np.array([1.0, 2.0, 3.0])},
+            "d": "hello",
+        }
+        duck.save("nested", original, subject="S01", session="A", trial="1")
+        loaded = duck.load("nested", subject="S01", session="A", trial="1")
+
+        assert isinstance(loaded, dict)
+        assert isinstance(loaded["a"], dict)
+        assert loaded["a"]["b"] == 1
+        np.testing.assert_array_almost_equal(loaded["a"]["c"], [1.0, 2.0, 3.0])
+        assert loaded["d"] == "hello"
+
+    def test_nested_dict_stored_as_flat_columns(self, duck):
+        """Nested dict keys should become dot-separated DuckDB column names."""
+        original = {"outer": {"inner1": 10, "inner2": 20}, "top": 30}
+        duck.save("nested_cols", original, subject="S01", session="A", trial="1")
+
+        cols = [
+            row[0] for row in duck._fetchall(
+                "SELECT column_name FROM information_schema.columns "
+                "WHERE table_name = 'nested_cols' ORDER BY ordinal_position"
+            )
+        ]
+        assert "outer.inner1" in cols
+        assert "outer.inner2" in cols
+        assert "top" in cols
+
+
+# ---------------------------------------------------------------------------
 # Save / Load — Mode C (dict with tuple keys)
 # ---------------------------------------------------------------------------
 

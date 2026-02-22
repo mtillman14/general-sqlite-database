@@ -119,6 +119,8 @@ function for_each(fn, inputs, outputs, varargin)
         fn_name = 'unknown';
     end
 
+    disp(['Starting for_each(' fn_name ')'])
+
     % Parse metadata iterables
     if mod(numel(meta_args), 2) ~= 0
         error('scidb:for_each', 'Metadata arguments must be name-value pairs.');
@@ -311,7 +313,7 @@ function for_each(fn, inputs, outputs, varargin)
             type_name = class(var_inst);
             py_class = scidb.internal.ensure_registered(type_name);
 
-            fprintf('Bulk preloading variable %s\n', type_name);
+            % fprintf('Bulk preloading variable %s\n', type_name);
 
             % Build query metadata: iteration values as arrays + fixed overrides
             query_nv = {};
@@ -640,7 +642,7 @@ function for_each(fn, inputs, outputs, varargin)
                 end
             end
         catch err
-            fprintf('[skip] %s: %s raised: %s\n', ...
+            fprintf('[error] %s: %s raised: %s\n', ...
                 metadata_str, fn_name, err.message);
             skipped = skipped + 1;
             continue;
