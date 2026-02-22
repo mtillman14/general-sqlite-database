@@ -34,7 +34,6 @@ class TestLoadAndExtractWhere:
         db = configure_database(
             tmp_path / "test.duckdb",
             ["subject"],
-            tmp_path / "test.db",
         )
         try:
             Side = register_matlab_variable("Side_NoFilter")
@@ -56,7 +55,6 @@ class TestLoadAndExtractWhere:
         db = configure_database(
             tmp_path / "test.duckdb",
             ["subject"],
-            tmp_path / "test.db",
         )
         try:
             Side = register_matlab_variable("Side_VarFilter")
@@ -88,7 +86,6 @@ class TestLoadAndExtractWhere:
         db = configure_database(
             tmp_path / "test.duckdb",
             ["subject"],
-            tmp_path / "test.db",
         )
         try:
             Side = register_matlab_variable("Side_Neq")
@@ -117,7 +114,6 @@ class TestLoadAndExtractWhere:
         db = configure_database(
             tmp_path / "test.duckdb",
             ["subject"],
-            tmp_path / "test.db",
         )
         try:
             StepLength = register_matlab_variable("StepLength_Raw")
@@ -140,7 +136,6 @@ class TestLoadAndExtractWhere:
         db = configure_database(
             tmp_path / "test.duckdb",
             ["subject"],
-            tmp_path / "test.db",
         )
         try:
             Side = register_matlab_variable("Side_And")
@@ -178,7 +173,6 @@ class TestLoadAndExtractWhere:
         db = configure_database(
             tmp_path / "test.duckdb",
             ["subject"],
-            tmp_path / "test.db",
         )
         try:
             StepLength = register_matlab_variable("StepLength_NoneWhere")
@@ -198,7 +192,6 @@ class TestLoadAndExtractWhere:
         db = configure_database(
             tmp_path / "test.duckdb",
             ["subject", "session"],
-            tmp_path / "test.db",
         )
         try:
             Side = register_matlab_variable("Side_MetaFilter")

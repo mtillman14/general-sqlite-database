@@ -2131,6 +2131,17 @@ class DatabaseManager:
         """
         return self._duck.distinct_schema_values(key)
 
+    def distinct_schema_combinations(self, keys: list[str]) -> list[tuple]:
+        """Return all distinct combinations for multiple schema keys.
+
+        Args:
+            keys: List of schema key names (e.g. ["subject", "session"])
+
+        Returns:
+            List of tuples of distinct non-null value combinations (strings)
+        """
+        return self._duck.distinct_schema_combinations(keys)
+
     # -------------------------------------------------------------------------
     # Variable Groups
     # -------------------------------------------------------------------------

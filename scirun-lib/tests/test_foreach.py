@@ -793,11 +793,18 @@ class TestForEachAllLevels:
         class MockDB:
             def __init__(self, values_by_key):
                 self._values = values_by_key
+                self.dataset_schema_keys = list(values_by_key.keys())
 
             def distinct_schema_values(self, key):
                 if key not in self._values:
                     raise ValueError(f"'{key}' is not a schema column.")
                 return self._values[key]
+
+            def distinct_schema_combinations(self, keys):
+                # Return full cartesian product so no filtering happens
+                from itertools import product as _product
+                lists = [self._values[k] for k in keys]
+                return [tuple(str(v) for v in combo) for combo in _product(*lists)]
 
         return MockDB(schema_values)
 
@@ -1740,3 +1747,281 @@ class TestForEachConfigKeys:
         meta = MockOutput.saved_data[0]["metadata"]
         assert meta["subject"] == 42
         assert meta["trial"] == 7
+
+
+class TestForEachSchemaFiltering:
+    """Tests for filtering cartesian product to existing schema combinations."""
+
+    def _make_mock_db(self, schema_values, schema_combinations=None, schema_keys=None):
+        """Create a mock db with distinct_schema_values, distinct_schema_combinations,
+        and dataset_schema_keys support."""
+
+        class MockDB:
+            def __init__(self, values_by_key, combos, keys):
+                self._values = values_by_key
+                self._combos = combos or {}
+                self.dataset_schema_keys = keys or list(values_by_key.keys())
+
+            def distinct_schema_values(self, key):
+                if key not in self._values:
+                    raise ValueError(f"'{key}' is not a schema column.")
+                return self._values[key]
+
+            def distinct_schema_combinations(self, keys):
+                combo_key = tuple(keys)
+                if combo_key in self._combos:
+                    return self._combos[combo_key]
+                return []
+
+        return MockDB(schema_values, schema_combinations, schema_keys)
+
+    def test_filtering_removes_nonexistent_combos(self):
+        """Two [] keys, only subset of combos exist — verify only existing ones iterate."""
+
+        def process(x):
+            return "result"
+
+        db = self._make_mock_db(
+            schema_values={"subject": ["1", "2"], "session": ["A", "B"]},
+            schema_combinations={
+                ("subject", "session"): [("1", "A"), ("2", "B")],
+            },
+            schema_keys=["subject", "session"],
+        )
+
+        for_each(
+            process,
+            inputs={"x": MockVariableA},
+            outputs=[MockOutput],
+            db=db,
+            subject=[],
+            session=[],
+        )
+
+        # Only 2 of 4 combos exist
+        assert len(MockOutput.saved_data) == 2
+        saved = [(d["metadata"]["subject"], d["metadata"]["session"]) for d in MockOutput.saved_data]
+        assert ("1", "A") in saved
+        assert ("2", "B") in saved
+
+    def test_no_filtering_when_all_explicit(self):
+        """No [] used — full cartesian product preserved (filtering skipped)."""
+
+        def process(x):
+            return "result"
+
+        db = self._make_mock_db(
+            schema_values={"subject": ["1", "2"], "session": ["A", "B"]},
+            schema_combinations={
+                ("subject", "session"): [("1", "A")],  # Only 1 combo exists
+            },
+            schema_keys=["subject", "session"],
+        )
+
+        for_each(
+            process,
+            inputs={"x": MockVariableA},
+            outputs=[MockOutput],
+            db=db,
+            subject=["1", "2"],
+            session=["A", "B"],
+        )
+
+        # All explicit => no filtering, full 2x2=4 iterations
+        assert len(MockOutput.saved_data) == 4
+
+    def test_no_filtering_with_pathinput(self):
+        """PathInput in inputs, [] used — full product preserved."""
+        from scirun import PathInput
+
+        def process(filepath, x):
+            return "result"
+
+        db = self._make_mock_db(
+            schema_values={"subject": ["1", "2"], "session": ["A", "B"]},
+            schema_combinations={
+                ("subject", "session"): [("1", "A")],  # Only 1 combo exists
+            },
+            schema_keys=["subject", "session"],
+        )
+
+        for_each(
+            process,
+            inputs={"filepath": PathInput("{subject}/data.csv"), "x": MockVariableA},
+            outputs=[MockOutput],
+            db=db,
+            subject=[],
+            session=[],
+        )
+
+        # PathInput present => no filtering, full 2x2=4 iterations
+        assert len(MockOutput.saved_data) == 4
+
+    def test_no_filtering_with_fixed_pathinput(self):
+        """Fixed(PathInput) in inputs, [] used — full product preserved."""
+        from scirun import PathInput
+
+        def process(filepath, x):
+            return "result"
+
+        db = self._make_mock_db(
+            schema_values={"subject": ["1", "2"], "session": ["A", "B"]},
+            schema_combinations={
+                ("subject", "session"): [("1", "A")],
+            },
+            schema_keys=["subject", "session"],
+        )
+
+        for_each(
+            process,
+            inputs={
+                "filepath": Fixed(PathInput("{subject}/data.csv"), session="BL"),
+                "x": MockVariableA,
+            },
+            outputs=[MockOutput],
+            db=db,
+            subject=[],
+            session=[],
+        )
+
+        # Fixed(PathInput) present => no filtering
+        assert len(MockOutput.saved_data) == 4
+
+    def test_mixed_resolved_and_explicit(self):
+        """One key [], one explicit — filtering still applies to resolved keys."""
+
+        def process(x):
+            return "result"
+
+        db = self._make_mock_db(
+            schema_values={"subject": ["1", "2", "3"], "session": ["A", "B"]},
+            schema_combinations={
+                ("subject", "session"): [("1", "A"), ("2", "A"), ("3", "B")],
+            },
+            schema_keys=["subject", "session"],
+        )
+
+        for_each(
+            process,
+            inputs={"x": MockVariableA},
+            outputs=[MockOutput],
+            db=db,
+            subject=[],          # resolved from db: ["1", "2", "3"]
+            session=["A", "B"],  # explicit
+        )
+
+        # All combos: (1,A),(1,B),(2,A),(2,B),(3,A),(3,B) = 6
+        # Existing: (1,A),(2,A),(3,B) = 3
+        assert len(MockOutput.saved_data) == 3
+
+    def test_non_schema_keys_excluded_from_filter(self):
+        """Extra iterable keys not in dataset_schema_keys should not be sent to filter."""
+
+        def process(x, smoothing):
+            return "result"
+
+        db = self._make_mock_db(
+            schema_values={"subject": ["1", "2"]},
+            schema_combinations={
+                ("subject",): [("1",), ("2",)],  # Only subject is a schema key
+            },
+            schema_keys=["subject", "session"],  # session is schema but not iterated
+        )
+
+        for_each(
+            process,
+            inputs={"x": MockVariableA, "smoothing": 0.5},
+            outputs=[MockOutput],
+            db=db,
+            subject=[],                  # resolved from db
+            extra_param=[10, 20],        # non-schema iterable
+        )
+
+        # subject has 2 values, extra_param has 2 values => 4 combos
+        # But only subject is sent to filter, and both ("1",) and ("2",) exist
+        # so no combos are removed => 4 iterations
+        assert len(MockOutput.saved_data) == 4
+
+    def test_info_message_printed(self, capsys):
+        """Verify [info] filtered... output when combos are removed."""
+
+        def process(x):
+            return "result"
+
+        db = self._make_mock_db(
+            schema_values={"subject": ["1", "2"], "session": ["A", "B"]},
+            schema_combinations={
+                ("subject", "session"): [("1", "A")],
+            },
+            schema_keys=["subject", "session"],
+        )
+
+        for_each(
+            process,
+            inputs={"x": MockVariableA},
+            outputs=[MockOutput],
+            db=db,
+            subject=[],
+            session=[],
+        )
+
+        captured = capsys.readouterr()
+        assert "[info] filtered 3 non-existent schema combinations (from 4 to 1)" in captured.out
+
+    def test_no_info_message_when_nothing_filtered(self, capsys):
+        """All combos exist — no [info] message."""
+
+        def process(x):
+            return "result"
+
+        db = self._make_mock_db(
+            schema_values={"subject": ["1", "2"], "session": ["A", "B"]},
+            schema_combinations={
+                ("subject", "session"): [("1", "A"), ("1", "B"), ("2", "A"), ("2", "B")],
+            },
+            schema_keys=["subject", "session"],
+        )
+
+        for_each(
+            process,
+            inputs={"x": MockVariableA},
+            outputs=[MockOutput],
+            db=db,
+            subject=[],
+            session=[],
+        )
+
+        captured = capsys.readouterr()
+        assert "[info] filtered" not in captured.out
+        assert len(MockOutput.saved_data) == 4
+
+    def test_integer_to_string_coercion(self):
+        """Integer metadata values should match string DB values via _schema_str."""
+
+        def process(x):
+            return "result"
+
+        # DB returns string values (VARCHAR), but distinct_schema_values may
+        # return ints when the user passes subject=[] and values are numeric
+        db = self._make_mock_db(
+            schema_values={"subject": [1, 2], "session": ["A", "B"]},
+            schema_combinations={
+                ("subject", "session"): [("1", "A"), ("2", "B")],
+            },
+            schema_keys=["subject", "session"],
+        )
+
+        for_each(
+            process,
+            inputs={"x": MockVariableA},
+            outputs=[MockOutput],
+            db=db,
+            subject=[],
+            session=[],
+        )
+
+        # Ints 1, 2 should be coerced to "1", "2" for comparison
+        assert len(MockOutput.saved_data) == 2
+        saved = [(d["metadata"]["subject"], d["metadata"]["session"]) for d in MockOutput.saved_data]
+        assert (1, "A") in saved
+        assert (2, "B") in saved

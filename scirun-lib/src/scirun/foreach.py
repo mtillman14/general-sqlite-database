@@ -7,6 +7,7 @@ from .column_selection import ColumnSelection
 from .fixed import Fixed
 from .foreach_config import ForEachConfig
 from .merge import Merge
+from .pathinput import PathInput
 
 
 def for_each(
@@ -182,10 +183,39 @@ def for_each(
     keys = list(metadata_iterables.keys())
     value_lists = [metadata_iterables[k] for k in keys]
 
+    # Materialize all combinations (needed for optional filtering below)
+    all_combos = list(product(*value_lists))
+
+    # Filter to only schema combinations that actually exist in the database.
+    # This avoids noisy [skip] messages for data that was never expected to exist.
+    # Skip filtering when a PathInput is present (filesystem ingestion where
+    # data isn't in the DB yet).
+    if needs_resolve and not _has_pathinput(inputs):
+        # Determine which iterated keys are schema keys (non-schema keys
+        # like constant iterables are excluded from the filter query)
+        from scidb.database import _schema_str
+        filter_db = resolved_db  # already set by the [] resolution block
+        schema_keys_set = set(filter_db.dataset_schema_keys)
+        # Build index mapping: positions of schema keys within the combo tuple
+        schema_indices = [i for i, k in enumerate(keys) if k in schema_keys_set]
+        filter_keys = [keys[i] for i in schema_indices]
+
+        if filter_keys:
+            existing = filter_db.distinct_schema_combinations(filter_keys)
+            existing_set = set(existing)
+
+            original_count = len(all_combos)
+            all_combos = [
+                combo for combo in all_combos
+                if tuple(_schema_str(combo[i]) for i in schema_indices) in existing_set
+            ]
+            removed = original_count - len(all_combos)
+            if removed > 0:
+                print(f"[info] filtered {removed} non-existent schema combinations "
+                      f"(from {original_count} to {len(all_combos)})")
+
     # Count total iterations for progress
-    total = 1
-    for v in value_lists:
-        total *= len(v)
+    total = len(all_combos)
 
     fn_name = getattr(fn, "__name__", repr(fn))
     should_pass_metadata = pass_metadata if pass_metadata is not None else getattr(fn, 'generates_file', False)
@@ -202,7 +232,7 @@ def for_each(
     completed = 0
     skipped = 0
 
-    for values in product(*value_lists):
+    for values in all_combos:
         metadata = dict(zip(keys, values))
         metadata_str = ", ".join(f"{k}={v}" for k, v in metadata.items())
 
@@ -835,3 +865,13 @@ def _merge_parts(
         expanded.append(df)
 
     return pd.concat(expanded, axis=1)
+
+
+def _has_pathinput(inputs: dict) -> bool:
+    """Check if any input is a PathInput, directly or wrapped in Fixed."""
+    for v in inputs.values():
+        if isinstance(v, PathInput):
+            return True
+        if isinstance(v, Fixed) and isinstance(v.var_type, PathInput):
+            return True
+    return False

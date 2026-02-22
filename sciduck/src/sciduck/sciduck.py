@@ -1091,6 +1091,33 @@ class SciDuck:
         )
         return [r[0] for r in rows]
 
+    def distinct_schema_combinations(self, keys: list[str]) -> list[tuple]:
+        """Return all distinct non-null combinations for multiple schema columns.
+
+        Args:
+            keys: List of schema column names to query.
+
+        Returns:
+            List of tuples, each tuple being one existing combination of values
+            (as strings, since _schema stores VARCHAR columns). Sorted by the
+            column order given.
+        """
+        for k in keys:
+            if k not in self.dataset_schema:
+                raise ValueError(
+                    f"'{k}' is not a schema column. "
+                    f"Available: {self.dataset_schema}"
+                )
+        col_list = ", ".join(f'"{k}"' for k in keys)
+        where_clause = " AND ".join(f'"{k}" IS NOT NULL' for k in keys)
+        order_clause = ", ".join(f'"{k}"' for k in keys)
+        rows = self._fetchall(
+            f"SELECT DISTINCT {col_list} FROM _schema "
+            f"WHERE {where_clause} "
+            f"ORDER BY {order_clause}"
+        )
+        return [tuple(r) for r in rows]
+
     # ------------------------------------------------------------------
     # Direct query access
     # ------------------------------------------------------------------

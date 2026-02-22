@@ -1,21 +1,14 @@
-import numpy as np                                                                                                                                                              
-import sys                                                                                                                                                                    
-sys.path.insert(0, 'sciduck/src')
-from sciduck.sciduck import _python_to_storage
+import pandas as pd                                                                                                                                                             
+import numpy as np                                                                                                                                                            
 
-# Simulate ragged vector column: meta says ndarray, ndim=1
-meta = {'python_type': 'ndarray', 'numpy_dtype': 'float64', 'ndim': 1}
+# Simulate the test case
+df = pd.DataFrame({'force': [1.0, 2.0, 3.0], 'velocity': [4.0, 5.0, 6.0]})
 
-# Test 1: normal ndarray (should work as before)
-result = _python_to_storage(np.array([1.0, 2.0, 3.0]), meta)
-print(f'ndarray [1,2,3]: {result}')
+# What the current code does (line 345):
+col_series = df['force']
+cell_val = col_series.iloc[0]  # Gets 1.0 (a single scalar)
+print(f'Current approach - first cell: {cell_val}, type: {type(cell_val)}')
 
-# Test 2: scalar float (the bug case)
-result = _python_to_storage(1.0, meta)
-print(f'scalar 1.0: {result}')
-
-# Test 3: scalar int
-result = _python_to_storage(1, meta)
-print(f'scalar int 1: {result}')
-
-print('All tests passed!')
+# What should happen (what commit fe99569 originally had):
+col_data = col_series.to_numpy()  # Gets array([1., 2., 3.])
+print(f'Expected approach - whole column: {col_data}, type: {type(col_data)}')

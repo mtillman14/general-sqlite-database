@@ -521,10 +521,14 @@ class TestDictDuckDBTypes:
 
 
 class TestDataFrameDuckDBTypes:
-    """Verify that DataFrame columns map to the correct DuckDB column types."""
+    """Verify that DataFrame columns map to the correct DuckDB column types.
+
+    DataFrames are stored as one DuckDB row per DataFrame row, so each
+    column is a scalar type (DOUBLE, BIGINT, VARCHAR), not an array type.
+    """
 
     def test_float_columns(self, duck):
-        """DataFrame float columns → DOUBLE[]."""
+        """DataFrame float columns → DOUBLE (one row per DataFrame row)."""
         original = pd.DataFrame({
             "force": [1.0, 2.0, 3.0],
             "velocity": [4.0, 5.0, 6.0],
@@ -532,8 +536,8 @@ class TestDataFrameDuckDBTypes:
         duck.save("df_float", original, subject="S01", session="A", trial="1")
 
         types = _col_types(duck, "df_float")
-        assert types["force"] == "DOUBLE[]"
-        assert types["velocity"] == "DOUBLE[]"
+        assert types["force"] == "DOUBLE"
+        assert types["velocity"] == "DOUBLE"
 
         loaded = duck.load("df_float", subject="S01", session="A", trial="1")
         assert isinstance(loaded, pd.DataFrame)
@@ -541,7 +545,7 @@ class TestDataFrameDuckDBTypes:
         np.testing.assert_array_almost_equal(loaded["velocity"].to_numpy(), [4.0, 5.0, 6.0])
 
     def test_int_columns(self, duck):
-        """DataFrame int columns → BIGINT[]."""
+        """DataFrame int columns → BIGINT (one row per DataFrame row)."""
         original = pd.DataFrame({
             "ids": [10, 20, 30],
             "counts": [1, 2, 3],
@@ -549,8 +553,8 @@ class TestDataFrameDuckDBTypes:
         duck.save("df_int", original, subject="S01", session="A", trial="1")
 
         types = _col_types(duck, "df_int")
-        assert types["ids"] == "BIGINT[]"
-        assert types["counts"] == "BIGINT[]"
+        assert types["ids"] == "BIGINT"
+        assert types["counts"] == "BIGINT"
 
         loaded = duck.load("df_int", subject="S01", session="A", trial="1")
         assert isinstance(loaded, pd.DataFrame)
@@ -558,7 +562,7 @@ class TestDataFrameDuckDBTypes:
         np.testing.assert_array_equal(loaded["counts"].to_numpy(), [1, 2, 3])
 
     def test_string_columns(self, duck):
-        """DataFrame string columns → VARCHAR[]."""
+        """DataFrame string columns → VARCHAR (one row per DataFrame row)."""
         original = pd.DataFrame({
             "name": ["alice", "bob", "carol"],
             "group": ["A", "B", "A"],
@@ -566,8 +570,8 @@ class TestDataFrameDuckDBTypes:
         duck.save("df_str", original, subject="S01", session="A", trial="1")
 
         types = _col_types(duck, "df_str")
-        assert types["name"] == "VARCHAR[]"
-        assert types["group"] == "VARCHAR[]"
+        assert types["name"] == "VARCHAR"
+        assert types["group"] == "VARCHAR"
 
         loaded = duck.load("df_str", subject="S01", session="A", trial="1")
         assert isinstance(loaded, pd.DataFrame)
@@ -575,7 +579,7 @@ class TestDataFrameDuckDBTypes:
         assert list(loaded["group"]) == ["A", "B", "A"]
 
     def test_mixed_columns(self, duck):
-        """DataFrame with float, int, and string columns → correct types."""
+        """DataFrame with float, int, and string columns → correct scalar types."""
         original = pd.DataFrame({
             "score": [95.5, 87.3, 91.0],
             "rank": np.array([1, 2, 3], dtype=np.int64),
@@ -584,9 +588,9 @@ class TestDataFrameDuckDBTypes:
         duck.save("df_mixed", original, subject="S01", session="A", trial="1")
 
         types = _col_types(duck, "df_mixed")
-        assert types["score"] == "DOUBLE[]"
-        assert types["rank"] == "BIGINT[]"
-        assert types["name"] == "VARCHAR[]"
+        assert types["score"] == "DOUBLE"
+        assert types["rank"] == "BIGINT"
+        assert types["name"] == "VARCHAR"
 
         loaded = duck.load("df_mixed", subject="S01", session="A", trial="1")
         assert isinstance(loaded, pd.DataFrame)
@@ -601,8 +605,8 @@ class TestDataFrameDuckDBTypes:
         duck.save("df_1row", original, subject="S01", session="A", trial="1")
 
         types = _col_types(duck, "df_1row")
-        assert types["x"] == "DOUBLE[]"
-        assert types["label"] == "VARCHAR[]"
+        assert types["x"] == "DOUBLE"
+        assert types["label"] == "VARCHAR"
 
         loaded = duck.load("df_1row", subject="S01", session="A", trial="1")
         assert isinstance(loaded, pd.DataFrame)

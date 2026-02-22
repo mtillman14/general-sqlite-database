@@ -307,7 +307,6 @@ class TestSaveVariableCompatibility:
         db = configure_database(
             tmp_path / "test.duckdb",
             ["subject"],
-            tmp_path / "test_pipeline.db",
         )
 
         try:
@@ -338,7 +337,7 @@ class TestSaveVariableCompatibility:
         finally:
             db.close()
 
-    @pytest.mark.skip(reason="lineage_hash/pipeline_lineage_hash ambiguity not yet resolved")
+    # @pytest.mark.skip(reason="lineage_hash/pipeline_lineage_hash ambiguity not yet resolved")
     def test_cache_hit_with_matlab_thunk(self, tmp_path):
         """After saving, find_by_lineage should return the cached data."""
         from scidb.database import configure_database
@@ -346,7 +345,6 @@ class TestSaveVariableCompatibility:
         db = configure_database(
             tmp_path / "test2.duckdb",
             ["subject"],
-            tmp_path / "test2_pipeline.db",
         )
 
         try:

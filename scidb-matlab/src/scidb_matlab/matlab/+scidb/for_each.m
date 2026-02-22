@@ -198,12 +198,6 @@ function for_each(fn, inputs, outputs, varargin)
         distribute_key = schema_keys(deepest_idx + 1);
     end
 
-    % Compute total iterations
-    total = 1;
-    for i = 1:numel(meta_values)
-        total = total * numel(meta_values{i});
-    end
-
     % Parse inputs struct — separate loadable inputs from constants
     input_names = fieldnames(inputs);
     n_inputs = numel(input_names);
@@ -249,6 +243,83 @@ function for_each(fn, inputs, outputs, varargin)
     % Parse outputs cell array
     n_outputs = numel(outputs);
 
+    % --- Compute Cartesian product ---
+    if isempty(meta_values)
+        combos = {{}};
+    else
+        combos = cartesian_product(meta_values);
+    end
+
+    % --- Filter to existing schema combinations ---
+    % When [] was used for any key, filter the cartesian product to only
+    % combinations that actually exist in the _schema table. Skip filtering
+    % when a PathInput is present (filesystem ingestion where data isn't in
+    % the DB yet).
+    if any(needs_resolve) && ~has_pathinput(inputs)
+        % Determine which iterated keys are schema keys
+        filter_db = resolve_db;
+        db_schema_keys = cell(filter_db.dataset_schema_keys);
+        for si = 1:numel(db_schema_keys)
+            db_schema_keys{si} = string(db_schema_keys{si});
+        end
+        db_schema_keys_str = [db_schema_keys{:}];
+
+        schema_indices = [];
+        filter_keys = string.empty;
+        for ki = 1:numel(meta_keys)
+            if ismember(meta_keys(ki), db_schema_keys_str)
+                schema_indices(end+1) = ki; %#ok<AGROW>
+                filter_keys(end+1) = meta_keys(ki); %#ok<AGROW>
+            end
+        end
+
+        if ~isempty(filter_keys)
+            % Build Python list of key names for the query
+            py_keys = py.list();
+            for ki = 1:numel(filter_keys)
+                py_keys.append(char(filter_keys(ki)));
+            end
+            py_existing = filter_db.distinct_schema_combinations(py_keys);
+            n_existing = int64(py.len(py_existing));
+
+            % Build a set of existing combos (as MATLAB strings for fast lookup)
+            existing_set = containers.Map('KeyType', 'char', 'ValueType', 'logical');
+            for ei = 1:n_existing
+                py_tuple = py_existing{ei};
+                parts = cell(1, numel(filter_keys));
+                for ki = 1:numel(filter_keys)
+                    parts{ki} = char(string(py_tuple{ki}));
+                end
+                existing_set(strjoin(parts, '|')) = true;
+            end
+
+            % Filter combos
+            original_count = numel(combos);
+            keep = true(1, original_count);
+            for ci = 1:original_count
+                combo = combos{ci};
+                parts = cell(1, numel(schema_indices));
+                for ki = 1:numel(schema_indices)
+                    val = combo{schema_indices(ki)};
+                    parts{ki} = schema_str(val);
+                end
+                combo_key = strjoin(parts, '|');
+                if ~existing_set.isKey(combo_key)
+                    keep(ci) = false;
+                end
+            end
+            combos = combos(keep);
+            removed = original_count - numel(combos);
+            if removed > 0
+                fprintf('[info] filtered %d non-existent schema combinations (from %d to %d)\n', ...
+                    removed, original_count, numel(combos));
+            end
+        end
+    end
+
+    % Update total to reflect filtered combos
+    total = numel(combos);
+
     % --- Dry-run header ---
     if dry_run
         fprintf('[dry-run] for_each(%s)\n', fn_name);
@@ -262,13 +333,6 @@ function for_each(fn, inputs, outputs, varargin)
             fprintf('[dry-run] distribute: ''%s'' (split outputs by element/row, 1-based)\n', distribute_key);
         end
         fprintf('\n');
-    end
-
-    % --- Compute Cartesian product ---
-    if isempty(meta_values)
-        combos = {{}};
-    else
-        combos = cartesian_product(meta_values);
     end
 
     % --- Pre-load phase (optimization: 1 query per input instead of N) ---
@@ -2093,5 +2157,38 @@ function combos = cartesian_indices(idx_cells)
         col = repmat(repelem(vals, repeats_after), repeats_before, 1);
         combos(:, d) = col;
         repeats_after = repeats_after * nv;
+    end
+end
+
+
+function tf = has_pathinput(inputs)
+%HAS_PATHINPUT  Check if any input is a PathInput, directly or in Fixed.
+    tf = false;
+    fnames = fieldnames(inputs);
+    for i = 1:numel(fnames)
+        v = inputs.(fnames{i});
+        if isa(v, 'scidb.PathInput')
+            tf = true;
+            return;
+        end
+        if isa(v, 'scidb.Fixed') && isa(v.var_type, 'scidb.PathInput')
+            tf = true;
+            return;
+        end
+    end
+end
+
+
+function s = schema_str(value)
+%SCHEMA_STR  Stringify a schema key value for comparison with DB strings.
+%   Matches Python's _schema_str: whole-number floats become ints.
+    if isnumeric(value) && isscalar(value)
+        if value == floor(value)
+            s = sprintf('%d', int64(value));
+        else
+            s = sprintf('%g', value);
+        end
+    else
+        s = char(string(value));
     end
 end
