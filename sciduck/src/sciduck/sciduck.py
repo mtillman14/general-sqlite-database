@@ -195,6 +195,9 @@ def _python_to_storage(value: Any, meta: dict) -> Any:
 
     if ptype == "ndarray":
         arr = value
+        # Scalar in a column typed as ndarray (e.g. ragged vectors): wrap as 1-element list
+        if not isinstance(arr, np.ndarray):
+            return [arr]
         if arr.ndim == 1:
             return arr.tolist()
         if arr.ndim == 2:

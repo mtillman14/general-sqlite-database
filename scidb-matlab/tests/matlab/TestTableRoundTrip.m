@@ -70,6 +70,50 @@ classdef TestTableRoundTrip < matlab.unittest.TestCase
             testCase.verifyEqual(result.data.B, [4;5;6], 'AbsTol', 1e-10);
         end
 
+        function test_save_multirow_cell_ragged_vectors(testCase)
+            %% Multi-row table, cell array column containing numeric vectors of varying length.
+            % Should store as DOUBLE[]
+            t = table;
+            t.a{1} = [1 2 3]';
+            t.a{2} = 1;
+            t.a{3} = [2 3]';
+            t.b = [2 4 6]';
+
+            CellTableVar().save(t, 'subject', 1, 'session', 'A');
+            types = testCase.getColumnTypes('CellTableVar_data');
+            testCase.verifyEqual(types('a'), "DOUBLE[]");
+            testCase.verifyEqual(types('b'), "DOUBLE");
+
+            result = CellTableVar().load('subject', 1, 'session', 'A');
+            testCase.verifyTrue(istable(result.data));
+            testCase.verifyEqual(height(result.data), 3);
+            testCase.verifyEqual(result.data.a, t.a, 'AbsTol', 1e-10);
+            testCase.verifyEqual(result.data.b, t.b, 'AbsTol', 1e-10);
+
+        end
+
+        function test_save_multirow_cell_ragged_logical_vectors(testCase)
+            %% Multi-row table, cell array column containing numeric vectors of varying length.
+            % Should store as DOUBLE[]
+            t = table;
+            t.a{1} = true(3,1);
+            t.a{2} = true;
+            t.a{3} = true(2,1);
+            t.b = [2 4 6]';
+
+            CellTableVar().save(t, 'subject', 1, 'session', 'A');
+            types = testCase.getColumnTypes('CellTableVar_data');
+            testCase.verifyEqual(types('a'), "BOOLEAN[]");
+            testCase.verifyEqual(types('b'), "DOUBLE");
+
+            result = CellTableVar().load('subject', 1, 'session', 'A');
+            testCase.verifyTrue(istable(result.data));
+            testCase.verifyEqual(height(result.data), 3);
+            testCase.verifyEqual(result.data.a, t.a, 'AbsTol', 1e-10);
+            testCase.verifyEqual(result.data.b, t.b, 'AbsTol', 1e-10);
+
+        end
+
         function test_save_columnar_dict(testCase)
             %% Columnar dict should save to one row as DOUBLE[]
             s = struct;

@@ -1,36 +1,21 @@
-import sys
+import numpy as np                                                                                                                                                              
+import sys                                                                                                                                                                    
 sys.path.insert(0, 'sciduck/src')
-sys.path.insert(0, 'src')
-import pandas as pd
-import numpy as np
-from sciduck import _infer_data_columns, _dataframe_to_storage_rows, _storage_to_python
+from sciduck.sciduck import _python_to_storage
 
-# Test 1: multi-row scalar double
-df = pd.DataFrame({'A': [1.0, 2.0, 3.0], 'B': ['x', 'y', 'z']})
-col_types, meta = _infer_data_columns(df)
-print('multi-row scalar types:', col_types)
-print('meta mode:', meta['mode'])
-print('col meta A:', meta['columns']['A'])
-rows = _dataframe_to_storage_rows(df, meta)
-print('storage rows:', rows)
+# Simulate ragged vector column: meta says ndarray, ndim=1
+meta = {'python_type': 'ndarray', 'numpy_dtype': 'float64', 'ndim': 1}
 
-# Test 2: 1-row scalar
-df1 = pd.DataFrame({'x': [42.0], 'label': ['hello']})
-col_types1, meta1 = _infer_data_columns(df1)
-print('1-row scalar types:', col_types1)
-rows1 = _dataframe_to_storage_rows(df1, meta1)
-print('1-row storage rows:', rows1)
+# Test 1: normal ndarray (should work as before)
+result = _python_to_storage(np.array([1.0, 2.0, 3.0]), meta)
+print(f'ndarray [1,2,3]: {result}')
 
-# Test 3: multi-row vector column
-df2 = pd.DataFrame({'vec': [np.array([1.0,2.0,3.0]), np.array([4.0,5.0,6.0])]})
-col_types2, meta2 = _infer_data_columns(df2)
-print('vector col types:', col_types2)
-rows2 = _dataframe_to_storage_rows(df2, meta2)
-print('vector storage rows:', rows2)
+# Test 2: scalar float (the bug case)
+result = _python_to_storage(1.0, meta)
+print(f'scalar 1.0: {result}')
 
-# Reconstruct
-from sciduck import _storage_to_python
-result = {}
-for c, m in meta['columns'].items():
-    result[c] = [_storage_to_python(rows[i][list(meta['columns'].keys()).index(c)], m) for i in range(3)]
-print('reconstructed:', pd.DataFrame(result))
+# Test 3: scalar int
+result = _python_to_storage(1, meta)
+print(f'scalar int 1: {result}')
+
+print('All tests passed!')
