@@ -271,7 +271,16 @@ function data = try_stack_numeric(data)
             return;
         end
     end
-    data = vertcat(data{:});
+    % from_python converts 1-D numpy arrays to Nx1 column vectors.
+    % When they represent rows of a matrix column, transpose to row vectors
+    % so that vertcat produces an n_rows×m matrix matching the MATLAB table
+    % convention (each row is a 1×m row vector).
+    if iscolumn(data{1}) && ~isscalar(data{1})
+        transposed = cellfun(@(v) v', data, 'UniformOutput', false);
+        data = vertcat(transposed{:});
+    else
+        data = vertcat(data{:});
+    end
 end
 
 

@@ -70,6 +70,44 @@ classdef TestTableRoundTrip < matlab.unittest.TestCase
             testCase.verifyEqual(result.data.B, [4;5;6], 'AbsTol', 1e-10);
         end
 
+        function test_save_columnar_dict(testCase)
+            %% Columnar dict should save to one row as DOUBLE[]
+            s = struct;
+            s.a = [1 2 3];
+            s.b = [4 5 6];
+            ColumnarStructVar().save(s, 'subject', 1, 'session', 'A');
+
+            types = testCase.getColumnTypes('ColumnarStructVar_data');
+            testCase.verifyEqual(types('a'), "DOUBLE[]");
+            testCase.verifyEqual(types('b'), "DOUBLE[]");
+
+            result = ColumnarStructVar().load('subject', 1, 'session', 'A');
+            testCase.verifyTrue(isstruct(result.data));
+            testCase.verifyEqual(length(result.data.a), 3);
+            testCase.verifyEqual(length(result.data.b), 3);
+            testCase.verifyEqual(result.data.a, [1;2;3], 'AbsTol', 1e-10);
+            testCase.verifyEqual(result.data.b, [4;5;6], 'AbsTol', 1e-10);
+        end
+
+        function test_save_2D_columnar_dict(testCase)
+            %% Columnar dict should save to one row as DOUBLE[][]
+            s = struct;
+            s.a = [1 2 3; 1.1 2.1 3.1];
+            s.b = [4 5 6; 4.1 5.1 6.1];
+            ColumnarStructVar2D().save(s, 'subject', 1, 'session', 'A');
+
+            types = testCase.getColumnTypes('ColumnarStructVar2D_data');
+            testCase.verifyEqual(types('a'), "DOUBLE[][]");
+            testCase.verifyEqual(types('b'), "DOUBLE[][]");
+
+            result = ColumnarStructVar2D().load('subject', 1, 'session', 'A');
+            testCase.verifyTrue(isstruct(result.data));
+            testCase.verifyEqual(size(result.data.a), [2, 3]);
+            testCase.verifyEqual(size(result.data.b), [2, 3]);
+            testCase.verifyEqual(result.data.a, [1 2 3; 1.1 2.1 3.1], 'AbsTol', 1e-10);
+            testCase.verifyEqual(result.data.b, [4 5 6; 4.1 5.1 6.1], 'AbsTol', 1e-10);
+        end
+
         function test_save_multirow_scalar_string(testCase)
             %% Multi-row table, string column → VARCHAR[] round-trip.
             t = table(["alice"; "bob"; "carol"], ...
@@ -116,7 +154,7 @@ classdef TestTableRoundTrip < matlab.unittest.TestCase
         function test_save_multirow_matrix_column(testCase)
             %% Multi-row table, NxM matrix column → DOUBLE[][] round-trip.
             %  Each row of the table contains a 1×3 row vector; stored as
-            %  DOUBLE[][] and loaded back as a 3×3 matrix column.
+            %  DOUBLE[] and loaded back as a 3×3 matrix column.
             t = table([1,2,3; 4,5,6; 7,8,9], 'VariableNames', {'vec'});
             TableVar().save(t, 'subject', 5, 'session', 'A');
 
