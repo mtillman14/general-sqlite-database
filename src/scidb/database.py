@@ -1645,6 +1645,57 @@ class DatabaseManager:
              lineage.function_hash, inputs_json, constants_json, timestamp],
         )
 
+    def _load_with_where(
+        self,
+        variable_class: Type[BaseVariable],
+        metadata: dict,
+        table_name: str,
+        where,
+        version_id: str = "latest",
+    ):
+        """Load records using where= filter with version_keys-first strategy.
+
+        When data was saved via for_each with a where= condition, the filter
+        string is stored as a ``__where`` version key. This method first tries
+        to match records by that version key. If no records are found (e.g. data
+        was saved directly without for_each), it falls back to schema-level
+        filtering via ``where.resolve()``.
+
+        Returns:
+            A pandas DataFrame of matching record rows.
+
+        Raises:
+            NotFoundError: If no records match either strategy.
+        """
+        type_name = variable_class.__name__
+
+        # Strategy 1: filter by __where version key
+        augmented = dict(metadata)
+        augmented["__where"] = where.to_key()
+        nested = self._split_metadata(augmented)
+        records = self._find_record(type_name, nested_metadata=nested, version_id=version_id)
+
+        if len(records) > 0:
+            return records
+
+        # Strategy 2: fallback to schema-level filtering (backward compat)
+        # This path is used when data was saved without for_each (no __where
+        # version key). Validation errors from where.resolve() propagate
+        # normally — only cross-level filtering silently falls through.
+        nested = self._split_metadata(metadata)
+        records = self._find_record(type_name, nested_metadata=nested, version_id=version_id)
+        if len(records) > 0:
+            allowed_schema_ids = where.resolve(self, variable_class, table_name)
+            records = records[records["schema_id"].isin(allowed_schema_ids)]
+
+        if len(records) == 0:
+            raise NotFoundError(
+                f"No {type_name} found matching metadata: {metadata} "
+                f"with the given where= filter."
+            )
+
+        return records
+
     def load(
         self,
         variable_class: Type[BaseVariable],
@@ -1663,6 +1714,11 @@ class DatabaseManager:
             version: "latest" for most recent, or specific record_id
             loc: Optional label-based index selection
             iloc: Optional integer position-based index selection
+            where: Optional Filter for restricting which records are loaded.
+                When data was saved via for_each with a where= condition, the
+                filter is stored as a __where version key. At load time, this
+                parameter first tries to match by version key, then falls back
+                to schema-level filtering for backward compatibility.
 
         Returns:
             The matching variable instance
@@ -1675,6 +1731,11 @@ class DatabaseManager:
                 records = self._find_record(variable_class.__name__, record_id=version)
                 if len(records) == 0:
                     raise NotFoundError(f"No data found with record_id '{version}'")
+            elif where is not None:
+                # where= specified: first try version_keys filtering (__where)
+                records = self._load_with_where(
+                    variable_class, metadata, table_name, where
+                )
             else:
                 # Load by metadata (latest version per parameter set)
                 nested_metadata = self._split_metadata(metadata)
@@ -1682,16 +1743,6 @@ class DatabaseManager:
                 if len(records) == 0:
                     raise NotFoundError(
                         f"No {variable_class.__name__} found matching metadata: {metadata}"
-                    )
-
-            # Apply where= filter if provided
-            if where is not None:
-                allowed_schema_ids = where.resolve(self, variable_class, table_name)
-                records = records[records["schema_id"].isin(allowed_schema_ids)]
-                if len(records) == 0:
-                    raise NotFoundError(
-                        f"No {variable_class.__name__} found matching metadata: {metadata} "
-                        f"with the given where= filter."
                     )
 
             # Take the first (latest) record
@@ -1723,27 +1774,33 @@ class DatabaseManager:
             version_id: Which versions to return:
                 - "all" (default): return every version
                 - "latest": return only the latest version per (schema_id, version_keys)
+            where: Optional Filter for restricting which records are loaded.
+                First tries version_keys filtering (__where), then falls back
+                to schema-level filtering for backward compatibility.
 
         Yields:
             BaseVariable instances matching the metadata
         """
         table_name = self._ensure_registered(variable_class, auto_register=True)
-        nested_metadata = self._split_metadata(metadata)
 
-        try:
-            records = self._find_record(
-                variable_class.__name__, nested_metadata=nested_metadata, version_id=version_id
-            )
-        except Exception:
-            return  # No data
-
-        if len(records) == 0:
-            return
-
-        # Apply where= filter if provided
         if where is not None:
-            allowed_schema_ids = where.resolve(self, variable_class, table_name)
-            records = records[records["schema_id"].isin(allowed_schema_ids)]
+            # where= specified: first try version_keys filtering (__where)
+            try:
+                records = self._load_with_where(
+                    variable_class, metadata, table_name, where,
+                    version_id=version_id,
+                )
+            except NotFoundError:
+                return
+        else:
+            nested_metadata = self._split_metadata(metadata)
+            try:
+                records = self._find_record(
+                    variable_class.__name__, nested_metadata=nested_metadata, version_id=version_id
+                )
+            except Exception:
+                return  # No data
+
             if len(records) == 0:
                 return
 

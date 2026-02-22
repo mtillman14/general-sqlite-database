@@ -770,8 +770,8 @@ classdef TestForEachWhere < matlab.unittest.TestCase
             for i = 1:numel(vk_strings)
                 vk_strings{i} = char(string(rows{i}{1}));
             end
-            has_L = any(cellfun(@(s) contains(s, "Side == 'L'"), vk_strings));
-            has_R = any(cellfun(@(s) contains(s, "Side == 'R'"), vk_strings));
+            has_L = any(cellfun(@(s) contains(s, "Side == ''L''"), vk_strings));
+            has_R = any(cellfun(@(s) contains(s, "Side == ''R''"), vk_strings));
             testCase.verifyTrue(has_L, 'Expected __where with Side L in version_keys');
             testCase.verifyTrue(has_R, 'Expected __where with Side R in version_keys');
 

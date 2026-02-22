@@ -240,6 +240,10 @@ function for_each(fn, inputs, outputs, varargin)
         as_table_set = as_table_raw;
     end
 
+    % Build ForEachConfig version keys (matches Python ForEachConfig.to_version_keys)
+    config_nv = build_config_nv(fn_name, inputs, input_names, loadable_idx, ...
+        where_filter, distribute_key, as_table_raw, opts.pass_metadata);
+
     % Parse outputs cell array
     n_outputs = numel(outputs);
 
@@ -470,7 +474,7 @@ function for_each(fn, inputs, outputs, varargin)
         [completed, skipped] = run_parallel(fn, combos, n_inputs, n_outputs, ...
             input_names, loadable_idx, preloaded_results, preloaded_maps, ...
             preloaded_keys, inputs, meta_keys, outputs, ...
-            constant_names, constant_values, constant_nv, ...
+            constant_names, constant_values, constant_nv, config_nv, ...
             as_table_set, should_pass_metadata, fn_name, do_save, db_nv, py_db, ...
             where_nv);
         fprintf('\n[done] completed=%d, skipped=%d, total=%d\n', ...
@@ -515,8 +519,8 @@ function for_each(fn, inputs, outputs, varargin)
         end
         metadata_str = strjoin(meta_parts, ', ');
 
-        % Build save metadata (iteration metadata + constants)
-        save_nv = [meta_nv, constant_nv];
+        % Build save metadata (iteration metadata + constants + config keys)
+        save_nv = [meta_nv, constant_nv, config_nv];
 
         % --- Dry-run iteration ---
         if dry_run
@@ -745,9 +749,9 @@ function for_each(fn, inputs, outputs, varargin)
                                 row_data = data_tbl(rowIdx, :);
                                 dist_val = dist_values(rowIdx);
                                 if isnumeric(dist_val) && isscalar(dist_val)
-                                    save_meta = [meta_nv, constant_nv, {dist_key_char, dist_val}];
+                                    save_meta = [meta_nv, constant_nv, config_nv, {dist_key_char, dist_val}];
                                 else
-                                    save_meta = [meta_nv, constant_nv, {dist_key_char, char(string(dist_val))}];
+                                    save_meta = [meta_nv, constant_nv, config_nv, {dist_key_char, char(string(dist_val))}];
                                 end
                                 if use_batch_save
                                     batch_accum{o}.py_data.append(scidb.internal.to_python(row_data));
@@ -763,7 +767,7 @@ function for_each(fn, inputs, outputs, varargin)
                             % Non-table: split by element/row and save each piece
                             pieces = split_for_distribute(raw_value);
                             for k = 1:numel(pieces)
-                                save_meta = [meta_nv, constant_nv, {dist_key_char, k}];
+                                save_meta = [meta_nv, constant_nv, config_nv, {dist_key_char, k}];
                                 if use_batch_save
                                     batch_accum{o}.py_data.append(scidb.internal.to_python(pieces{k}));
                                     batch_accum{o}.py_metas.append(scidb.internal.metadata_to_pydict(save_meta{:}));
@@ -848,7 +852,7 @@ end
 function [completed, skipped] = run_parallel(fn, combos, n_inputs, n_outputs, ...
     input_names, loadable_idx, preloaded_results, preloaded_maps, ...
     preloaded_keys, inputs, meta_keys, outputs, ...
-    constant_names, constant_values, constant_nv, ...
+    constant_names, constant_values, constant_nv, config_nv, ...
     as_table_set, should_pass_metadata, fn_name, do_save, db_nv, py_db, ...
     where_nv)
 %RUN_PARALLEL  Three-phase parallel execution for for_each.
@@ -885,7 +889,7 @@ function [completed, skipped] = run_parallel(fn, combos, n_inputs, n_outputs, ..
         end
         metadata_str = strjoin(meta_parts, ', ');
         all_meta_nv{c} = meta_nv;
-        all_save_nv{c} = [meta_nv, constant_nv];
+        all_save_nv{c} = [meta_nv, constant_nv, config_nv];
 
         % Resolve each input
         loaded = cell(1, n_inputs);
@@ -2197,5 +2201,147 @@ function s = schema_str(value)
         end
     else
         s = char(string(value));
+    end
+end
+
+
+function nv = build_config_nv(fn_name, inputs, input_names, loadable_idx, ...
+    where_filter, distribute_key, as_table_raw, pass_metadata)
+%BUILD_CONFIG_NV  Build ForEachConfig version keys matching Python ForEachConfig.to_version_keys().
+%
+%   Returns a name-value cell array of config keys (__fn, __where, __inputs, etc.)
+%   that are included in save metadata to distinguish different for_each configurations.
+    nv = {};
+
+    % __fn: function name
+    nv{end+1} = '__fn';
+    nv{end+1} = fn_name;
+
+    % __inputs: serialized loadable inputs (JSON string matching Python format)
+    inputs_json = serialize_loadable_inputs(inputs, input_names, loadable_idx);
+    if ~strcmp(inputs_json, '{}')
+        nv{end+1} = '__inputs';
+        nv{end+1} = inputs_json;
+    end
+
+    % __where: filter key string
+    if ~isempty(where_filter)
+        nv{end+1} = '__where';
+        nv{end+1} = char(string(where_filter.py_filter.to_key()));
+    end
+
+    % __distribute: flag
+    if strlength(distribute_key) > 0
+        nv{end+1} = '__distribute';
+        nv{end+1} = true;
+    end
+
+    % __as_table: true or sorted list of input names (matches Python behavior)
+    if islogical(as_table_raw) && isscalar(as_table_raw) && as_table_raw
+        nv{end+1} = '__as_table';
+        nv{end+1} = true;
+    elseif isstring(as_table_raw) && ~isempty(as_table_raw)
+        nv{end+1} = '__as_table';
+        nv{end+1} = strjoin(sort(as_table_raw), ',');
+    end
+
+    % __pass_metadata: only if explicitly set to true
+    if ~isempty(pass_metadata) && islogical(pass_metadata) && pass_metadata
+        nv{end+1} = '__pass_metadata';
+        nv{end+1} = true;
+    end
+end
+
+
+function json_str = serialize_loadable_inputs(inputs, input_names, loadable_idx)
+%SERIALIZE_LOADABLE_INPUTS  Serialize loadable inputs to a JSON string matching Python format.
+%
+%   Matches the output of ForEachConfig._serialize_inputs() in Python.
+%   Only includes loadable inputs (variable types, Fixed, Merge, ColumnSelection).
+%   Sorted by name for canonical ordering.
+    sorted_names = sort(string(input_names(loadable_idx)'));
+    parts = {};
+    for i = 1:numel(sorted_names)
+        name = sorted_names(i);
+        spec = inputs.(char(name));
+        key_str = input_spec_to_key(spec);
+        parts{end+1} = sprintf('"%s": "%s"', name, strrep(key_str, '"', '\"')); %#ok<AGROW>
+    end
+    json_str = ['{' strjoin(parts, ', ') '}'];
+end
+
+
+function key = input_spec_to_key(spec)
+%INPUT_SPEC_TO_KEY  Convert a single input spec to its canonical key string.
+%   Matches the Python serialization in ForEachConfig._serialize_inputs().
+    if isa(spec, 'scidb.Merge')
+        % Merge: "Merge(A, B)"
+        sub_parts = cell(1, numel(spec.var_specs));
+        for i = 1:numel(spec.var_specs)
+            sub_parts{i} = input_spec_to_key(spec.var_specs{i});
+        end
+        key = ['Merge(' strjoin(sub_parts, ', ') ')'];
+    elseif isa(spec, 'scidb.Fixed')
+        % Fixed: "Fixed(ClassName, key='val')" or "Fixed(ClassName['col'], key='val')"
+        inner = spec.var_type;
+        if isa(inner, 'scidb.BaseVariable') && ~isempty(inner.selected_columns)
+            cols = inner.selected_columns;
+            if numel(cols) == 1
+                inner_key = sprintf('%s[''%s'']', class(inner), cols(1));
+            else
+                col_strs = arrayfun(@(c) sprintf('''%s''', c), cols, 'UniformOutput', false);
+                inner_key = sprintf('%s[[%s]]', class(inner), strjoin(col_strs, ', '));
+            end
+        else
+            inner_key = class(inner);
+        end
+        fields = sort(string(fieldnames(spec.fixed_metadata)));
+        if isempty(fields)
+            key = sprintf('Fixed(%s)', inner_key);
+        else
+            kv_parts = cell(1, numel(fields));
+            for f = 1:numel(fields)
+                val = spec.fixed_metadata.(char(fields(f)));
+                kv_parts{f} = sprintf('%s=%s', fields(f), format_repr(val));
+            end
+            key = sprintf('Fixed(%s, %s)', inner_key, strjoin(kv_parts, ', '));
+        end
+    elseif isa(spec, 'scidb.BaseVariable') && ~isempty(spec.selected_columns)
+        % ColumnSelection: "ClassName[['col1', 'col2']]" or "ClassName['col']"
+        cols = spec.selected_columns;
+        if numel(cols) == 1
+            key = sprintf('%s[''%s'']', class(spec), cols(1));
+        else
+            col_strs = arrayfun(@(c) sprintf('''%s''', c), cols, 'UniformOutput', false);
+            key = sprintf('%s[[%s]]', class(spec), strjoin(col_strs, ', '));
+        end
+    elseif isa(spec, 'scidb.BaseVariable')
+        % Plain variable: class name
+        key = class(spec);
+    else
+        % Unknown: use string representation
+        key = char(string(spec));
+    end
+end
+
+
+function s = format_repr(val)
+%FORMAT_REPR  Format a value in Python repr() style for version key strings.
+    if isnumeric(val) && isscalar(val)
+        if val == floor(val)
+            s = sprintf('%d', int64(val));
+        else
+            s = sprintf('%g', val);
+        end
+    elseif ischar(val) || (isstring(val) && isscalar(val))
+        s = sprintf('''%s''', char(val));
+    elseif islogical(val) && isscalar(val)
+        if val
+            s = 'True';
+        else
+            s = 'False';
+        end
+    else
+        s = char(string(val));
     end
 end
