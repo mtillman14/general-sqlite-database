@@ -61,7 +61,12 @@ import sys
 _project_root = Path(__file__).parent.parent.parent
 sys.path.insert(0, str(_project_root / "sciduck" / "src"))
 
-from sciduck import SciDuck, _infer_duckdb_type, _python_to_storage
+from sciduck import (
+    SciDuck,
+    _infer_duckdb_type, _python_to_storage, _storage_to_python,
+    _infer_data_columns, _value_to_storage_row,
+    _flatten_dict, _unflatten_dict,
+)
 
 
 # Global database instance (thread-local for safety)
@@ -696,7 +701,7 @@ class DatabaseManager:
 
         return schema_id
 
-    def _save_single_value(
+    def _save_native(
         self,
         record_id: str,
         table_name: str,
@@ -707,7 +712,11 @@ class DatabaseManager:
         schema_keys: dict | None = None,
     ) -> int:
         """
-        Save native data as a single 'value' column identified by record_id.
+        Save native data as a single record using sciduck's type inference.
+
+        Handles scalars, arrays, lists, dicts (flat & nested), and
+        dict-of-arrays.  Each dict key becomes its own DuckDB column;
+        vector values become DuckDB array types (e.g. DOUBLE[]).
 
         The table uses record_id as PRIMARY KEY so identical data is stored once.
 
@@ -720,25 +729,28 @@ class DatabaseManager:
         else:
             schema_id = 0
 
-        ddb_type, col_meta = _infer_duckdb_type(data)
-        storage_value = _python_to_storage(data, col_meta)
-        dtype_meta = {"mode": "single_column", "columns": {"value": col_meta}}
+        data_col_types, dtype_meta = _infer_data_columns(data)
+        storage_values = _value_to_storage_row(data, dtype_meta)
 
         # Ensure table exists
         if not self._duck._table_exists(table_name):
-            self._duck._execute(f"""
+            data_cols_sql = ", ".join(f'"{col}" {dtype}' for col, dtype in data_col_types.items())
+            self._duck._execute(f'''
                 CREATE TABLE "{table_name}" (
                     record_id VARCHAR PRIMARY KEY,
-                    "value" {ddb_type}
+                    {data_cols_sql}
                 )
-            """)
+            ''')
             self._create_variable_view(variable_class)
 
         # Insert data (ON CONFLICT DO NOTHING deduplicates by content)
+        col_names = ["record_id"] + list(data_col_types.keys())
+        col_str = ", ".join(f'"{c}"' for c in col_names)
+        placeholders = ", ".join(["?"] * len(col_names))
         self._duck._execute(
-            f'INSERT INTO "{table_name}" (record_id, "value") VALUES (?, ?) '
+            f'INSERT INTO "{table_name}" ({col_str}) VALUES ({placeholders}) '
             f'ON CONFLICT (record_id) DO NOTHING',
-            [record_id, storage_value],
+            [record_id] + storage_values,
         )
 
         # Upsert into _variables (one row per variable)
@@ -789,33 +801,43 @@ class DatabaseManager:
         # --- One-time setup from first item ---
         first_data, first_meta = data_items[0]
 
-        # Detect whether data is dict-of-arrays for columnar storage
-        is_dict_of_arrays = _is_tabular_dict(first_data)
+        # Detect DataFrame batch (keep existing multi-row scalar-column approach)
+        is_dataframe_batch = isinstance(first_data, pd.DataFrame)
 
-        if is_dict_of_arrays:
-            # Dict-of-arrays: multi-column table
-            dict_columns = list(first_data.keys())
-            ndarray_keys = {
-                k: {"dtype": str(v.dtype), "shape": list(v.shape)}
-                for k, v in first_data.items()
-            }
+        if is_dataframe_batch:
+            # DataFrames: keep multi-row scalar-column approach via _save_columnar
+            # Flatten struct columns for MATLAB table-with-struct-cells pattern
+            sample_df, sample_struct_info = _flatten_struct_columns(first_data)
+            dict_columns = list(sample_df.columns)
             dtype_meta = {
                 "custom": True,
-                "dict_of_arrays": True,
-                "ndarray_keys": ndarray_keys,
             }
-            col_meta = None  # not used for dict-of-arrays path
+            if sample_struct_info:
+                dtype_meta["struct_columns"] = sample_struct_info
 
             if not self._duck._table_exists(table_name):
                 col_defs = []
                 for col in dict_columns:
-                    arr = first_data[col]
-                    if np.issubdtype(arr.dtype, np.integer):
+                    dtype = sample_df[col].dtype
+                    if pd.api.types.is_integer_dtype(dtype):
                         ddb_type = "BIGINT"
-                    elif np.issubdtype(arr.dtype, np.floating):
+                    elif pd.api.types.is_float_dtype(dtype):
                         ddb_type = "DOUBLE"
-                    elif np.issubdtype(arr.dtype, np.bool_):
+                    elif pd.api.types.is_bool_dtype(dtype):
                         ddb_type = "BOOLEAN"
+                    elif dtype == object:
+                        first_val = next(
+                            (v for v in sample_df[col]
+                             if v is not None and not (isinstance(v, float) and np.isnan(v))),
+                            None,
+                        )
+                        if isinstance(first_val, np.ndarray) and np.issubdtype(first_val.dtype, np.number):
+                            ddb_type = "DOUBLE[]"
+                        elif (isinstance(first_val, list) and len(first_val) > 0
+                              and all(isinstance(x, (int, float)) for x in first_val)):
+                            ddb_type = "DOUBLE[]"
+                        else:
+                            ddb_type = "VARCHAR"
                     else:
                         ddb_type = "VARCHAR"
                     col_defs.append(f'"{col}" {ddb_type}')
@@ -828,17 +850,17 @@ class DatabaseManager:
                 """)
                 self._create_variable_view(variable_class)
         else:
-            # Single-value path
-            ddb_type, col_meta = _infer_duckdb_type(first_data)
-            dtype_meta = {"mode": "single_column", "columns": {"value": col_meta}}
+            # All other types: use _infer_data_columns for uniform type inference
+            data_col_types, dtype_meta = _infer_data_columns(first_data)
 
             if not self._duck._table_exists(table_name):
-                self._duck._execute(f"""
+                data_cols_sql = ", ".join(f'"{col}" {dtype}' for col, dtype in data_col_types.items())
+                self._duck._execute(f'''
                     CREATE TABLE "{table_name}" (
                         record_id VARCHAR PRIMARY KEY,
-                        "value" {ddb_type}
+                        {data_cols_sql}
                     )
-                """)
+                ''')
                 self._create_variable_view(variable_class)
 
         timings["1_setup"] = time.perf_counter() - t0
@@ -902,18 +924,16 @@ class DatabaseManager:
             )
             record_ids.append(record_id)
 
-            if is_dict_of_arrays:
-                # Each dict-of-arrays item expands to N rows (one per array element)
-                n_rows = len(next(iter(data_val.values())))
-                for row_idx in range(n_rows):
-                    row_data = [record_id]
-                    for col in dict_columns:
-                        # Use .flat[] to handle both 1D and Nx1 column vectors
-                        row_data.append(data_val[col].flat[row_idx])
+            if is_dataframe_batch:
+                # DataFrame: expand to N rows per record (existing _save_columnar behavior)
+                df_data, _ = _flatten_struct_columns(data_val)
+                for _, df_row in df_data.iterrows():
+                    row_data = [record_id] + [df_row[c] for c in dict_columns]
                     data_table_rows.append(tuple(row_data))
             else:
-                storage_value = _python_to_storage(data_val, col_meta)
-                data_table_rows.append((record_id, storage_value))
+                # One row per record
+                storage_values = _value_to_storage_row(data_val, dtype_meta)
+                data_table_rows.append((record_id,) + tuple(storage_values))
 
             vk_json = json.dumps(version_keys or {}, sort_keys=True)
             metadata_rows.append((
@@ -927,8 +947,8 @@ class DatabaseManager:
         t5 = time.perf_counter()
         existing_data_ids: set[str] = set()
         chunk_size = 500
-        if is_dict_of_arrays:
-            # For dict-of-arrays, check by record_id in the data table
+        if is_dataframe_batch:
+            # For DataFrame batch (multi-row per record), check by record_id in the data table
             for start in range(0, len(record_ids), chunk_size):
                 chunk = record_ids[start:start + chunk_size]
                 placeholders = ", ".join(["?"] * len(chunk))
@@ -938,15 +958,15 @@ class DatabaseManager:
                     chunk,
                 )
                 existing_data_ids.update(r[0] for r in rows)
-        # For single-value tables, ON CONFLICT DO NOTHING handles dedup
+        # For single-row-per-record tables, ON CONFLICT DO NOTHING handles dedup
 
-        # Build new data rows (for dict-of-arrays, skip already-existing)
-        if is_dict_of_arrays:
+        # Build new data rows (for DataFrame batch, skip already-existing)
+        if is_dataframe_batch:
             new_data_rows = []
             data_row_idx = 0
             for i, rid in enumerate(record_ids):
                 data_val = data_items[i][0]
-                n_rows = len(next(iter(data_val.values())))
+                n_rows = len(data_val)
                 if rid not in existing_data_ids:
                     new_data_rows.extend(data_table_rows[data_row_idx:data_row_idx + n_rows])
                 data_row_idx += n_rows
@@ -960,7 +980,7 @@ class DatabaseManager:
         self._duck._begin()
         try:
             if new_data_rows:
-                if is_dict_of_arrays:
+                if is_dataframe_batch:
                     data_columns = ["record_id"] + dict_columns
                     data_df = pd.DataFrame(new_data_rows, columns=data_columns)
                     col_str = ", ".join(f'"{c}"' for c in data_columns)
@@ -968,10 +988,13 @@ class DatabaseManager:
                         f'INSERT INTO "{table_name}" ({col_str}) SELECT * FROM data_df'
                     )
                 else:
-                    data_df = pd.DataFrame(new_data_rows, columns=["record_id", "value"])
+                    # Single-row-per-record insert with ON CONFLICT
+                    all_columns = ["record_id"] + list(data_col_types.keys())
+                    data_df = pd.DataFrame(new_data_rows, columns=all_columns)
+                    col_str = ", ".join(f'"{c}"' for c in all_columns)
                     self._duck.con.execute(
-                        f'INSERT INTO "{table_name}" ("record_id", "value") '
-                        f'SELECT * FROM data_df ON CONFLICT (record_id) DO NOTHING'
+                        f'INSERT INTO "{table_name}" ({col_str}) SELECT * FROM data_df '
+                        f'ON CONFLICT (record_id) DO NOTHING'
                     )
 
             # Always insert metadata rows (audit trail — every execution logged)
@@ -1256,7 +1279,7 @@ class DatabaseManager:
 
             data = self._deserialize_custom_subdf(variable_class, df, dtype_meta)
         else:
-            # Native single-value path: query by record_id, restore type
+            # Native path: query by record_id, restore type
             row_df = self._duck._fetchdf(
                 f'SELECT * FROM "{table_name}" WHERE record_id = ?',
                 [record_id],
@@ -1270,6 +1293,20 @@ class DatabaseManager:
                 if mode == "single_column":
                     col_name = next(iter(columns_meta))
                     data = row_df[col_name].iloc[0]
+                elif mode == "dataframe":
+                    result = {}
+                    for c, meta in columns_meta.items():
+                        result[c] = _storage_to_python(row_df[c].iloc[0], meta)
+                    df_columns = dtype_meta.get("df_columns", list(columns_meta.keys()))
+                    data = pd.DataFrame(result, columns=df_columns)
+                elif mode == "multi_column":
+                    result = {}
+                    for c, meta in columns_meta.items():
+                        result[c] = _storage_to_python(row_df[c].iloc[0], meta)
+                    if dtype_meta.get("nested"):
+                        data = _unflatten_dict(result, dtype_meta["path_map"])
+                    else:
+                        data = result
                 else:
                     data = row_df
             else:
@@ -1576,26 +1613,9 @@ class DatabaseManager:
                     schema_level, schema_keys, content_hash,
                     struct_columns=struct_columns_info if struct_columns_info else None,
                 )
-            elif _is_tabular_dict(variable.data):
-                # Dict-of-arrays: convert to DataFrame for efficient columnar storage
-                # Squeeze Nx1 column vectors to 1D so DataFrame gets one column per key
-                squeezed = {
-                    k: v.squeeze() if v.ndim == 2 else v
-                    for k, v in variable.data.items()
-                }
-                df = pd.DataFrame(squeezed)
-                schema_id = self._save_columnar(
-                    record_id, table_name, type(variable), df,
-                    schema_level, schema_keys, content_hash,
-                    dict_of_arrays=True,
-                    ndarray_keys={
-                        k: {"dtype": str(v.dtype), "shape": list(v.shape)}
-                        for k, v in variable.data.items()
-                    },
-                )
             else:
-                # Native single-value storage (scalars, arrays, lists, dicts)
-                schema_id = self._save_single_value(
+                # ALL other data: scalars, arrays, lists, dicts, dict-of-arrays
+                schema_id = self._save_native(
                     record_id, table_name, type(variable), variable.data, content_hash,
                     schema_level=schema_level, schema_keys=schema_keys,
                 )
@@ -1823,7 +1843,7 @@ class DatabaseManager:
                             variable_class, sub_df, dtype_meta,
                         )
             else:
-                # Native single-value path
+                # Native path
                 data_cols = list(dtype_meta.get("columns", {}).keys())
                 data_select = ", ".join(f'"{c}"' for c in data_cols)
                 sql = (
@@ -1844,6 +1864,22 @@ class DatabaseManager:
                         col_name = next(iter(columns_meta))
                         for i, rid in enumerate(chunk_df["record_id"].tolist()):
                             data_lookup[rid] = restored[col_name].iloc[i]
+                    elif mode == "dataframe":
+                        for i, rid in enumerate(chunk_df["record_id"].tolist()):
+                            result = {}
+                            for c, meta in columns_meta.items():
+                                result[c] = _storage_to_python(restored[c].iloc[i], meta)
+                            df_columns = dtype_meta.get("df_columns", list(columns_meta.keys()))
+                            data_lookup[rid] = pd.DataFrame(result, columns=df_columns)
+                    elif mode == "multi_column":
+                        for i, rid in enumerate(chunk_df["record_id"].tolist()):
+                            result = {}
+                            for c, meta in columns_meta.items():
+                                result[c] = _storage_to_python(restored[c].iloc[i], meta)
+                            if dtype_meta.get("nested"):
+                                data_lookup[rid] = _unflatten_dict(result, dtype_meta["path_map"])
+                            else:
+                                data_lookup[rid] = result
                     else:
                         col_names = list(columns_meta.keys())
                         for i, rid in enumerate(chunk_df["record_id"].tolist()):

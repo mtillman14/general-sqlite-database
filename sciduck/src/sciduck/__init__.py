@@ -6,6 +6,10 @@ from .sciduck import (
     _numpy_dtype_to_duckdb,
     _python_to_storage,
     _storage_to_python,
+    _infer_data_columns,
+    _value_to_storage_row,
+    _flatten_dict,
+    _unflatten_dict,
 )
 
 __all__ = [
@@ -14,4 +18,8 @@ __all__ = [
     "_numpy_dtype_to_duckdb",
     "_python_to_storage",
     "_storage_to_python",
+    "_infer_data_columns",
+    "_value_to_storage_row",
+    "_flatten_dict",
+    "_unflatten_dict",
 ]

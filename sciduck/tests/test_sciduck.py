@@ -298,6 +298,62 @@ class TestPerColumnStorage:
         np.testing.assert_array_almost_equal(loaded["a"]["c"], [1.0, 2.0, 3.0])
         assert loaded["d"] == "hello"
 
+    def test_columnar_dict_roundtrip(self, duck):
+        """A dict of equal-length arrays (MATLAB struct pattern) should round-trip."""
+        original = {
+            "force": np.arange(10, dtype=np.float64),
+            "velocity": np.arange(10, 20, dtype=np.float64),
+            "label": ["a", "b", "c", "d", "e", "f", "g", "h", "i", "j"],
+        }
+        duck.save("columnar", original, subject="S01", session="A", trial="1")
+
+        # Verify per-column layout in DuckDB
+        cols = [
+            row[0] for row in duck._fetchall(
+                "SELECT column_name FROM information_schema.columns "
+                "WHERE table_name = 'columnar' ORDER BY ordinal_position"
+            )
+        ]
+        assert "force" in cols
+        assert "velocity" in cols
+        assert "label" in cols
+
+        loaded = duck.load("columnar", subject="S01", session="A", trial="1")
+        assert isinstance(loaded, dict)
+        np.testing.assert_array_almost_equal(loaded["force"], original["force"])
+        np.testing.assert_array_almost_equal(loaded["velocity"], original["velocity"])
+        assert list(loaded["label"]) == original["label"]
+        # Each value must be a full 10-element vector, NOT a scalar
+        assert len(loaded["force"]) == 10
+        assert len(loaded["velocity"]) == 10
+        assert len(loaded["label"]) == 10
+
+    def test_columnar_dict_2d_roundtrip(self, duck):
+        """A dict of Nx1 (2D) arrays — the shape MATLAB to_python produces — should round-trip."""
+        original = {
+            "force": np.arange(10, dtype=np.float64).reshape(10, 1),
+            "velocity": np.arange(10, 20, dtype=np.float64).reshape(10, 1),
+        }
+        duck.save("matlab_struct", original, subject="S01", session="A", trial="1")
+
+        # Verify per-column layout
+        cols = [
+            row[0] for row in duck._fetchall(
+                "SELECT column_name FROM information_schema.columns "
+                "WHERE table_name = 'matlab_struct' ORDER BY ordinal_position"
+            )
+        ]
+        assert "force" in cols
+        assert "velocity" in cols
+
+        loaded = duck.load("matlab_struct", subject="S01", session="A", trial="1")
+        assert isinstance(loaded, dict)
+        # Must be full 10-element arrays, NOT scalars
+        assert loaded["force"].shape == (10, 1)
+        assert loaded["velocity"].shape == (10, 1)
+        np.testing.assert_array_almost_equal(loaded["force"], original["force"])
+        np.testing.assert_array_almost_equal(loaded["velocity"], original["velocity"])
+
     def test_nested_dict_stored_as_flat_columns(self, duck):
         """Nested dict keys should become dot-separated DuckDB column names."""
         original = {"outer": {"inner1": 10, "inner2": 20}, "top": 30}
@@ -312,6 +368,245 @@ class TestPerColumnStorage:
         assert "outer.inner1" in cols
         assert "outer.inner2" in cols
         assert "top" in cols
+
+
+# ---------------------------------------------------------------------------
+# DuckDB storage type verification
+# ---------------------------------------------------------------------------
+
+def _col_types(duck, table_name):
+    """Return {col_name: data_type} for a DuckDB table, excluding schema_id."""
+    rows = duck._fetchall(
+        "SELECT column_name, data_type FROM information_schema.columns "
+        "WHERE table_name = ? ORDER BY ordinal_position",
+        [table_name],
+    )
+    return {r[0]: r[1] for r in rows if r[0] != "schema_id"}
+
+
+class TestDictDuckDBTypes:
+    """Verify that dict values map to the correct DuckDB column types."""
+
+    def test_scalar_only_dict(self, duck):
+        """Dict of pure scalars: int→BIGINT, float→DOUBLE, str→VARCHAR."""
+        original = {"count": 42, "ratio": 3.14, "name": "hello"}
+        duck.save("scalars", original, subject="S01", session="A", trial="1")
+
+        types = _col_types(duck, "scalars")
+        assert types["count"] == "BIGINT"
+        assert types["ratio"] == "DOUBLE"
+        assert types["name"] == "VARCHAR"
+
+        loaded = duck.load("scalars", subject="S01", session="A", trial="1")
+        assert loaded["count"] == 42
+        assert loaded["ratio"] == pytest.approx(3.14)
+        assert loaded["name"] == "hello"
+
+    def test_float_array_dict(self, duck):
+        """Dict with float arrays → DOUBLE[]."""
+        original = {
+            "force": np.array([1.0, 2.0, 3.0]),
+            "velocity": np.array([4.0, 5.0, 6.0]),
+        }
+        duck.save("fvec", original, subject="S01", session="A", trial="1")
+
+        types = _col_types(duck, "fvec")
+        assert types["force"] == "DOUBLE[]"
+        assert types["velocity"] == "DOUBLE[]"
+
+        loaded = duck.load("fvec", subject="S01", session="A", trial="1")
+        np.testing.assert_array_almost_equal(loaded["force"], original["force"])
+        np.testing.assert_array_almost_equal(loaded["velocity"], original["velocity"])
+
+    def test_int_array_dict(self, duck):
+        """Dict with int arrays → BIGINT[]."""
+        original = {
+            "ids": np.array([10, 20, 30], dtype=np.int64),
+            "counts": np.array([1, 2, 3], dtype=np.int64),
+        }
+        duck.save("ivec", original, subject="S01", session="A", trial="1")
+
+        types = _col_types(duck, "ivec")
+        assert types["ids"] == "BIGINT[]"
+        assert types["counts"] == "BIGINT[]"
+
+        loaded = duck.load("ivec", subject="S01", session="A", trial="1")
+        np.testing.assert_array_equal(loaded["ids"], original["ids"])
+        np.testing.assert_array_equal(loaded["counts"], original["counts"])
+
+    def test_string_list_dict(self, duck):
+        """Dict with list-of-strings → VARCHAR[]."""
+        original = {
+            "tags": ["alpha", "beta", "gamma"],
+            "labels": ["x", "y"],
+        }
+        duck.save("strvec", original, subject="S01", session="A", trial="1")
+
+        types = _col_types(duck, "strvec")
+        assert types["tags"] == "VARCHAR[]"
+        assert types["labels"] == "VARCHAR[]"
+
+        loaded = duck.load("strvec", subject="S01", session="A", trial="1")
+        assert list(loaded["tags"]) == original["tags"]
+        assert list(loaded["labels"]) == original["labels"]
+
+    def test_mixed_scalar_and_vector_dict(self, duck):
+        """Dict mixing scalars and arrays → correct per-key types."""
+        original = {
+            "name": "experiment_1",
+            "weight": 0.75,
+            "scores": np.array([90.0, 85.5, 92.3]),
+            "trial_ids": np.array([1, 2, 3], dtype=np.int64),
+        }
+        duck.save("mixed", original, subject="S01", session="A", trial="1")
+
+        types = _col_types(duck, "mixed")
+        assert types["name"] == "VARCHAR"
+        assert types["weight"] == "DOUBLE"
+        assert types["scores"] == "DOUBLE[]"
+        assert types["trial_ids"] == "BIGINT[]"
+
+        loaded = duck.load("mixed", subject="S01", session="A", trial="1")
+        assert loaded["name"] == "experiment_1"
+        assert loaded["weight"] == pytest.approx(0.75)
+        np.testing.assert_array_almost_equal(loaded["scores"], original["scores"])
+        np.testing.assert_array_equal(loaded["trial_ids"], original["trial_ids"])
+
+    def test_bool_scalar_dict(self, duck):
+        """Dict with bool scalar → BOOLEAN."""
+        original = {"flag": True, "enabled": False}
+        duck.save("bools", original, subject="S01", session="A", trial="1")
+
+        types = _col_types(duck, "bools")
+        assert types["flag"] == "BOOLEAN"
+        assert types["enabled"] == "BOOLEAN"
+
+        loaded = duck.load("bools", subject="S01", session="A", trial="1")
+        assert loaded["flag"] is True
+        assert loaded["enabled"] is False
+
+    def test_2d_array_dict(self, duck):
+        """Dict with 2D arrays → DOUBLE[][]."""
+        original = {
+            "matrix": np.array([[1.0, 2.0], [3.0, 4.0], [5.0, 6.0]]),
+        }
+        duck.save("mat", original, subject="S01", session="A", trial="1")
+
+        types = _col_types(duck, "mat")
+        assert types["matrix"] == "DOUBLE[][]"
+
+        loaded = duck.load("mat", subject="S01", session="A", trial="1")
+        np.testing.assert_array_almost_equal(loaded["matrix"], original["matrix"])
+
+    def test_equal_length_arrays_stored_as_one_row(self, duck):
+        """Dict-of-equal-length-arrays must be ONE record, not N rows."""
+        original = {
+            "force": np.arange(10, dtype=np.float64),
+            "velocity": np.arange(10, 20, dtype=np.float64),
+        }
+        duck.save("vectors", original, subject="S01", session="A", trial="1")
+
+        # Must be array columns (DOUBLE[]), not scalar DOUBLE
+        types = _col_types(duck, "vectors")
+        assert types["force"] == "DOUBLE[]"
+        assert types["velocity"] == "DOUBLE[]"
+
+        # Must be exactly one row in the table
+        count = duck._fetchall('SELECT COUNT(*) FROM "vectors"')[0][0]
+        assert count == 1
+
+        loaded = duck.load("vectors", subject="S01", session="A", trial="1")
+        assert len(loaded["force"]) == 10
+        assert len(loaded["velocity"]) == 10
+
+
+class TestDataFrameDuckDBTypes:
+    """Verify that DataFrame columns map to the correct DuckDB column types."""
+
+    def test_float_columns(self, duck):
+        """DataFrame float columns → DOUBLE[]."""
+        original = pd.DataFrame({
+            "force": [1.0, 2.0, 3.0],
+            "velocity": [4.0, 5.0, 6.0],
+        })
+        duck.save("df_float", original, subject="S01", session="A", trial="1")
+
+        types = _col_types(duck, "df_float")
+        assert types["force"] == "DOUBLE[]"
+        assert types["velocity"] == "DOUBLE[]"
+
+        loaded = duck.load("df_float", subject="S01", session="A", trial="1")
+        assert isinstance(loaded, pd.DataFrame)
+        np.testing.assert_array_almost_equal(loaded["force"].to_numpy(), [1.0, 2.0, 3.0])
+        np.testing.assert_array_almost_equal(loaded["velocity"].to_numpy(), [4.0, 5.0, 6.0])
+
+    def test_int_columns(self, duck):
+        """DataFrame int columns → BIGINT[]."""
+        original = pd.DataFrame({
+            "ids": [10, 20, 30],
+            "counts": [1, 2, 3],
+        })
+        duck.save("df_int", original, subject="S01", session="A", trial="1")
+
+        types = _col_types(duck, "df_int")
+        assert types["ids"] == "BIGINT[]"
+        assert types["counts"] == "BIGINT[]"
+
+        loaded = duck.load("df_int", subject="S01", session="A", trial="1")
+        assert isinstance(loaded, pd.DataFrame)
+        np.testing.assert_array_equal(loaded["ids"].to_numpy(), [10, 20, 30])
+        np.testing.assert_array_equal(loaded["counts"].to_numpy(), [1, 2, 3])
+
+    def test_string_columns(self, duck):
+        """DataFrame string columns → VARCHAR[]."""
+        original = pd.DataFrame({
+            "name": ["alice", "bob", "carol"],
+            "group": ["A", "B", "A"],
+        })
+        duck.save("df_str", original, subject="S01", session="A", trial="1")
+
+        types = _col_types(duck, "df_str")
+        assert types["name"] == "VARCHAR[]"
+        assert types["group"] == "VARCHAR[]"
+
+        loaded = duck.load("df_str", subject="S01", session="A", trial="1")
+        assert isinstance(loaded, pd.DataFrame)
+        assert list(loaded["name"]) == ["alice", "bob", "carol"]
+        assert list(loaded["group"]) == ["A", "B", "A"]
+
+    def test_mixed_columns(self, duck):
+        """DataFrame with float, int, and string columns → correct types."""
+        original = pd.DataFrame({
+            "score": [95.5, 87.3, 91.0],
+            "rank": np.array([1, 2, 3], dtype=np.int64),
+            "name": ["alice", "bob", "carol"],
+        })
+        duck.save("df_mixed", original, subject="S01", session="A", trial="1")
+
+        types = _col_types(duck, "df_mixed")
+        assert types["score"] == "DOUBLE[]"
+        assert types["rank"] == "BIGINT[]"
+        assert types["name"] == "VARCHAR[]"
+
+        loaded = duck.load("df_mixed", subject="S01", session="A", trial="1")
+        assert isinstance(loaded, pd.DataFrame)
+        assert list(loaded.columns) == ["score", "rank", "name"]
+        np.testing.assert_array_almost_equal(loaded["score"].to_numpy(), [95.5, 87.3, 91.0])
+        np.testing.assert_array_equal(loaded["rank"].to_numpy(), [1, 2, 3])
+        assert list(loaded["name"]) == ["alice", "bob", "carol"]
+
+    def test_single_row_dataframe(self, duck):
+        """A 1-row DataFrame should still round-trip as a DataFrame."""
+        original = pd.DataFrame({"x": [42.0], "label": ["only"]})
+        duck.save("df_1row", original, subject="S01", session="A", trial="1")
+
+        types = _col_types(duck, "df_1row")
+        assert types["x"] == "DOUBLE[]"
+        assert types["label"] == "VARCHAR[]"
+
+        loaded = duck.load("df_1row", subject="S01", session="A", trial="1")
+        assert isinstance(loaded, pd.DataFrame)
+        assert len(loaded) == 1
 
 
 # ---------------------------------------------------------------------------

@@ -311,6 +311,85 @@ def _unflatten_dict(flat, path_map):
 
 
 # ---------------------------------------------------------------------------
+# Column inference & storage-row helpers (module-level, used by SciDuck and
+# DatabaseManager)
+# ---------------------------------------------------------------------------
+
+def _infer_data_columns(
+    sample_value: Any, data_col_name: Optional[str] = None
+) -> Tuple[dict, dict]:
+    """
+    From a sample data value, return:
+      - data_col_types: dict of {col_name: duckdb_type_str}
+      - dtype_meta: metadata dict for round-trip restoration
+    """
+    # DataFrame mode: each DataFrame column → its own DuckDB column
+    if isinstance(sample_value, pd.DataFrame):
+        col_types = {}
+        meta = {"mode": "dataframe", "columns": {}, "df_columns": list(sample_value.columns)}
+        for col_name in sample_value.columns:
+            col_data = sample_value[col_name].to_numpy()
+            ddb_type, col_meta = _infer_duckdb_type(col_data)
+            col_types[col_name] = ddb_type
+            meta["columns"][col_name] = col_meta
+        return col_types, meta
+
+    # Dict mode: each key → its own DuckDB column (nested dicts are flattened)
+    if isinstance(sample_value, dict):
+        has_nested = any(isinstance(v, dict) for v in sample_value.values())
+        if has_nested:
+            flat, path_map = _flatten_dict(sample_value)
+        else:
+            flat = sample_value
+            path_map = {k: [k] for k in sample_value}
+        col_types = {}
+        meta = {"mode": "multi_column", "columns": {}}
+        if has_nested:
+            meta["nested"] = True
+            meta["path_map"] = path_map
+        for col_name, val in flat.items():
+            # Unwrap length-1 arrays to scalars before type inference
+            if isinstance(val, np.ndarray) and val.size == 1:
+                val = val.item()
+            ddb_type, col_meta = _infer_duckdb_type(val)
+            col_types[col_name] = ddb_type
+            meta["columns"][col_name] = col_meta
+        return col_types, meta
+
+    # Single-column mode — use provided name or default to "value"
+    col_name = data_col_name or "value"
+    ddb_type, col_meta = _infer_duckdb_type(sample_value)
+    meta = {"mode": "single_column", "columns": {col_name: col_meta}}
+    return {col_name: ddb_type}, meta
+
+
+def _value_to_storage_row(value: Any, dtype_meta: dict) -> list:
+    """Convert a data value to a list of storage-ready column values."""
+    mode = dtype_meta.get("mode", "single_column")
+    col_metas = dtype_meta["columns"]
+
+    if mode == "dataframe":
+        return [
+            _python_to_storage(value[col].to_numpy(), col_metas[col])
+            for col in col_metas
+        ]
+    elif mode == "multi_column":
+        if dtype_meta.get("nested"):
+            flat, _ = _flatten_dict(value)
+        else:
+            flat = value
+        return [
+            _python_to_storage(flat[col], col_metas[col])
+            for col in col_metas
+        ]
+    else:
+        # Single column — get the one key (could be "value" or a named column)
+        col_name = next(iter(col_metas))
+        col_meta = col_metas[col_name]
+        return [_python_to_storage(value, col_meta)]
+
+
+# ---------------------------------------------------------------------------
 # Main class
 # ---------------------------------------------------------------------------
 
@@ -711,71 +790,12 @@ class SciDuck:
     def _infer_data_columns(
         self, sample_value: Any, data_col_name: Optional[str] = None
     ) -> Tuple[dict, dict]:
-        """
-        From a sample data value, return:
-          - data_col_types: dict of {col_name: duckdb_type_str}
-          - dtype_meta: metadata dict for round-trip restoration
-        """
-        # DataFrame mode: each DataFrame column → its own DuckDB column
-        if isinstance(sample_value, pd.DataFrame):
-            col_types = {}
-            meta = {"mode": "dataframe", "columns": {}, "df_columns": list(sample_value.columns)}
-            for col_name in sample_value.columns:
-                col_data = sample_value[col_name].to_numpy()
-                ddb_type, col_meta = _infer_duckdb_type(col_data)
-                col_types[col_name] = ddb_type
-                meta["columns"][col_name] = col_meta
-            return col_types, meta
-
-        # Dict mode: each key → its own DuckDB column (nested dicts are flattened)
-        if isinstance(sample_value, dict):
-            has_nested = any(isinstance(v, dict) for v in sample_value.values())
-            if has_nested:
-                flat, path_map = _flatten_dict(sample_value)
-            else:
-                flat = sample_value
-                path_map = {k: [k] for k in sample_value}
-            col_types = {}
-            meta = {"mode": "multi_column", "columns": {}}
-            if has_nested:
-                meta["nested"] = True
-                meta["path_map"] = path_map
-            for col_name, val in flat.items():
-                ddb_type, col_meta = _infer_duckdb_type(val)
-                col_types[col_name] = ddb_type
-                meta["columns"][col_name] = col_meta
-            return col_types, meta
-
-        # Single-column mode — use provided name or default to "value"
-        col_name = data_col_name or "value"
-        ddb_type, col_meta = _infer_duckdb_type(sample_value)
-        meta = {"mode": "single_column", "columns": {col_name: col_meta}}
-        return {col_name: ddb_type}, meta
+        """Delegate to module-level _infer_data_columns."""
+        return _infer_data_columns(sample_value, data_col_name)
 
     def _value_to_storage_row(self, value: Any, dtype_meta: dict) -> list:
-        """Convert a data value to a list of storage-ready column values."""
-        mode = dtype_meta.get("mode", "single_column")
-        col_metas = dtype_meta["columns"]
-
-        if mode == "dataframe":
-            return [
-                _python_to_storage(value[col].to_numpy(), col_metas[col])
-                for col in col_metas
-            ]
-        elif mode == "multi_column":
-            if dtype_meta.get("nested"):
-                flat, _ = _flatten_dict(value)
-            else:
-                flat = value
-            return [
-                _python_to_storage(flat[col], col_metas[col])
-                for col in col_metas
-            ]
-        else:
-            # Single column — get the one key (could be "value" or a named column)
-            col_name = next(iter(col_metas))
-            col_meta = col_metas[col_name]
-            return [_python_to_storage(value, col_meta)]
+        """Delegate to module-level _value_to_storage_row."""
+        return _value_to_storage_row(value, dtype_meta)
 
     def _ensure_variable_table(self, name: str, data_col_types: dict, schema_level: str):
         """Create the variable table if it doesn't exist."""
