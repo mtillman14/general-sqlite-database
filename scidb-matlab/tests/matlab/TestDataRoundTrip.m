@@ -21,8 +21,7 @@ classdef TestDataRoundTrip < matlab.unittest.TestCase
             mkdir(testCase.test_dir);
             scidb.configure_database( ...
                 fullfile(testCase.test_dir, 'test.duckdb'), ...
-                ["subject"], ...
-                fullfile(testCase.test_dir, 'pipeline.db'));
+                ["subject"]);
         end
     end
 
@@ -43,8 +42,8 @@ classdef TestDataRoundTrip < matlab.unittest.TestCase
             data = [1.5, 2.7, 3.9, 4.1, 5.0];
             RawSignal().save(data, 'subject', 1);
             result = RawSignal().load('subject', 1);
-            testCase.verifyEqual(result.data, data, 'AbsTol', 1e-10);
-            testCase.verifyEqual(size(result.data), size(data));
+            testCase.verifyEqual(result.data, data', 'AbsTol', 1e-10);
+            testCase.verifyEqual(size(result.data), size(data'));
         end
 
         function test_double_column_vector(testCase)
@@ -94,7 +93,7 @@ classdef TestDataRoundTrip < matlab.unittest.TestCase
             data = [-1.5, -2.7, 0, 3.9, -4.1];
             RawSignal().save(data, 'subject', 6);
             result = RawSignal().load('subject', 6);
-            testCase.verifyEqual(result.data, data, 'AbsTol', 1e-10);
+            testCase.verifyEqual(result.data, data', 'AbsTol', 1e-10);
         end
 
         function test_zeros_array(testCase)
@@ -133,14 +132,14 @@ classdef TestDataRoundTrip < matlab.unittest.TestCase
             RawSignal().save(data, 'subject', 11);
             result = RawSignal().load('subject', 11);
             % from_python converts to double, so compare with double tolerance
-            testCase.verifyEqual(result.data, double(data), 'AbsTol', 1e-6);
+            testCase.verifyEqual(result.data, double(data'), 'AbsTol', 1e-6);
         end
 
         function test_int32_array(testCase)
             data = int32([1, 2, 3, 4, 5]);
             RawSignal().save(data, 'subject', 12);
             result = RawSignal().load('subject', 12);
-            testCase.verifyEqual(result.data, double(data), 'AbsTol', 1e-10);
+            testCase.verifyEqual(result.data, double(data'), 'AbsTol', 1e-10);
         end
 
         function test_matrix_element_order(testCase)

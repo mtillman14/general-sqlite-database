@@ -64,7 +64,7 @@ sys.path.insert(0, str(_project_root / "sciduck" / "src"))
 from sciduck import (
     SciDuck,
     _infer_duckdb_type, _python_to_storage, _storage_to_python,
-    _infer_data_columns, _value_to_storage_row,
+    _infer_data_columns, _value_to_storage_row, _dataframe_to_storage_rows,
     _flatten_dict, _unflatten_dict,
 )
 
@@ -730,28 +730,49 @@ class DatabaseManager:
             schema_id = 0
 
         data_col_types, dtype_meta = _infer_data_columns(data)
-        storage_values = _value_to_storage_row(data, dtype_meta)
+        is_dataframe = isinstance(data, pd.DataFrame)
 
         # Ensure table exists
         if not self._duck._table_exists(table_name):
             data_cols_sql = ", ".join(f'"{col}" {dtype}' for col, dtype in data_col_types.items())
+            if is_dataframe:
+                # One DuckDB row per table row: record_id is not unique per row.
+                record_id_col = "record_id VARCHAR NOT NULL"
+            else:
+                record_id_col = "record_id VARCHAR PRIMARY KEY"
             self._duck._execute(f'''
                 CREATE TABLE "{table_name}" (
-                    record_id VARCHAR PRIMARY KEY,
+                    {record_id_col},
                     {data_cols_sql}
                 )
             ''')
             self._create_variable_view(variable_class)
 
-        # Insert data (ON CONFLICT DO NOTHING deduplicates by content)
-        col_names = ["record_id"] + list(data_col_types.keys())
-        col_str = ", ".join(f'"{c}"' for c in col_names)
-        placeholders = ", ".join(["?"] * len(col_names))
-        self._duck._execute(
-            f'INSERT INTO "{table_name}" ({col_str}) VALUES ({placeholders}) '
-            f'ON CONFLICT (record_id) DO NOTHING',
-            [record_id] + storage_values,
-        )
+        if is_dataframe:
+            # Idempotency: skip all inserts if this record_id already exists.
+            existing_count = self._duck._fetchall(
+                f'SELECT COUNT(*) FROM "{table_name}" WHERE record_id = ?',
+                [record_id],
+            )[0][0]
+            if existing_count == 0:
+                col_names = ["record_id"] + list(data_col_types.keys())
+                col_str = ", ".join(f'"{c}"' for c in col_names)
+                placeholders = ", ".join(["?"] * len(col_names))
+                for storage_row in _dataframe_to_storage_rows(data, dtype_meta):
+                    self._duck._execute(
+                        f'INSERT INTO "{table_name}" ({col_str}) VALUES ({placeholders})',
+                        [record_id] + storage_row,
+                    )
+        else:
+            storage_values = _value_to_storage_row(data, dtype_meta)
+            col_names = ["record_id"] + list(data_col_types.keys())
+            col_str = ", ".join(f'"{c}"' for c in col_names)
+            placeholders = ", ".join(["?"] * len(col_names))
+            self._duck._execute(
+                f'INSERT INTO "{table_name}" ({col_str}) VALUES ({placeholders}) '
+                f'ON CONFLICT (record_id) DO NOTHING',
+                [record_id] + storage_values,
+            )
 
         # Upsert into _variables (one row per variable)
         effective_level = schema_level or self.dataset_schema_keys[-1]
@@ -801,67 +822,22 @@ class DatabaseManager:
         # --- One-time setup from first item ---
         first_data, first_meta = data_items[0]
 
-        # Detect DataFrame batch (keep existing multi-row scalar-column approach)
-        is_dataframe_batch = isinstance(first_data, pd.DataFrame)
+        data_col_types, dtype_meta = _infer_data_columns(first_data)
+        is_dataframe = dtype_meta.get("mode") == "dataframe"
 
-        if is_dataframe_batch:
-            # DataFrames: keep multi-row scalar-column approach via _save_columnar
-            # Flatten struct columns for MATLAB table-with-struct-cells pattern
-            sample_df, sample_struct_info = _flatten_struct_columns(first_data)
-            dict_columns = list(sample_df.columns)
-            dtype_meta = {
-                "custom": True,
-            }
-            if sample_struct_info:
-                dtype_meta["struct_columns"] = sample_struct_info
-
-            if not self._duck._table_exists(table_name):
-                col_defs = []
-                for col in dict_columns:
-                    dtype = sample_df[col].dtype
-                    if pd.api.types.is_integer_dtype(dtype):
-                        ddb_type = "BIGINT"
-                    elif pd.api.types.is_float_dtype(dtype):
-                        ddb_type = "DOUBLE"
-                    elif pd.api.types.is_bool_dtype(dtype):
-                        ddb_type = "BOOLEAN"
-                    elif dtype == object:
-                        first_val = next(
-                            (v for v in sample_df[col]
-                             if v is not None and not (isinstance(v, float) and np.isnan(v))),
-                            None,
-                        )
-                        if isinstance(first_val, np.ndarray) and np.issubdtype(first_val.dtype, np.number):
-                            ddb_type = "DOUBLE[]"
-                        elif (isinstance(first_val, list) and len(first_val) > 0
-                              and all(isinstance(x, (int, float)) for x in first_val)):
-                            ddb_type = "DOUBLE[]"
-                        else:
-                            ddb_type = "VARCHAR"
-                    else:
-                        ddb_type = "VARCHAR"
-                    col_defs.append(f'"{col}" {ddb_type}')
-                data_cols_sql = ", ".join(col_defs)
-                self._duck._execute(f"""
-                    CREATE TABLE "{table_name}" (
-                        record_id VARCHAR NOT NULL,
-                        {data_cols_sql}
-                    )
-                """)
-                self._create_variable_view(variable_class)
-        else:
-            # All other types: use _infer_data_columns for uniform type inference
-            data_col_types, dtype_meta = _infer_data_columns(first_data)
-
-            if not self._duck._table_exists(table_name):
-                data_cols_sql = ", ".join(f'"{col}" {dtype}' for col, dtype in data_col_types.items())
-                self._duck._execute(f'''
-                    CREATE TABLE "{table_name}" (
-                        record_id VARCHAR PRIMARY KEY,
-                        {data_cols_sql}
-                    )
-                ''')
-                self._create_variable_view(variable_class)
+        if not self._duck._table_exists(table_name):
+            data_cols_sql = ", ".join(f'"{col}" {dtype}' for col, dtype in data_col_types.items())
+            if is_dataframe:
+                record_id_col = "record_id VARCHAR NOT NULL"
+            else:
+                record_id_col = "record_id VARCHAR PRIMARY KEY"
+            self._duck._execute(f'''
+                CREATE TABLE "{table_name}" (
+                    {record_id_col},
+                    {data_cols_sql}
+                )
+            ''')
+            self._create_variable_view(variable_class)
 
         timings["1_setup"] = time.perf_counter() - t0
 
@@ -924,14 +900,11 @@ class DatabaseManager:
             )
             record_ids.append(record_id)
 
-            if is_dataframe_batch:
-                # DataFrame: expand to N rows per record (existing _save_columnar behavior)
-                df_data, _ = _flatten_struct_columns(data_val)
-                for _, df_row in df_data.iterrows():
-                    row_data = [record_id] + [df_row[c] for c in dict_columns]
-                    data_table_rows.append(tuple(row_data))
+            # DataFrames expand to one DuckDB row per table row.
+            if is_dataframe:
+                for storage_row in _dataframe_to_storage_rows(data_val, dtype_meta):
+                    data_table_rows.append((record_id,) + tuple(storage_row))
             else:
-                # One row per record
                 storage_values = _value_to_storage_row(data_val, dtype_meta)
                 data_table_rows.append((record_id,) + tuple(storage_values))
 
@@ -945,33 +918,22 @@ class DatabaseManager:
 
         # --- Find which data rows are new (dedup check) ---
         t5 = time.perf_counter()
-        existing_data_ids: set[str] = set()
-        chunk_size = 500
-        if is_dataframe_batch:
-            # For DataFrame batch (multi-row per record), check by record_id in the data table
-            for start in range(0, len(record_ids), chunk_size):
-                chunk = record_ids[start:start + chunk_size]
-                placeholders = ", ".join(["?"] * len(chunk))
-                rows = self._duck._fetchall(
+        if is_dataframe:
+            # No PRIMARY KEY: filter out rows whose record_id already exists.
+            all_new_rids = list({row[0] for row in data_table_rows})
+            if all_new_rids:
+                placeholders_rids = ", ".join(["?"] * len(all_new_rids))
+                existing_rids = {r[0] for r in self._duck._fetchall(
                     f'SELECT DISTINCT record_id FROM "{table_name}" '
-                    f'WHERE record_id IN ({placeholders})',
-                    chunk,
-                )
-                existing_data_ids.update(r[0] for r in rows)
-        # For single-row-per-record tables, ON CONFLICT DO NOTHING handles dedup
-
-        # Build new data rows (for DataFrame batch, skip already-existing)
-        if is_dataframe_batch:
-            new_data_rows = []
-            data_row_idx = 0
-            for i, rid in enumerate(record_ids):
-                data_val = data_items[i][0]
-                n_rows = len(data_val)
-                if rid not in existing_data_ids:
-                    new_data_rows.extend(data_table_rows[data_row_idx:data_row_idx + n_rows])
-                data_row_idx += n_rows
+                    f'WHERE record_id IN ({placeholders_rids})',
+                    all_new_rids,
+                )}
+            else:
+                existing_rids = set()
+            new_data_rows = [row for row in data_table_rows if row[0] not in existing_rids]
         else:
-            new_data_rows = data_table_rows  # ON CONFLICT handles dedup
+            # PRIMARY KEY: ON CONFLICT DO NOTHING handles dedup in the INSERT.
+            new_data_rows = data_table_rows
 
         timings["5_dedup_check"] = time.perf_counter() - t5
 
@@ -980,18 +942,14 @@ class DatabaseManager:
         self._duck._begin()
         try:
             if new_data_rows:
-                if is_dataframe_batch:
-                    data_columns = ["record_id"] + dict_columns
-                    data_df = pd.DataFrame(new_data_rows, columns=data_columns)
-                    col_str = ", ".join(f'"{c}"' for c in data_columns)
+                all_columns = ["record_id"] + list(data_col_types.keys())
+                data_df = pd.DataFrame(new_data_rows, columns=all_columns)
+                col_str = ", ".join(f'"{c}"' for c in all_columns)
+                if is_dataframe:
                     self._duck.con.execute(
                         f'INSERT INTO "{table_name}" ({col_str}) SELECT * FROM data_df'
                     )
                 else:
-                    # Single-row-per-record insert with ON CONFLICT
-                    all_columns = ["record_id"] + list(data_col_types.keys())
-                    data_df = pd.DataFrame(new_data_rows, columns=all_columns)
-                    col_str = ", ".join(f'"{c}"' for c in all_columns)
                     self._duck.con.execute(
                         f'INSERT INTO "{table_name}" ({col_str}) SELECT * FROM data_df '
                         f'ON CONFLICT (record_id) DO NOTHING'
@@ -1285,32 +1243,37 @@ class DatabaseManager:
                 [record_id],
             )
             row_df = row_df.drop(columns=["record_id"], errors="ignore")
-            row_df = self._duck._restore_types(row_df, dtype_meta)
 
-            if len(row_df) == 1:
-                mode = dtype_meta.get("mode", "single_column")
-                columns_meta = dtype_meta.get("columns", {})
-                if mode == "single_column":
-                    col_name = next(iter(columns_meta))
-                    data = row_df[col_name].iloc[0]
-                elif mode == "dataframe":
-                    result = {}
-                    for c, meta in columns_meta.items():
-                        result[c] = _storage_to_python(row_df[c].iloc[0], meta)
-                    df_columns = dtype_meta.get("df_columns", list(columns_meta.keys()))
-                    data = pd.DataFrame(result, columns=df_columns)
-                elif mode == "multi_column":
-                    result = {}
-                    for c, meta in columns_meta.items():
-                        result[c] = _storage_to_python(row_df[c].iloc[0], meta)
-                    if dtype_meta.get("nested"):
-                        data = _unflatten_dict(result, dtype_meta["path_map"])
+            mode = dtype_meta.get("mode", "single_column")
+            columns_meta = dtype_meta.get("columns", {})
+
+            if mode == "dataframe":
+                # One DuckDB row per DataFrame row: apply _storage_to_python per cell.
+                result = {}
+                for c, meta in columns_meta.items():
+                    if c in row_df.columns:
+                        result[c] = [_storage_to_python(row_df[c].iloc[i], meta)
+                                     for i in range(len(row_df))]
+                df_columns = dtype_meta.get("df_columns", list(columns_meta.keys()))
+                data = pd.DataFrame(result, columns=df_columns)
+            else:
+                row_df = self._duck._restore_types(row_df, dtype_meta)
+                if len(row_df) == 1:
+                    if mode == "single_column":
+                        col_name = next(iter(columns_meta))
+                        data = row_df[col_name].iloc[0]
+                    elif mode == "multi_column":
+                        result = {}
+                        for c, meta in columns_meta.items():
+                            result[c] = _storage_to_python(row_df[c].iloc[0], meta)
+                        if dtype_meta.get("nested"):
+                            data = _unflatten_dict(result, dtype_meta["path_map"])
+                        else:
+                            data = result
                     else:
-                        data = result
+                        data = row_df
                 else:
                     data = row_df
-            else:
-                data = row_df
 
         instance = variable_class(data)
         instance.record_id = record_id
@@ -1592,29 +1555,10 @@ class DatabaseManager:
                     record_id, table_name, type(variable), df,
                     schema_level, schema_keys, content_hash,
                 )
-            elif isinstance(variable.data, pd.DataFrame):
-                # Native DataFrame: store directly as multi-column DuckDB table
-                df = variable.data.copy()
-
-                if index is not None:
-                    index_list = list(index) if not isinstance(index, list) else index
-                    if len(index_list) != len(df):
-                        raise ValueError(
-                            f"Index length ({len(index_list)}) does not match "
-                            f"DataFrame row count ({len(df)})"
-                        )
-                    df.index = index
-
-                # Flatten nested struct columns (e.g., MATLAB table with struct cells)
-                df, struct_columns_info = _flatten_struct_columns(df)
-
-                schema_id = self._save_columnar(
-                    record_id, table_name, type(variable), df,
-                    schema_level, schema_keys, content_hash,
-                    struct_columns=struct_columns_info if struct_columns_info else None,
-                )
             else:
-                # ALL other data: scalars, arrays, lists, dicts, dict-of-arrays
+                # ALL other data: scalars, arrays, lists, dicts, dict-of-arrays,
+                # and native DataFrames (stored as a single record with array-typed
+                # columns, e.g. DOUBLE[], BIGINT[], VARCHAR[]).
                 schema_id = self._save_native(
                     record_id, table_name, type(variable), variable.data, content_hash,
                     schema_level=schema_level, schema_keys=schema_keys,
@@ -1853,37 +1797,44 @@ class DatabaseManager:
                 chunk_df = self._duck._fetchdf(sql, chunk)
 
                 if len(chunk_df) > 0:
-                    # Restore types on data columns
-                    restored = chunk_df[data_cols].copy()
-                    restored = self._duck._restore_types(restored, dtype_meta)
-
                     mode = dtype_meta.get("mode", "single_column")
                     columns_meta = dtype_meta.get("columns", {})
 
-                    if mode == "single_column":
-                        col_name = next(iter(columns_meta))
-                        for i, rid in enumerate(chunk_df["record_id"].tolist()):
-                            data_lookup[rid] = restored[col_name].iloc[i]
-                    elif mode == "dataframe":
-                        for i, rid in enumerate(chunk_df["record_id"].tolist()):
+                    if mode == "dataframe":
+                        # One DuckDB row per DataFrame row: group by record_id.
+                        df_columns = dtype_meta.get("df_columns", list(columns_meta.keys()))
+                        for rid, group_df in chunk_df.groupby("record_id", sort=False):
+                            group_df = group_df.drop(
+                                columns=["record_id"], errors="ignore"
+                            ).reset_index(drop=True)
                             result = {}
                             for c, meta in columns_meta.items():
-                                result[c] = _storage_to_python(restored[c].iloc[i], meta)
-                            df_columns = dtype_meta.get("df_columns", list(columns_meta.keys()))
+                                if c in group_df.columns:
+                                    result[c] = [_storage_to_python(group_df[c].iloc[i], meta)
+                                                 for i in range(len(group_df))]
                             data_lookup[rid] = pd.DataFrame(result, columns=df_columns)
-                    elif mode == "multi_column":
-                        for i, rid in enumerate(chunk_df["record_id"].tolist()):
-                            result = {}
-                            for c, meta in columns_meta.items():
-                                result[c] = _storage_to_python(restored[c].iloc[i], meta)
-                            if dtype_meta.get("nested"):
-                                data_lookup[rid] = _unflatten_dict(result, dtype_meta["path_map"])
-                            else:
-                                data_lookup[rid] = result
                     else:
-                        col_names = list(columns_meta.keys())
-                        for i, rid in enumerate(chunk_df["record_id"].tolist()):
-                            data_lookup[rid] = {c: restored[c].iloc[i] for c in col_names}
+                        # Non-DataFrame: restore types, then one value per record_id row.
+                        restored = chunk_df[data_cols].copy()
+                        restored = self._duck._restore_types(restored, dtype_meta)
+
+                        if mode == "single_column":
+                            col_name = next(iter(columns_meta))
+                            for i, rid in enumerate(chunk_df["record_id"].tolist()):
+                                data_lookup[rid] = restored[col_name].iloc[i]
+                        elif mode == "multi_column":
+                            for i, rid in enumerate(chunk_df["record_id"].tolist()):
+                                result = {}
+                                for c, meta in columns_meta.items():
+                                    result[c] = _storage_to_python(restored[c].iloc[i], meta)
+                                if dtype_meta.get("nested"):
+                                    data_lookup[rid] = _unflatten_dict(result, dtype_meta["path_map"])
+                                else:
+                                    data_lookup[rid] = result
+                        else:
+                            col_names = list(columns_meta.keys())
+                            for i, rid in enumerate(chunk_df["record_id"].tolist()):
+                                data_lookup[rid] = {c: restored[c].iloc[i] for c in col_names}
 
         # 4. Construct instances using itertuples + inline metadata
         schema_keys = self.dataset_schema_keys

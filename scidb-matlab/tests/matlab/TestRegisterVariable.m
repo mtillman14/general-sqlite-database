@@ -18,8 +18,7 @@ classdef TestRegisterVariable < matlab.unittest.TestCase
             mkdir(testCase.test_dir);
             scidb.configure_database( ...
                 fullfile(testCase.test_dir, 'test.duckdb'), ...
-                ["subject", "session"], ...
-                fullfile(testCase.test_dir, 'pipeline.db'));
+                ["subject", "session"]);
         end
     end
 
@@ -42,7 +41,7 @@ classdef TestRegisterVariable < matlab.unittest.TestCase
             % Should be able to save after registration
             RawSignal().save([1 2 3], 'subject', 1, 'session', 'A');
             result = RawSignal().load('subject', 1, 'session', 'A');
-            testCase.verifyEqual(result.data, [1 2 3], 'AbsTol', 1e-10);
+            testCase.verifyEqual(result.data, [1 2 3]', 'AbsTol', 1e-10);
         end
 
         function test_register_with_custom_schema_version(testCase)
@@ -57,7 +56,7 @@ classdef TestRegisterVariable < matlab.unittest.TestCase
             % Do NOT explicitly register — save should auto-register
             ProcessedSignal().save([4 5 6], 'subject', 1, 'session', 'A');
             result = ProcessedSignal().load('subject', 1, 'session', 'A');
-            testCase.verifyEqual(result.data, [4 5 6], 'AbsTol', 1e-10);
+            testCase.verifyEqual(result.data, [4 5 6]', 'AbsTol', 1e-10);
         end
 
         function test_auto_registration_on_load(testCase)
@@ -77,7 +76,7 @@ classdef TestRegisterVariable < matlab.unittest.TestCase
             % Should still work normally
             RawSignal().save([1 2 3], 'subject', 1, 'session', 'A');
             result = RawSignal().load('subject', 1, 'session', 'A');
-            testCase.verifyEqual(result.data, [1 2 3], 'AbsTol', 1e-10);
+            testCase.verifyEqual(result.data, [1 2 3]', 'AbsTol', 1e-10);
         end
 
         function test_register_requires_base_variable(testCase)
@@ -95,8 +94,8 @@ classdef TestRegisterVariable < matlab.unittest.TestCase
             r1 = RawSignal().load('subject', 1, 'session', 'A');
             r2 = ProcessedSignal().load('subject', 1, 'session', 'A');
 
-            testCase.verifyEqual(r1.data, [1 2 3], 'AbsTol', 1e-10);
-            testCase.verifyEqual(r2.data, [4 5 6], 'AbsTol', 1e-10);
+            testCase.verifyEqual(r1.data, [1 2 3]', 'AbsTol', 1e-10);
+            testCase.verifyEqual(r2.data, [4 5 6]', 'AbsTol', 1e-10);
         end
     end
 end

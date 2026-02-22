@@ -26,7 +26,7 @@ classdef TestWhereFilter < matlab.unittest.TestCase
             obj.db_path = fullfile(tmp.Folder, 'test.duckdb');
             obj.pipeline_path = fullfile(tmp.Folder, 'test_pipeline.db');
             obj.db = scidb.configure_database( ...
-                obj.db_path, obj.SchemaKeys, obj.pipeline_path);
+                obj.db_path, obj.SchemaKeys);
         end
     end
 

@@ -323,13 +323,30 @@ def _infer_data_columns(
       - data_col_types: dict of {col_name: duckdb_type_str}
       - dtype_meta: metadata dict for round-trip restoration
     """
-    # DataFrame mode: each DataFrame column → its own DuckDB column
+    # DataFrame mode: each DataFrame column → its own DuckDB column.
+    # One DuckDB row is stored per DataFrame row; the column type reflects
+    # the individual cell value type (independent of table height).
     if isinstance(sample_value, pd.DataFrame):
         col_types = {}
-        meta = {"mode": "dataframe", "columns": {}, "df_columns": list(sample_value.columns)}
+        meta = {
+            "mode": "dataframe",
+            "columns": {},
+            "df_columns": list(sample_value.columns),
+        }
         for col_name in sample_value.columns:
-            col_data = sample_value[col_name].to_numpy()
-            ddb_type, col_meta = _infer_duckdb_type(col_data)
+            col_series = sample_value[col_name]
+            if len(sample_value) == 0:
+                ddb_type = "VARCHAR"
+                col_meta = {"python_type": "str"}
+            else:
+                cell_val = col_series.iloc[0]
+                if isinstance(cell_val, np.generic):
+                    cell_val = cell_val.item()
+                # to_python.m sends array cells as Python lists (via .tolist()).
+                # Normalise to ndarray so _infer_duckdb_type handles them correctly.
+                if isinstance(cell_val, list) and len(cell_val) > 0:
+                    cell_val = np.asarray(cell_val)
+                ddb_type, col_meta = _infer_duckdb_type(cell_val)
             col_types[col_name] = ddb_type
             meta["columns"][col_name] = col_meta
         return col_types, meta
@@ -363,17 +380,38 @@ def _infer_data_columns(
     return {col_name: ddb_type}, meta
 
 
+def _dataframe_to_storage_rows(df: pd.DataFrame, dtype_meta: dict) -> list:
+    """Convert a DataFrame to a list of per-row storage values.
+
+    Returns a list of lists: one inner list per DataFrame row, each containing
+    one storage-ready value per column in the order defined by dtype_meta["columns"].
+    """
+    col_metas = dtype_meta["columns"]
+    rows = []
+    for i in range(len(df)):
+        row = []
+        for col, col_meta in col_metas.items():
+            cell_val = df[col].iloc[i]
+            if isinstance(cell_val, np.generic):
+                cell_val = cell_val.item()
+            # to_python.m sends array cells as Python lists (via .tolist()).
+            # Normalise to ndarray so _python_to_storage handles them correctly.
+            if isinstance(cell_val, list) and len(cell_val) > 0:
+                cell_val = np.asarray(cell_val)
+            row.append(_python_to_storage(cell_val, col_meta))
+        rows.append(row)
+    return rows
+
+
 def _value_to_storage_row(value: Any, dtype_meta: dict) -> list:
-    """Convert a data value to a list of storage-ready column values."""
+    """Convert a data value to a list of storage-ready column values.
+
+    For DataFrames use _dataframe_to_storage_rows() instead.
+    """
     mode = dtype_meta.get("mode", "single_column")
     col_metas = dtype_meta["columns"]
 
-    if mode == "dataframe":
-        return [
-            _python_to_storage(value[col].to_numpy(), col_metas[col])
-            for col in col_metas
-        ]
-    elif mode == "multi_column":
+    if mode == "multi_column":
         if dtype_meta.get("nested"):
             flat, _ = _flatten_dict(value)
         else:
@@ -434,6 +472,10 @@ class SciDuck:
 
     def _fetchall(self, sql: str, params=None) -> list:
         return self._execute(sql, params).fetchall()
+
+    def fetchall(self, sql: str, params=None) -> list:
+        """Public alias for _fetchall — accessible from MATLAB (underscore methods are not)."""
+        return self._fetchall(sql, params)
 
     def _fetchdf(self, sql: str, params=None) -> pd.DataFrame:
         return self._execute(sql, params).fetchdf()
@@ -733,7 +775,9 @@ class SciDuck:
         data_col_types, dtype_meta = self._infer_data_columns(sample_value, data_col_name)
 
         # --- Ensure the variable table exists ---
-        self._ensure_variable_table(name, data_col_types, schema_level)
+        is_dataframe = dtype_meta.get("mode") == "dataframe"
+        self._ensure_variable_table(name, data_col_types, schema_level,
+                                    is_dataframe=is_dataframe)
 
         # --- Insert rows (INSERT OR REPLACE for "latest wins" semantics) ---
         col_names = ["schema_id"] + list(data_col_types.keys())
@@ -742,11 +786,20 @@ class SciDuck:
 
         for key_dict, value in entries:
             schema_id = self._get_or_create_schema_id(schema_level, key_dict)
-            storage_values = self._value_to_storage_row(value, dtype_meta)
-            row = [schema_id] + storage_values
-            self._execute(
-                f'INSERT OR REPLACE INTO "{name}" ({col_str}) VALUES ({placeholders})', row
-            )
+            if isinstance(value, pd.DataFrame):
+                # Delete old rows for this schema_id, then insert one per DataFrame row.
+                self._execute(f'DELETE FROM "{name}" WHERE schema_id = ?', [schema_id])
+                for storage_row in _dataframe_to_storage_rows(value, dtype_meta):
+                    self._execute(
+                        f'INSERT INTO "{name}" ({col_str}) VALUES ({placeholders})',
+                        [schema_id] + storage_row,
+                    )
+            else:
+                storage_values = self._value_to_storage_row(value, dtype_meta)
+                row = [schema_id] + storage_values
+                self._execute(
+                    f'INSERT OR REPLACE INTO "{name}" ({col_str}) VALUES ({placeholders})', row
+                )
 
         # --- Register in _variables (one row per variable) ---
         self._execute(
@@ -797,16 +850,24 @@ class SciDuck:
         """Delegate to module-level _value_to_storage_row."""
         return _value_to_storage_row(value, dtype_meta)
 
-    def _ensure_variable_table(self, name: str, data_col_types: dict, schema_level: str):
+    def _ensure_variable_table(self, name: str, data_col_types: dict, schema_level: str,
+                               is_dataframe: bool = False):
         """Create the variable table if it doesn't exist."""
         if self._table_exists(name):
             return
         data_cols_sql = ", ".join(
             f'"{col}" {dtype}' for col, dtype in data_col_types.items()
         )
+        # DataFrames store one DuckDB row per table row: no unique constraint
+        # on schema_id.  Other types use schema_id as a primary key so that
+        # INSERT OR REPLACE gives "latest wins" semantics.
+        if is_dataframe:
+            schema_id_col = "schema_id INTEGER NOT NULL"
+        else:
+            schema_id_col = "schema_id INTEGER PRIMARY KEY"
         self._execute(f"""
             CREATE TABLE "{name}" (
-                schema_id INTEGER PRIMARY KEY,
+                {schema_id_col},
                 {data_cols_sql}
             )
         """)
@@ -875,26 +936,31 @@ class SciDuck:
 
         df = self._fetchdf(sql, params or None)
 
-        # Restore types
+        mode = dtype_meta.get("mode", "single_column")
+        columns_meta = dtype_meta.get("columns", {})
+
+        if mode == "dataframe":
+            # One DuckDB row per DataFrame row: apply _storage_to_python per cell.
+            # Drop schema columns; keep only data columns.
+            data_cols = list(columns_meta.keys())
+            result = {}
+            for c, meta in columns_meta.items():
+                if c in df.columns:
+                    result[c] = [_storage_to_python(df[c].iloc[i], meta)
+                                 for i in range(len(df))]
+            df_columns = dtype_meta.get("df_columns", data_cols)
+            return pd.DataFrame(result, columns=df_columns)
+
+        # Non-DataFrame: restore types then return raw object if single row
         df = self._restore_types(df, dtype_meta)
 
-        # If raw and single row, return the Python object
         if raw and len(df) == 1:
-            mode = dtype_meta.get("mode", "single_column")
-            columns_meta = dtype_meta.get("columns", {})
             if mode == "single_column":
                 col_name = next(iter(columns_meta))
                 col_meta = columns_meta[col_name]
                 raw_val = df[col_name].iloc[0]
                 return _storage_to_python(raw_val, col_meta)
-            elif mode == "dataframe":
-                result = {}
-                for c, meta in columns_meta.items():
-                    result[c] = _storage_to_python(df[c].iloc[0], meta)
-                # Reconstruct DataFrame preserving original column order
-                df_columns = dtype_meta.get("df_columns", list(columns_meta.keys()))
-                return pd.DataFrame(result, columns=df_columns)
-            else:  # multi_column
+            elif mode == "multi_column":
                 result = {}
                 for c, meta in columns_meta.items():
                     result[c] = _storage_to_python(df[c].iloc[0], meta)

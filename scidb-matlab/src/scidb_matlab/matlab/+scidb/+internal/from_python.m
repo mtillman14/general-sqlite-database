@@ -4,7 +4,14 @@ function data = from_python(py_obj)
 %   Handles numpy ndarrays, Python scalars (float, int, str, bool),
 %   lists, and dicts.
 
-    if isa(py_obj, 'py.NoneType')
+    % MATLAB's Python bridge auto-converts Python True/False to native MATLAB
+    % logical before this function is called (e.g. when reading dict values).
+    % Return such values directly; without this guard they fall through to the
+    % double() fallback and lose their logical type.
+    if islogical(py_obj)
+        data = py_obj;
+
+    elseif isa(py_obj, 'py.NoneType')
         data = [];
 
     elseif isa(py_obj, 'py.numpy.ndarray')
@@ -25,6 +32,17 @@ function data = from_python(py_obj)
         else
             data = double(py_c);
         end
+        % 1-D numpy arrays (shape (N,)) arrive as 1×N row vectors after
+        % double()/logical(); force to Nx1 column vectors to match the
+        % columnar convention of DuckDB storage.  2-D arrays keep their shape.
+        if dtype_kind ~= "O" && int64(py_c.ndim) == 1
+            data = data(:);
+        end
+
+    elseif isa(py_obj, 'py.bool')
+        % Must check py.bool BEFORE py.int: Python bool is a subclass of int,
+        % so isa(py_obj, 'py.int') returns true for True/False values.
+        data = logical(py_obj);
 
     elseif isa(py_obj, 'py.float')
         data = double(py_obj);
@@ -34,9 +52,6 @@ function data = from_python(py_obj)
 
     elseif isa(py_obj, 'py.str')
         data = string(py_obj);
-
-    elseif isa(py_obj, 'py.bool')
-        data = logical(py_obj);
 
     elseif isa(py_obj, 'py.datetime.datetime')
         data = datetime(string(py_obj.isoformat()), 'InputFormat', 'yyyy-MM-dd''T''HH:mm:ss');
@@ -229,8 +244,11 @@ function data = convert_dataframe(py_obj)
     col_name_strs = cellfun(@string, col_names, 'UniformOutput', false);
     data = table;
     for i = 1:numel(args)
-        if numel(args{i}) == n_rows
-            % Per-row values (column vector length matches row count): assign directly
+        if size(args{i}, 1) == n_rows
+            % Per-row values: assign directly.
+            % size(·,1) handles both column vectors (Nx1) and matrix columns
+            % (NxM) so that e.g. a 3×3 matrix is assigned as a 3-row column
+            % rather than cell-wrapped.
             data.(col_name_strs{i}) = args{i};
         else
             % Per-row array values (e.g. time series stored in one cell per row):

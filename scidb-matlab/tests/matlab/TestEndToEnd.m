@@ -22,8 +22,7 @@ classdef TestEndToEnd < matlab.unittest.TestCase
             mkdir(testCase.test_dir);
             scidb.configure_database( ...
                 fullfile(testCase.test_dir, 'test.duckdb'), ...
-                ["subject", "session"], ...
-                fullfile(testCase.test_dir, 'pipeline.db'));
+                ["subject", "session"]);
         end
     end
 
@@ -59,7 +58,7 @@ classdef TestEndToEnd < matlab.unittest.TestCase
             for s = [1 2 3]
                 proc = ProcessedSignal().load('subject', s, 'session', 'A');
                 expected = s * [20 40 60 80 100];
-                testCase.verifyEqual(proc.data, expected, 'AbsTol', 1e-10);
+                testCase.verifyEqual(proc.data, expected', 'AbsTol', 1e-10);
             end
 
             %% Step 4: Verify lineage
@@ -120,7 +119,7 @@ classdef TestEndToEnd < matlab.unittest.TestCase
             %% Verify final data: (x * 2) + 100
             final = FilteredSignal().load('subject', 1, 'session', 'A');
             expected = [1 2 3 4 5 6] * 2 + 100;
-            testCase.verifyEqual(final.data, expected, 'AbsTol', 1e-10);
+            testCase.verifyEqual(final.data, expected', 'AbsTol', 1e-10);
 
             %% Verify lineage chain
             prov = FilteredSignal().provenance('subject', 1, 'session', 'A');
@@ -153,19 +152,19 @@ classdef TestEndToEnd < matlab.unittest.TestCase
             %% Verify results
             % Subject 1, Session A: [110-100, 210-200, 310-300]
             d = DeltaSignal().load('subject', 1, 'session', 'A');
-            testCase.verifyEqual(d.data, [10 10 10], 'AbsTol', 1e-10);
+            testCase.verifyEqual(d.data, [10 10 10]', 'AbsTol', 1e-10);
 
             % Subject 1, Session B: [105-100, 205-200, 305-300]
             d = DeltaSignal().load('subject', 1, 'session', 'B');
-            testCase.verifyEqual(d.data, [5 5 5], 'AbsTol', 1e-10);
+            testCase.verifyEqual(d.data, [5 5 5]', 'AbsTol', 1e-10);
 
             % Subject 2, Session A: [170-150, 270-250, 370-350]
             d = DeltaSignal().load('subject', 2, 'session', 'A');
-            testCase.verifyEqual(d.data, [20 20 20], 'AbsTol', 1e-10);
+            testCase.verifyEqual(d.data, [20 20 20]', 'AbsTol', 1e-10);
 
             % Subject 2, Session B: [160-150, 260-250, 360-350]
             d = DeltaSignal().load('subject', 2, 'session', 'B');
-            testCase.verifyEqual(d.data, [10 10 10], 'AbsTol', 1e-10);
+            testCase.verifyEqual(d.data, [10 10 10]', 'AbsTol', 1e-10);
         end
 
         function test_cache_hit_in_for_each(testCase)
@@ -202,8 +201,8 @@ classdef TestEndToEnd < matlab.unittest.TestCase
             %% Verify both copies exist with correct data
             r1 = RawSignal().load('subject', 1, 'session', 'A');
             r2 = RawSignal().load('subject', 2, 'session', 'B');
-            testCase.verifyEqual(r1.data, [1 2 3], 'AbsTol', 1e-10);
-            testCase.verifyEqual(r2.data, [1 2 3], 'AbsTol', 1e-10);
+            testCase.verifyEqual(r1.data, [1 2 3]', 'AbsTol', 1e-10);
+            testCase.verifyEqual(r2.data, [1 2 3]', 'AbsTol', 1e-10);
         end
 
         function test_split_and_save_pipeline(testCase)
@@ -221,8 +220,8 @@ classdef TestEndToEnd < matlab.unittest.TestCase
             %% Load and verify
             r1 = SplitFirst().load('subject', 1, 'session', 'A');
             r2 = SplitSecond().load('subject', 1, 'session', 'A');
-            testCase.verifyEqual(r1.data, [10 20], 'AbsTol', 1e-10);
-            testCase.verifyEqual(r2.data, [30 40], 'AbsTol', 1e-10);
+            testCase.verifyEqual(r1.data, [10 20]', 'AbsTol', 1e-10);
+            testCase.verifyEqual(r2.data, [30 40]', 'AbsTol', 1e-10);
 
             %% Verify provenance for both outputs
             p1 = SplitFirst().provenance('subject', 1, 'session', 'A');
@@ -248,12 +247,12 @@ classdef TestEndToEnd < matlab.unittest.TestCase
 
             %% load() returns latest
             latest = RawSignal().load('subject', 1, 'session', 'A');
-            testCase.verifyEqual(latest.data, [7 8 9], 'AbsTol', 1e-10);
+            testCase.verifyEqual(latest.data, [7 8 9]', 'AbsTol', 1e-10);
 
             %% load by version returns specific record
             specific = RawSignal().load('subject', 1, 'session', 'A', ...
                 'version', id1);
-            testCase.verifyEqual(specific.data, [1 2 3], 'AbsTol', 1e-10);
+            testCase.verifyEqual(specific.data, [1 2 3]', 'AbsTol', 1e-10);
 
             %% load_all returns all 3
             all_results = RawSignal().load_all('subject', 1, 'session', 'A');
@@ -277,8 +276,8 @@ classdef TestEndToEnd < matlab.unittest.TestCase
             p1 = ProcessedSignal().load('subject', 1, 'session', 'A');
             p2 = ProcessedSignal().load('subject', 2, 'session', 'A');
 
-            testCase.verifyEqual(p1.data, [10 20 30], 'AbsTol', 1e-10);
-            testCase.verifyEqual(p2.data, [12 24 36], 'AbsTol', 1e-10);
+            testCase.verifyEqual(p1.data, [10 20 30]', 'AbsTol', 1e-10);
+            testCase.verifyEqual(p2.data, [12 24 36]', 'AbsTol', 1e-10);
             testCase.verifyTrue(strlength(p1.lineage_hash) > 0);
             testCase.verifyTrue(strlength(p2.lineage_hash) > 0);
 

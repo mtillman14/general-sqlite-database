@@ -18,8 +18,7 @@ classdef TestForEach < matlab.unittest.TestCase
             mkdir(testCase.test_dir);
             scidb.configure_database( ...
                 fullfile(testCase.test_dir, 'test.duckdb'), ...
-                ["subject", "session"], ...
-                fullfile(testCase.test_dir, 'pipeline.db'));
+                ["subject", "session"]);
         end
     end
 
@@ -88,7 +87,7 @@ classdef TestForEach < matlab.unittest.TestCase
                 'session', "A");
 
             result = ProcessedSignal().load('subject', 1, 'session', 'A');
-            testCase.verifyEqual(result.data, [20 40 60], 'AbsTol', 1e-10);
+            testCase.verifyEqual(result.data, [20 40 60]', 'AbsTol', 1e-10);
         end
 
         % --- Constants ---
@@ -103,7 +102,7 @@ classdef TestForEach < matlab.unittest.TestCase
                 'session', "A");
 
             result = ProcessedSignal().load('subject', 1, 'session', 'A');
-            testCase.verifyEqual(result.data, [15 25 35], 'AbsTol', 1e-10);
+            testCase.verifyEqual(result.data, [15 25 35]', 'AbsTol', 1e-10);
         end
 
         function test_constant_included_in_save_metadata(testCase)
@@ -134,7 +133,7 @@ classdef TestForEach < matlab.unittest.TestCase
                 'session', "A");
 
             result = FilteredSignal().load('subject', 1, 'session', 'A');
-            testCase.verifyEqual(result.data, [11 22 33], 'AbsTol', 1e-10);
+            testCase.verifyEqual(result.data, [11 22 33]', 'AbsTol', 1e-10);
         end
 
         % --- Fixed inputs ---
@@ -161,11 +160,11 @@ classdef TestForEach < matlab.unittest.TestCase
 
             % Subject 1: [110-100, 210-200, 310-300] = [10, 10, 10]
             d1 = DeltaSignal().load('subject', 1, 'session', 'A');
-            testCase.verifyEqual(d1.data, [10 10 10], 'AbsTol', 1e-10);
+            testCase.verifyEqual(d1.data, [10 10 10]', 'AbsTol', 1e-10);
 
             % Subject 2: [120-100, 220-200, 320-300] = [20, 20, 20]
             d2 = DeltaSignal().load('subject', 2, 'session', 'A');
-            testCase.verifyEqual(d2.data, [20 20 20], 'AbsTol', 1e-10);
+            testCase.verifyEqual(d2.data, [20 20 20]', 'AbsTol', 1e-10);
         end
 
         % --- dry_run ---
@@ -214,7 +213,7 @@ classdef TestForEach < matlab.unittest.TestCase
                 'session', "A");
 
             result = ProcessedSignal().load('subject', 1, 'session', 'A');
-            testCase.verifyEqual(result.data, [10 20 30], 'AbsTol', 1e-10);
+            testCase.verifyEqual(result.data, [10 20 30]', 'AbsTol', 1e-10);
 
             % Thunk output should have lineage
             testCase.verifyTrue(strlength(result.lineage_hash) > 0);
@@ -231,7 +230,7 @@ classdef TestForEach < matlab.unittest.TestCase
                 'session', "A");
 
             result = ProcessedSignal().load('subject', 1, 'session', 'A');
-            testCase.verifyEqual(result.data, [105 110 115], 'AbsTol', 1e-10);
+            testCase.verifyEqual(result.data, [105 110 115]', 'AbsTol', 1e-10);
         end
 
         % --- Multiple outputs ---
@@ -247,8 +246,8 @@ classdef TestForEach < matlab.unittest.TestCase
 
             r1 = SplitFirst().load('subject', 1, 'session', 'A');
             r2 = SplitSecond().load('subject', 1, 'session', 'A');
-            testCase.verifyEqual(r1.data, [1 2], 'AbsTol', 1e-10);
-            testCase.verifyEqual(r2.data, [3 4], 'AbsTol', 1e-10);
+            testCase.verifyEqual(r1.data, [1 2]', 'AbsTol', 1e-10);
+            testCase.verifyEqual(r2.data, [3 4]', 'AbsTol', 1e-10);
         end
 
         function test_multiple_outputs_with_thunk(testCase)
@@ -263,8 +262,8 @@ classdef TestForEach < matlab.unittest.TestCase
 
             r1 = SplitFirst().load('subject', 1, 'session', 'A');
             r2 = SplitSecond().load('subject', 1, 'session', 'A');
-            testCase.verifyEqual(r1.data, [10 20], 'AbsTol', 1e-10);
-            testCase.verifyEqual(r2.data, [30 40], 'AbsTol', 1e-10);
+            testCase.verifyEqual(r1.data, [10 20]', 'AbsTol', 1e-10);
+            testCase.verifyEqual(r2.data, [30 40]', 'AbsTol', 1e-10);
         end
 
         % --- PathInput ---
@@ -299,7 +298,7 @@ classdef TestForEach < matlab.unittest.TestCase
 
             % Subject 1 should be saved
             r1 = ProcessedSignal().load('subject', 1, 'session', 'A');
-            testCase.verifyEqual(r1.data, [2 4 6], 'AbsTol', 1e-10);
+            testCase.verifyEqual(r1.data, [2 4 6]', 'AbsTol', 1e-10);
 
             % Subject 2 should be skipped (no input data)
             results = ProcessedSignal().load_all('subject', 2, 'session', 'A');
@@ -360,7 +359,7 @@ classdef TestForEach < matlab.unittest.TestCase
                 'session', "A");
 
             result = ProcessedSignal().load('subject', 1, 'session', 'A');
-            testCase.verifyEqual(result.data, [15 25 35], 'AbsTol', 1e-10);
+            testCase.verifyEqual(result.data, [15 25 35]', 'AbsTol', 1e-10);
         end
 
         function test_parallel_skips_missing(testCase)
@@ -375,7 +374,7 @@ classdef TestForEach < matlab.unittest.TestCase
                 'session', "A");
 
             r1 = ProcessedSignal().load('subject', 1, 'session', 'A');
-            testCase.verifyEqual(r1.data, [2 4 6], 'AbsTol', 1e-10);
+            testCase.verifyEqual(r1.data, [2 4 6]', 'AbsTol', 1e-10);
 
             results = ProcessedSignal().load_all('subject', 2, 'session', 'A');
             testCase.verifyEmpty(results);
@@ -393,7 +392,7 @@ classdef TestForEach < matlab.unittest.TestCase
                 'session', "A");
 
             result = ProcessedSignal().load('subject', 1, 'session', 'A');
-            testCase.verifyEqual(result.data, [20 40 60], 'AbsTol', 1e-10);
+            testCase.verifyEqual(result.data, [20 40 60]', 'AbsTol', 1e-10);
         end
 
         function test_parallel_multiple_outputs(testCase)
@@ -409,8 +408,8 @@ classdef TestForEach < matlab.unittest.TestCase
 
             r1 = SplitFirst().load('subject', 1, 'session', 'A');
             r2 = SplitSecond().load('subject', 1, 'session', 'A');
-            testCase.verifyEqual(r1.data, [1 2], 'AbsTol', 1e-10);
-            testCase.verifyEqual(r2.data, [3 4], 'AbsTol', 1e-10);
+            testCase.verifyEqual(r1.data, [1 2]', 'AbsTol', 1e-10);
+            testCase.verifyEqual(r2.data, [3 4]', 'AbsTol', 1e-10);
         end
 
         function test_parallel_thunk_errors(testCase)
@@ -542,7 +541,7 @@ classdef TestForEach < matlab.unittest.TestCase
             for s = subjects
                 for sess = sessions
                     result = ProcessedSignal().load('subject', s, 'session', sess);
-                    testCase.verifyEqual(result.data, s * [2 4 6], 'AbsTol', 1e-10);
+                    testCase.verifyEqual(result.data, s * [2 4 6]', 'AbsTol', 1e-10);
                 end
             end
         end

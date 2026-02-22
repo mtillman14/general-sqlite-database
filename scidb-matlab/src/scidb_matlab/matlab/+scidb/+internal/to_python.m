@@ -37,18 +37,25 @@ function py_obj = to_python(data)
         % MATLAB is column-major; numpy default is row-major.  We
         % transpose so that the logical element order matches, then
         % request C-contiguous layout for deterministic hashing.
-        if ismatrix(data) && ~isvector(data)
+        %
+        % Vectors (row or column) are always mapped to 1-D numpy arrays
+        % with shape (N,) so they store as DOUBLE[] not DOUBLE[][] in DuckDB.
+        if isvector(data)
+            flat = data;
+            py_shape = py.builtins.tuple(num2cell(int64([numel(data)])));
+        elseif ismatrix(data)
             % 2-D matrix: transpose so row-major matches MATLAB convention
             flat = data';
+            py_shape = py.builtins.tuple(num2cell(int64(size(data))));
         else
             flat = data;
+            py_shape = py.builtins.tuple(num2cell(int64(size(data))));
         end
 
         % Determine numpy dtype string
         dtype = matlab_dtype_to_numpy(data);
 
         py_flat = py.numpy.array(flat(:)', pyargs('dtype', dtype));
-        py_shape = py.builtins.tuple(num2cell(int64(size(data))));
         py_obj = py_flat.reshape(py_shape, pyargs('order', 'C'));
         py_obj = py.numpy.ascontiguousarray(py_obj);
 

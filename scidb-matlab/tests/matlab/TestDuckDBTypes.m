@@ -106,8 +106,8 @@ classdef TestDuckDBTypes < matlab.unittest.TestCase
             testCase.verifyEqual(types('velocity'), "DOUBLE[]");
 
             result = StructVar().load('subject', 5, 'session', 'A');
-            testCase.verifyEqual(result.data.force, [1 2 3 4 5], 'AbsTol', 1e-10);
-            testCase.verifyEqual(result.data.velocity, [10 20 30 40 50], 'AbsTol', 1e-10);
+            testCase.verifyEqual(result.data.force, [1;2;3;4;5], 'AbsTol', 1e-10);
+            testCase.verifyEqual(result.data.velocity, [10;20;30;40;50], 'AbsTol', 1e-10);
         end
 
         function test_struct_int_vectors(testCase)
@@ -122,8 +122,8 @@ classdef TestDuckDBTypes < matlab.unittest.TestCase
             testCase.verifyEqual(types('counts'), "BIGINT[]");
 
             result = StructVar().load('subject', 6, 'session', 'A');
-            testCase.verifyEqual(result.data.ids, [10 20 30], 'AbsTol', 1e-10);
-            testCase.verifyEqual(result.data.counts, [1 2 3], 'AbsTol', 1e-10);
+            testCase.verifyEqual(result.data.ids, [10;20;30], 'AbsTol', 1e-10);
+            testCase.verifyEqual(result.data.counts, [1;2;3], 'AbsTol', 1e-10);
         end
 
         function test_struct_string_array(testCase)
@@ -154,7 +154,7 @@ classdef TestDuckDBTypes < matlab.unittest.TestCase
             result = StructVar().load('subject', 8, 'session', 'A');
             testCase.verifyEqual(result.data.name, "experiment_1");
             testCase.verifyEqual(result.data.weight, 0.75, 'AbsTol', 1e-10);
-            testCase.verifyEqual(result.data.scores, [90.0 85.5 92.3], 'AbsTol', 1e-10);
+            testCase.verifyEqual(result.data.scores, [90.0;85.5;92.3], 'AbsTol', 1e-10);
         end
 
         function test_struct_equal_length_vectors_one_row(testCase)
@@ -172,7 +172,7 @@ classdef TestDuckDBTypes < matlab.unittest.TestCase
             % Must be exactly one row
             db = scidb.get_database();
             duck = py.getattr(db, '_duck');
-            count = duck._fetchall( ...
+            count = duck.fetchall( ...
                 'SELECT COUNT(*) FROM "StructVar_data"');
             count = double(count{1}{1});
             testCase.verifyEqual(count, 1);
@@ -181,25 +181,24 @@ classdef TestDuckDBTypes < matlab.unittest.TestCase
             result = StructVar().load('subject', 9, 'session', 'A');
             testCase.verifyEqual(numel(result.data.force), 10);
             testCase.verifyEqual(numel(result.data.velocity), 10);
-            testCase.verifyEqual(result.data.force, 0:9, 'AbsTol', 1e-10);
-            testCase.verifyEqual(result.data.velocity, 10:19, 'AbsTol', 1e-10);
+            testCase.verifyEqual(result.data.force, (0:9)', 'AbsTol', 1e-10);
+            testCase.verifyEqual(result.data.velocity, (10:19)', 'AbsTol', 1e-10);
         end
 
         function test_struct_column_vectors(testCase)
-            %% Struct with Nx1 column vectors (MATLAB default shape)
+            %% Struct with Nx1 column vectors store as DOUBLE[] and load as columns
             s = struct( ...
                 'force', (0:9)', ...
                 'velocity', (10:19)');
             StructVar().save(s, 'subject', 10, 'session', 'A');
 
             types = testCase.getColumnTypes('StructVar_data');
-            % Column vectors are 2D (Nx1) arrays in DuckDB
-            testCase.verifyTrue( ...
-                types('force') == "DOUBLE[]" || types('force') == "DOUBLE[][]");
+            testCase.verifyEqual(types('force'), "DOUBLE[]");
+            testCase.verifyEqual(types('velocity'), "DOUBLE[]");
 
             result = StructVar().load('subject', 10, 'session', 'A');
-            testCase.verifyEqual(numel(result.data.force), 10);
-            testCase.verifyEqual(numel(result.data.velocity), 10);
+            testCase.verifyEqual(result.data.force, (0:9)', 'AbsTol', 1e-10);
+            testCase.verifyEqual(result.data.velocity, (10:19)', 'AbsTol', 1e-10);
         end
 
         function test_struct_2d_matrix(testCase)
@@ -214,19 +213,36 @@ classdef TestDuckDBTypes < matlab.unittest.TestCase
             testCase.verifyEqual(result.data.matrix, [1 2 3; 4 5 6], 'AbsTol', 1e-10);
         end
 
+        function test_struct_vector_orientation(testCase)
+            %% Both row and column vectors store as DOUBLE[] and load as Nx1 columns.
+            %  Orientation is not preserved on save, but all vectors load as columns.
+            s = struct('row_vec', [1.0, 2.0, 3.0], ...   % 1x3
+                       'col_vec', [4.0; 5.0; 6.0]);      % 3x1
+            StructVar().save(s, 'subject', 12, 'session', 'A');
+
+            types = testCase.getColumnTypes('StructVar_data');
+            testCase.verifyEqual(types('row_vec'), "DOUBLE[]");
+            testCase.verifyEqual(types('col_vec'), "DOUBLE[]");
+
+            result = StructVar().load('subject', 12, 'session', 'A');
+            % Both load as column vectors regardless of original orientation
+            testCase.verifyEqual(result.data.row_vec, [1;2;3], 'AbsTol', 1e-10);
+            testCase.verifyEqual(result.data.col_vec, [4;5;6], 'AbsTol', 1e-10);
+        end
+
         % =================================================================
         % Table (DataFrame) tests — DuckDB type verification
         % =================================================================
 
         function test_table_float_columns(testCase)
-            %% Table with double columns → DOUBLE[]
+            %% Table with double columns → DOUBLE (one DuckDB row per table row)
             t = table([1.0; 2.0; 3.0], [4.0; 5.0; 6.0], ...
                 'VariableNames', {'force', 'velocity'});
             TableVar().save(t, 'subject', 1, 'session', 'A');
 
             types = testCase.getColumnTypes('TableVar_data');
-            testCase.verifyEqual(types('force'), "DOUBLE[]");
-            testCase.verifyEqual(types('velocity'), "DOUBLE[]");
+            testCase.verifyEqual(types('force'), "DOUBLE");
+            testCase.verifyEqual(types('velocity'), "DOUBLE");
 
             result = TableVar().load('subject', 1, 'session', 'A');
             testCase.verifyTrue(istable(result.data));
@@ -235,14 +251,14 @@ classdef TestDuckDBTypes < matlab.unittest.TestCase
         end
 
         function test_table_int_columns(testCase)
-            %% Table with int64 columns → BIGINT[]
+            %% Table with int64 columns → BIGINT (one DuckDB row per table row)
             t = table(int64([10; 20; 30]), int64([1; 2; 3]), ...
                 'VariableNames', {'ids', 'counts'});
             TableVar().save(t, 'subject', 2, 'session', 'A');
 
             types = testCase.getColumnTypes('TableVar_data');
-            testCase.verifyEqual(types('ids'), "BIGINT[]");
-            testCase.verifyEqual(types('counts'), "BIGINT[]");
+            testCase.verifyEqual(types('ids'), "BIGINT");
+            testCase.verifyEqual(types('counts'), "BIGINT");
 
             result = TableVar().load('subject', 2, 'session', 'A');
             testCase.verifyTrue(istable(result.data));
@@ -251,14 +267,14 @@ classdef TestDuckDBTypes < matlab.unittest.TestCase
         end
 
         function test_table_string_columns(testCase)
-            %% Table with string columns → VARCHAR[]
+            %% Table with string columns → VARCHAR (one DuckDB row per table row)
             t = table(["alice"; "bob"; "carol"], ["A"; "B"; "A"], ...
                 'VariableNames', {'name', 'grp'});
             TableVar().save(t, 'subject', 3, 'session', 'A');
 
             types = testCase.getColumnTypes('TableVar_data');
-            testCase.verifyEqual(types('name'), "VARCHAR[]");
-            testCase.verifyEqual(types('grp'), "VARCHAR[]");
+            testCase.verifyEqual(types('name'), "VARCHAR");
+            testCase.verifyEqual(types('grp'), "VARCHAR");
 
             result = TableVar().load('subject', 3, 'session', 'A');
             testCase.verifyTrue(istable(result.data));
@@ -276,9 +292,9 @@ classdef TestDuckDBTypes < matlab.unittest.TestCase
             TableVar().save(t, 'subject', 4, 'session', 'A');
 
             types = testCase.getColumnTypes('TableVar_data');
-            testCase.verifyEqual(types('score'), "DOUBLE[]");
-            testCase.verifyEqual(types('rank'), "BIGINT[]");
-            testCase.verifyEqual(types('name'), "VARCHAR[]");
+            testCase.verifyEqual(types('score'), "DOUBLE");
+            testCase.verifyEqual(types('rank'), "BIGINT");
+            testCase.verifyEqual(types('name'), "VARCHAR");
 
             result = TableVar().load('subject', 4, 'session', 'A');
             testCase.verifyTrue(istable(result.data));
@@ -292,13 +308,24 @@ classdef TestDuckDBTypes < matlab.unittest.TestCase
             TableVar().save(t, 'subject', 5, 'session', 'A');
 
             types = testCase.getColumnTypes('TableVar_data');
-            testCase.verifyEqual(types('x'), "DOUBLE[]");
-            testCase.verifyEqual(types('label'), "VARCHAR[]");
+            testCase.verifyEqual(types('x'), "DOUBLE");
+            testCase.verifyEqual(types('label'), "VARCHAR");
 
             result = TableVar().load('subject', 5, 'session', 'A');
             testCase.verifyTrue(istable(result.data));
             testCase.verifyEqual(height(result.data), 1);
         end
+
+        % function test_table_multiple_rows(testCase)
+        %     %% A multiple-row table should round-trip as a multiple-row table
+        %     t = table([1; 2], [3; 4], 'VariableNames', {'a','b'});
+        %     TableVar().save(t, 'subject', [1, 1], 'session', {'A', 'B'});
+        % 
+        %     types = testCase.getColumnTypes('TableVar_data');
+        %     testCase.verifyEqual(types('a'), "DOUBLE[]");
+        %     testCase.verifyEqual(types('b'), "DOUBLE[]");
+        % end
+
 
         function test_table_column_order_preserved(testCase)
             %% Column order of the original table should be preserved on load
@@ -318,7 +345,7 @@ classdef TestDuckDBTypes < matlab.unittest.TestCase
             %% Query DuckDB information_schema for column types
             db = scidb.get_database();
             duck = py.getattr(db, '_duck');
-            rows = duck._fetchall( ...
+            rows = duck.fetchall( ...
                 "SELECT column_name, data_type FROM information_schema.columns " + ...
                 "WHERE table_name = ? ORDER BY ordinal_position", ...
                 py.list({table_name}));

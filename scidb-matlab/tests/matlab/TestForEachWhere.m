@@ -30,8 +30,7 @@ classdef TestForEachWhere < matlab.unittest.TestCase
             mkdir(testCase.test_dir);
             scidb.configure_database( ...
                 fullfile(testCase.test_dir, 'test.duckdb'), ...
-                ["subject", "session"], ...
-                fullfile(testCase.test_dir, 'pipeline.db'));
+                ["subject", "session"]);
         end
     end
 
@@ -73,8 +72,8 @@ classdef TestForEachWhere < matlab.unittest.TestCase
 
             r1 = ProcessedSignal().load('subject', 1, 'session', 'A');
             r3 = ProcessedSignal().load('subject', 3, 'session', 'A');
-            testCase.verifyEqual(r1.data, [2 4 6], 'AbsTol', 1e-10);
-            testCase.verifyEqual(r3.data, [14 16 18], 'AbsTol', 1e-10);
+            testCase.verifyEqual(r1.data, [2 4 6]', 'AbsTol', 1e-10);
+            testCase.verifyEqual(r3.data, [14 16 18]', 'AbsTol', 1e-10);
 
             results2 = ProcessedSignal().load_all('subject', 2, 'session', 'A');
             testCase.verifyEmpty(results2);
@@ -99,7 +98,7 @@ classdef TestForEachWhere < matlab.unittest.TestCase
                 where=~(Side() == "L"));
 
             r2 = ProcessedSignal().load('subject', 2, 'session', 'A');
-            testCase.verifyEqual(r2.data, [8 10 12], 'AbsTol', 1e-10);
+            testCase.verifyEqual(r2.data, [8 10 12]', 'AbsTol', 1e-10);
 
             results1 = ProcessedSignal().load_all('subject', 1, 'session', 'A');
             testCase.verifyEmpty(results1);
@@ -132,7 +131,7 @@ classdef TestForEachWhere < matlab.unittest.TestCase
                 where=(Side() == "L") & (StepLength() > 0.6));
 
             r1 = ProcessedSignal().load('subject', 1, 'session', 'A');
-            testCase.verifyEqual(r1.data, [2 4 6], 'AbsTol', 1e-10);
+            testCase.verifyEqual(r1.data, [2 4 6]', 'AbsTol', 1e-10);
 
             results2 = ProcessedSignal().load_all('subject', 2, 'session', 'A');
             testCase.verifyEmpty(results2);
@@ -161,8 +160,8 @@ classdef TestForEachWhere < matlab.unittest.TestCase
 
             r1 = ProcessedSignal().load('subject', 1, 'session', 'A');
             r2 = ProcessedSignal().load('subject', 2, 'session', 'A');
-            testCase.verifyEqual(r1.data, [2 4 6], 'AbsTol', 1e-10);
-            testCase.verifyEqual(r2.data, [8 10 12], 'AbsTol', 1e-10);
+            testCase.verifyEqual(r1.data, [2 4 6]', 'AbsTol', 1e-10);
+            testCase.verifyEqual(r2.data, [8 10 12]', 'AbsTol', 1e-10);
         end
 
         % ================================================================
@@ -229,8 +228,8 @@ classdef TestForEachWhere < matlab.unittest.TestCase
 
             r1a = ProcessedSignal().load('subject', 1, 'session', 'A');
             r2b = ProcessedSignal().load('subject', 2, 'session', 'B');
-            testCase.verifyEqual(r1a.data, [2 4 6], 'AbsTol', 1e-10);
-            testCase.verifyEqual(r2b.data, [4 8 12], 'AbsTol', 1e-10);
+            testCase.verifyEqual(r1a.data, [2 4 6]', 'AbsTol', 1e-10);
+            testCase.verifyEqual(r2b.data, [4 8 12]', 'AbsTol', 1e-10);
 
             results1b = ProcessedSignal().load_all('subject', 1, 'session', 'B');
             results2a = ProcessedSignal().load_all('subject', 2, 'session', 'A');
@@ -259,7 +258,7 @@ classdef TestForEachWhere < matlab.unittest.TestCase
                 preload=false);
 
             r1 = ProcessedSignal().load('subject', 1, 'session', 'A');
-            testCase.verifyEqual(r1.data, [2 4 6], 'AbsTol', 1e-10);
+            testCase.verifyEqual(r1.data, [2 4 6]', 'AbsTol', 1e-10);
 
             results2 = ProcessedSignal().load_all('subject', 2, 'session', 'A');
             testCase.verifyEmpty(results2);
@@ -290,8 +289,8 @@ classdef TestForEachWhere < matlab.unittest.TestCase
 
             r1 = ProcessedSignal().load('subject', 1, 'session', 'A');
             r3 = ProcessedSignal().load('subject', 3, 'session', 'A');
-            testCase.verifyEqual(r1.data, [2 4 6], 'AbsTol', 1e-10);
-            testCase.verifyEqual(r3.data, [14 16 18], 'AbsTol', 1e-10);
+            testCase.verifyEqual(r1.data, [2 4 6]', 'AbsTol', 1e-10);
+            testCase.verifyEqual(r3.data, [14 16 18]', 'AbsTol', 1e-10);
 
             results2 = ProcessedSignal().load_all('subject', 2, 'session', 'A');
             testCase.verifyEmpty(results2);
@@ -327,7 +326,7 @@ classdef TestForEachWhere < matlab.unittest.TestCase
                 where=Side() == "L");
 
             d1 = DeltaSignal().load('subject', 1, 'session', 'A');
-            testCase.verifyEqual(d1.data, [10 10 10], 'AbsTol', 1e-10);
+            testCase.verifyEqual(d1.data, [10 10 10]', 'AbsTol', 1e-10);
 
             results2 = DeltaSignal().load_all('subject', 2, 'session', 'A');
             testCase.verifyEmpty(results2);
@@ -484,7 +483,7 @@ classdef TestForEachWhere < matlab.unittest.TestCase
 
             % Iteration runs: inner join yields 2 rows, 4 cols
             result = MergedResult().load('subject', 1);
-            testCase.verifyEqual(result.data, [2, 4]);
+            testCase.verifyEqual(result.data, [2, 4]');
         end
 
         % ================================================================
@@ -574,8 +573,8 @@ classdef TestForEachWhere < matlab.unittest.TestCase
             % Only (1,A) and (2,B) pass
             r1a = ProcessedSignal().load('subject', 1, 'session', 'A');
             r2b = ProcessedSignal().load('subject', 2, 'session', 'B');
-            testCase.verifyEqual(r1a.data, [2 4 6], 'AbsTol', 1e-10);
-            testCase.verifyEqual(r2b.data, [4 8 12], 'AbsTol', 1e-10);
+            testCase.verifyEqual(r1a.data, [2 4 6]', 'AbsTol', 1e-10);
+            testCase.verifyEqual(r2b.data, [4 8 12]', 'AbsTol', 1e-10);
 
             res1b = ProcessedSignal().load_all('subject', 1, 'session', 'B');
             res2a = ProcessedSignal().load_all('subject', 2, 'session', 'A');
@@ -614,8 +613,8 @@ classdef TestForEachWhere < matlab.unittest.TestCase
 
             r1a = ProcessedSignal().load('subject', 1, 'session', 'A');
             r2b = ProcessedSignal().load('subject', 2, 'session', 'B');
-            testCase.verifyEqual(r1a.data, [2 4 6], 'AbsTol', 1e-10);
-            testCase.verifyEqual(r2b.data, [20 22 24], 'AbsTol', 1e-10);
+            testCase.verifyEqual(r1a.data, [2 4 6]', 'AbsTol', 1e-10);
+            testCase.verifyEqual(r2b.data, [20 22 24]', 'AbsTol', 1e-10);
 
             res1b = ProcessedSignal().load_all('subject', 1, 'session', 'B');
             res2a = ProcessedSignal().load_all('subject', 2, 'session', 'A');

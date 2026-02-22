@@ -95,6 +95,27 @@ The WHERE clause building is extracted into `_build_bulk_where()`, reused by bot
 
 **Key detail**: Custom bulk uses `SELECT *` (not column-specific) because custom dtypes don't store column metadata in `dtype_meta["columns"]`. Internal columns (`parameter_id`, `version_id`, `schema_id`) are dropped after fetch, before deserialization.
 
+## Pitfall: numpy array → double conversion requires ascontiguousarray
+
+When extracting numpy arrays from a Python dict returned by the bridge (e.g. `bulk{'scalar_data'}`), MATLAB's `double()` **cannot** directly convert a `py.numpy.ndarray`:
+
+```
+Error using double
+Conversion to double from py.numpy.ndarray is not possible.
+```
+
+The correct pattern (matching `from_python.m` line 12) is to call `py.numpy.ascontiguousarray()` first:
+
+```matlab
+% WRONG — raises 'MATLAB:invalidConversion'
+all_scalar_data = double(bulk{'scalar_data'});
+
+% CORRECT
+all_scalar_data = double(py.numpy.ascontiguousarray(bulk{'scalar_data'}));
+```
+
+This applies anywhere a numpy array crosses the Python→MATLAB boundary outside of `from_python.m`. Both `scalar_data` (float64) and `concat_df_row_counts` (int64) in `wrap_py_vars_batch` need this treatment.
+
 ## Performance Impact
 
 | Component | Before | After |

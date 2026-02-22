@@ -18,8 +18,7 @@ classdef TestMerge < matlab.unittest.TestCase
             mkdir(testCase.test_dir);
             scidb.configure_database( ...
                 fullfile(testCase.test_dir, 'test.duckdb'), ...
-                ["subject", "session"], ...
-                fullfile(testCase.test_dir, 'pipeline.db'));
+                ["subject", "session"]);
         end
     end
 
@@ -220,7 +219,7 @@ classdef TestMerge < matlab.unittest.TestCase
             result = MergedResult().load('subject', 1);
             % Inner join on [subject, session] → 2 rows
             % Columns: subject, session, RawSignal, ProcessedSignal → 4 cols
-            testCase.verifyEqual(result.data, [2, 4]);
+            testCase.verifyEqual(result.data, [2, 4]');
         end
 
         function test_merge_multi_record_inner_join_drops_unmatched(testCase)
@@ -238,7 +237,7 @@ classdef TestMerge < matlab.unittest.TestCase
 
             result = MergedResult().load('subject', 1);
             % Inner join drops session C → 2 rows, 4 cols
-            testCase.verifyEqual(result.data, [2, 4]);
+            testCase.verifyEqual(result.data, [2, 4]');
         end
 
         function test_merge_mixed_single_and_multi_record(testCase)
@@ -261,7 +260,7 @@ classdef TestMerge < matlab.unittest.TestCase
 
             result = MergedResult().load('subject', 1);
             % Fixed broadcasts: 2 rows (sessions A, B), 4 cols
-            testCase.verifyEqual(result.data, [2, 4]);
+            testCase.verifyEqual(result.data, [2, 4]');
         end
 
         % --- Error cases ---

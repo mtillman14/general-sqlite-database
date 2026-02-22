@@ -18,8 +18,7 @@ classdef TestThunk < matlab.unittest.TestCase
             mkdir(testCase.test_dir);
             scidb.configure_database( ...
                 fullfile(testCase.test_dir, 'test.duckdb'), ...
-                ["subject", "session"], ...
-                fullfile(testCase.test_dir, 'pipeline.db'));
+                ["subject", "session"]);
         end
     end
 
@@ -104,12 +103,12 @@ classdef TestThunk < matlab.unittest.TestCase
             thunk = scidb.Thunk(@double_values);
             result = thunk(raw);
 
-            testCase.verifyEqual(result.data, [20 40 60], 'AbsTol', 1e-10);
+            testCase.verifyEqual(result.data, [20 40 60]', 'AbsTol', 1e-10);
         end
 
         function test_thunk_with_two_loaded_variables(testCase)
             RawSignal().save([1 2 3], 'subject', 1, 'session', 'A');
-            ProcessedSignal().save([10 20 30], 'subject', 1, 'session', 'A');
+            ProcessedSignal().save([10 20 30]', 'subject', 1, 'session', 'A');
 
             raw = RawSignal().load('subject', 1, 'session', 'A');
             proc = ProcessedSignal().load('subject', 1, 'session', 'A');
@@ -117,7 +116,7 @@ classdef TestThunk < matlab.unittest.TestCase
             thunk = scidb.Thunk(@sum_inputs);
             result = thunk(raw, proc);
 
-            testCase.verifyEqual(result.data, [11 22 33], 'AbsTol', 1e-10);
+            testCase.verifyEqual(result.data, [11 22 33]', 'AbsTol', 1e-10);
         end
 
         function test_thunk_with_mixed_inputs(testCase)
@@ -128,7 +127,7 @@ classdef TestThunk < matlab.unittest.TestCase
             thunk = scidb.Thunk(@add_offset);
             result = thunk(raw, 5);
 
-            testCase.verifyEqual(result.data, [15 25 35], 'AbsTol', 1e-10);
+            testCase.verifyEqual(result.data, [15 25 35]', 'AbsTol', 1e-10);
         end
 
         % --- Chained thunks ---
@@ -185,13 +184,13 @@ classdef TestThunk < matlab.unittest.TestCase
             r1 = SplitFirst().load('subject', 1, 'session', 'A');
             r2 = SplitSecond().load('subject', 1, 'session', 'A');
 
-            testCase.verifyEqual(r1.data, [10 20], 'AbsTol', 1e-10);
-            testCase.verifyEqual(r2.data, [30 40], 'AbsTol', 1e-10);
+            testCase.verifyEqual(r1.data, [10 20]', 'AbsTol', 1e-10);
+            testCase.verifyEqual(r2.data, [30 40]', 'AbsTol', 1e-10);
         end
 
         function test_unpack_output_different_lineage_hashes(testCase)
             thunk = scidb.Thunk(@split_data, 'unpack_output', true);
-            [first, second] = thunk([1 2 3 4]);
+            [first, second] = thunk([1 2 3 4]');
 
             SplitFirst().save(first, 'subject', 1, 'session', 'A');
             SplitSecond().save(second, 'subject', 1, 'session', 'A');
@@ -214,7 +213,7 @@ classdef TestThunk < matlab.unittest.TestCase
 
             % Second call with same args: should hit cache
             result2 = thunk([1 2 3]);
-            testCase.verifyEqual(result2.data, [2 4 6], 'AbsTol', 1e-10);
+            testCase.verifyEqual(result2.data, [2 4 6]', 'AbsTol', 1e-10);
         end
 
         function test_cache_miss_with_different_inputs(testCase)

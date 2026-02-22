@@ -732,7 +732,7 @@ classdef BaseVariable < dynamicprops
             has_scalar_data = logical( ...
                 py.operator.contains(bulk, 'scalar_data'));
             if has_scalar_data
-                all_scalar_data = double(bulk{'scalar_data'});
+                all_scalar_data = double(py.numpy.ascontiguousarray(bulk{'scalar_data'}));
             end
 
             % --- Optimization B2: DataFrame batch transfer ---
@@ -743,7 +743,7 @@ classdef BaseVariable < dynamicprops
                 py.operator.contains(bulk, 'concat_df'));
             if has_concat_df
                 concat_table = scidb.internal.from_python(bulk{'concat_df'});
-                row_counts = double(bulk{'concat_df_row_counts'});
+                row_counts = double(py.numpy.ascontiguousarray(bulk{'concat_df_row_counts'}));
                 % Build cumulative row offsets for slicing
                 cum_rows = cumsum([0; row_counts(:)]);
             end
