@@ -1798,7 +1798,7 @@ class DatabaseManager:
                 records = self._find_record(
                     variable_class.__name__, nested_metadata=nested_metadata, version_id=version_id
                 )
-            except Exception:
+            except NotFoundError:
                 return  # No data
 
             if len(records) == 0:

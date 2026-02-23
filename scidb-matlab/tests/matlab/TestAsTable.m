@@ -293,6 +293,21 @@ classdef TestAsTable < matlab.unittest.TestCase
                 'Flatten mode: numeric data column should be numeric');
         end
 
+        function test_load_as_table_no_metadata_filters(testCase)
+            %% load(as_table=true) with no metadata filters should return
+            %  all records as a table — as_table must not leak into the
+            %  metadata query.
+            ScalarVar().save(10, 'subject', 1, 'session', 'A');
+            ScalarVar().save(20, 'subject', 2, 'session', 'A');
+            ScalarVar().save(30, 'subject', 1, 'session', 'B');
+
+            tbl = ScalarVar().load('as_table', true);
+            testCase.verifyTrue(istable(tbl), ...
+                'load(as_table=true) with no metadata should return a table');
+            testCase.verifyEqual(height(tbl), 3, ...
+                'Should return all 3 records when no metadata filter is given');
+        end
+
         function test_as_table_false_with_column_selection_returns_vector(testCase)
             %% as_table=false + single column selection should return a
             %  plain vector (no metadata columns) — existing behavior.
