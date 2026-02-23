@@ -3,7 +3,7 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [project]
-name = "pathgen"
+name = "scipathgen"
 version = "0.1.0"
 description = "Template-based path generation for data pipelines"
 readme = "README.md"
@@ -45,8 +45,8 @@ dev = [
 ]
 
 [project.urls]
-Repository = "https://github.com/example/pathgen"
-Issues = "https://github.com/example/pathgen/issues"
+Repository = "https://github.com/example/scipathgen"
+Issues = "https://github.com/example/scipathgen/issues"
 
 [tool.hatch.build.targets.sdist]
 include = [
@@ -54,7 +54,7 @@ include = [
 ]
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/pathgen"]
+packages = ["src/scipathgen"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
@@ -85,4 +85,4 @@ ignore = [
 ]
 
 [tool.ruff.lint.isort]
-known-first-party = ["pathgen"]
+known-first-party = ["scipathgen"]

@@ -1,6 +1,6 @@
 """SciDuck — A thin DuckDB layer for managing versioned scientific data."""
 
-from .sciduck import (
+from .sciduckdb import (
     SciDuck,
     _infer_duckdb_type,
     _numpy_dtype_to_duckdb,

@@ -56,12 +56,7 @@ def _from_schema_str(value):
         pass
     return value
 
-# Add sub-package paths
-import sys
-_project_root = Path(__file__).parent.parent.parent
-sys.path.insert(0, str(_project_root / "sciduck" / "src"))
-
-from sciduck import (
+from sciduckdb import (
     SciDuck,
     _infer_duckdb_type, _python_to_storage, _storage_to_python,
     _infer_data_columns, _value_to_storage_row, _dataframe_to_storage_rows,

@@ -42,10 +42,6 @@ from .exceptions import (
 )
 
 # Re-export from scirun
-import sys
-from pathlib import Path
-_project_root = Path(__file__).parent.parent.parent
-sys.path.insert(0, str(_project_root / "scirun-lib" / "src"))
 from scirun import Fixed, Merge, for_each
 
 from .thunk import ThunkOutput, Thunk, thunk

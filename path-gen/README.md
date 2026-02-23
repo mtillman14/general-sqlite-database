@@ -7,7 +7,7 @@ Generates file paths with associated metadata from a template and metadata value
 ## Usage
 
 ```python
-from pathgen import PathGenerator
+from scipathgen import PathGenerator
 
 paths = PathGenerator(
     "{subject}/trial_{trial}.mat",

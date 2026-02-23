@@ -50,7 +50,7 @@ DuckDB-based database for data storage. Each variable is identified by a unique 
 User-facing API:
 
 ```python
-from sciduck import SciDuck
+from sciduckdb import SciDuck
 
 duck = SciDuck("data.duckdb", dataset_schema=["subject", "session"])
 duck.save("MyVar", df, subject=1, session=1)

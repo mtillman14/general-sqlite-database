@@ -27,9 +27,17 @@ With SciDB, your analysis scripts contain _only_ analysis logic. The infrastruct
 ### Installation
 
 ```bash
-# pip install coming soon!
-# For now, use this command:
-pip install git+https://github.com/mtillman14/general-sqlite-database
+pip install scidb
+```
+
+This pulls in all core dependencies (`sciduckdb`, `thunk`, `scipathgen`, `canonicalhash`, `scirun`).
+
+For development (editable installs of all packages):
+
+```bash
+git clone https://github.com/mtillman14/general-sqlite-database
+cd general-sqlite-database
+./dev-install.sh
 ```
 
 ### One-Time Setup

@@ -1,0 +1,53 @@
+name: Publish to PyPI
+
+on:
+  push:
+    tags:
+      - '*-v*'  # e.g. canonicalhash-v0.1.0, scidb-v1.0.0
+
+permissions:
+  id-token: write  # Required for trusted publishing (OIDC)
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    environment: pypi
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install build tools
+        run: pip install build
+
+      - name: Determine package directory
+        id: pkg
+        run: |
+          TAG="${GITHUB_REF#refs/tags/}"
+          # Extract package name (everything before -v)
+          PKG_NAME="${TAG%-v*}"
+
+          # Map package name to directory
+          case "$PKG_NAME" in
+            canonicalhash) DIR="canonical-hash" ;;
+            scipathgen)    DIR="path-gen" ;;
+            pipelinedb)    DIR="pipelinedb-lib" ;;
+            scirun)        DIR="scirun-lib" ;;
+            sciduckdb)     DIR="sciduck" ;;
+            thunk)         DIR="thunk-lib" ;;
+            scidb)         DIR="." ;;
+            scidb-matlab)  DIR="scidb-matlab" ;;
+            scidb-net)     DIR="scidb-net" ;;
+            *) echo "Unknown package: $PKG_NAME" && exit 1 ;;
+          esac
+
+          echo "dir=$DIR" >> "$GITHUB_OUTPUT"
+          echo "Publishing $PKG_NAME from $DIR"
+
+      - name: Build package
+        run: python -m build ${{ steps.pkg.outputs.dir }}
+
+      - name: Publish to PyPI
+        uses: pypa/gh-action-pypi-publish@release/v1

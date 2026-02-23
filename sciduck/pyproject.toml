@@ -3,7 +3,7 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [project]
-name = "sciduck"
+name = "sciduckdb"
 version = "0.1.0"
 description = "A thin DuckDB layer for managing versioned scientific data"
 readme = "README.md"
@@ -51,7 +51,7 @@ include = [
 ]
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/sciduck"]
+packages = ["src/sciduckdb"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
@@ -76,4 +76,4 @@ ignore = [
 ]
 
 [tool.ruff.lint.isort]
-known-first-party = ["sciduck"]
+known-first-party = ["sciduckdb"]

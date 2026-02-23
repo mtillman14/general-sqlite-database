@@ -4,6 +4,6 @@ This module re-exports the PathGenerator from the pathgen package
 for convenience within scidb.
 """
 
-from pathgen import PathGenerator
+from scipathgen import PathGenerator
 
 __all__ = ["PathGenerator"]

@@ -7,7 +7,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from sciduck import SciDuck
+from sciduckdb import SciDuck
 
 
 @pytest.fixture

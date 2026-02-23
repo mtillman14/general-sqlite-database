@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from pathgen import PathGenerator
+from scipathgen import PathGenerator
 
 
 class TestPathGenerator:

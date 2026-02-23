@@ -9,7 +9,7 @@ All data -- including arrays -- is stored in queryable DuckDB types (LIST, neste
 ## Usage
 
 ```python
-from sciduck import SciDuck
+from sciduckdb import SciDuck
 
 duck = SciDuck("data.duckdb", dataset_schema=["subject", "session"])
 duck.save("MyVar", data, subject="S01", session=1)
