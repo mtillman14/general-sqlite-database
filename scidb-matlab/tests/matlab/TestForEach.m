@@ -580,13 +580,6 @@ classdef TestForEach < matlab.unittest.TestCase
             subjects = "1";
             sessions = [1, 2, 3];
 
-            % Initialize the metadata keys (pre-create database schema)
-            for s = subjects
-                for sess = sessions
-                    ProcessedSignal().save(tbl(sess,:), 'subject', s, 'session', sess);
-                end
-            end
-
             scidb.for_each(@double_table_values, ...
                 struct('x', tbl), ...
                 {ProcessedSignal()}, ...
@@ -617,12 +610,6 @@ classdef TestForEach < matlab.unittest.TestCase
 
             subjects = ["1", "2"];
             sessions = [1, 2, 3];
-
-            for s = subjects
-                for sess = sessions
-                    ProcessedSignal().save(tbl(sess,:), 'subject', s, 'session', sess);
-                end
-            end
 
             scidb.for_each(@double_table_values, ...
                 struct('x', tbl), ...
@@ -679,9 +666,9 @@ classdef TestForEach < matlab.unittest.TestCase
             tbl.B = [4; 5; 6];
 
             sessions = [1, 2, 3];
-            for sess = sessions
-                ProcessedSignal().save(tbl(sess,:), 'subject', '1', 'session', sess);
-            end
+            % for sess = sessions
+            %     ProcessedSignal().save(tbl(sess,:), 'subject', '1', 'session', sess);
+            % end
 
             scidb.for_each(@table_with_session_col, ...
                 struct('x', tbl), ...

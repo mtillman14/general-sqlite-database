@@ -715,15 +715,28 @@ classdef BaseVariable < dynamicprops
             % Parse all metadata at once via JSON (native C decoder, no crossings)
             json_str = char(bulk{'json_meta'});
             meta_arr = jsondecode(json_str);
+            % jsondecode returns a cell array when objects have heterogeneous
+            % fields; normalize to cell array for uniform handling.
+            if iscell(meta_arr)
+                meta_cell = meta_arr;
+            else
+                % struct array — wrap each element in a cell
+                meta_cell = cell(n, 1);
+                for mi = 1:n
+                    meta_cell{mi} = meta_arr(mi);
+                end
+            end
             % Convert char fields to string for consistency with pydict_to_struct
             for mi = 1:n
-                flds = fieldnames(meta_arr(mi));
+                s = meta_cell{mi};
+                flds = fieldnames(s);
                 for fi = 1:numel(flds)
-                    val = meta_arr(mi).(flds{fi});
+                    val = s.(flds{fi});
                     if ischar(val)
-                        meta_arr(mi).(flds{fi}) = string(val);
+                        s.(flds{fi}) = string(val);
                     end
                 end
+                meta_cell{mi} = s;
             end
 
             % --- Optimization B: Scalar data batch transfer ---
@@ -781,7 +794,7 @@ classdef BaseVariable < dynamicprops
                     v.lineage_hash = lineage_hashes(i);
                 end
 
-                v.metadata = meta_arr(i);
+                v.metadata = meta_cell{i};
 
                 results(i) = v;
             end

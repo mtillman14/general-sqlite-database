@@ -2318,6 +2318,14 @@ function key = input_spec_to_key(spec)
     elseif isa(spec, 'scidb.BaseVariable')
         % Plain variable: class name
         key = class(spec);
+    elseif isa(spec, 'scidb.PathInput')
+        % PathInput: "PathInput("{template}")" or with root_folder
+        if strlength(spec.root_folder) > 0
+            key = sprintf('PathInput("%s", root_folder="%s")', ...
+                spec.path_template, spec.root_folder);
+        else
+            key = sprintf('PathInput("%s")', spec.path_template);
+        end
     else
         % Unknown: use string representation
         key = char(string(spec));
