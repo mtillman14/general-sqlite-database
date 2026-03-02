@@ -28,7 +28,7 @@ pip install -e path-gen/
 pip install -e thunk-lib/
 pip install -e sciduck/
 pip install -e pipelinedb-lib/
-pip install -e .              # scidb (main package)
+pip install -e scidb/         # scidb (main package)
 pip install -e scidb-matlab/  # MATLAB bridge
 ```
 

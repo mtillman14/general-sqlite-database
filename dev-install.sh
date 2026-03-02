@@ -16,7 +16,7 @@ pip install -e ./sciduck
 pip install -e ./thunk-lib
 
 # Layer 2: depends on thunk, scipathgen, canonicalhash, sciduckdb, scirun
-pip install -e .
+pip install -e ./scidb
 
 # Layer 3: depends on scidb
 pip install -e ./scidb-matlab

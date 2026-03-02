@@ -6,7 +6,7 @@ build-backend = "hatchling.build"
 name = "scidb"
 version = "0.1.0"
 description = "A lightweight database framework for scientific computing with versioning and provenance tracking"
-readme = "docs/index.md"
+readme = "README.md"
 license = {text = "MIT"}
 requires-python = ">=3.9"
 classifiers = [
