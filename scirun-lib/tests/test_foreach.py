@@ -2025,3 +2025,277 @@ class TestForEachSchemaFiltering:
         saved = [(d["metadata"]["subject"], d["metadata"]["session"]) for d in MockOutput.saved_data]
         assert (1, "A") in saved
         assert (2, "B") in saved
+
+
+class TestForEachReturnValue:
+    """Tests for the DataFrame returned by for_each()."""
+
+    def test_returns_dataframe(self):
+        """for_each should return a DataFrame."""
+
+        def process(x):
+            return 42.0
+
+        result = for_each(
+            process,
+            inputs={"x": MockVariableA},
+            outputs=[MockOutput],
+            subject=[1],
+        )
+
+        assert isinstance(result, pd.DataFrame)
+
+    def test_nested_mode_has_metadata_and_output_columns(self):
+        """Returned DataFrame should have metadata columns and one output column."""
+
+        def process(x):
+            return 99.0
+
+        result = for_each(
+            process,
+            inputs={"x": MockVariableA},
+            outputs=[MockOutput],
+            subject=[1],
+        )
+
+        assert "subject" in result.columns
+        assert "MockOutput" in result.columns
+        assert len(result) == 1
+        assert result.iloc[0]["subject"] == 1
+        assert result.iloc[0]["MockOutput"] == 99.0
+
+    def test_nested_mode_multiple_combinations(self):
+        """All metadata combinations should appear as rows in the result."""
+
+        def process(x):
+            return "result"
+
+        result = for_each(
+            process,
+            inputs={"x": MockVariableA},
+            outputs=[MockOutput],
+            subject=[1, 2, 3],
+        )
+
+        assert len(result) == 3
+        assert list(result["subject"]) == [1, 2, 3]
+
+    def test_nested_mode_multiple_metadata_keys(self):
+        """Multi-key metadata should all appear as columns."""
+
+        def process(x):
+            return "out"
+
+        result = for_each(
+            process,
+            inputs={"x": MockVariableA},
+            outputs=[MockOutput],
+            subject=[1, 2],
+            session=["A", "B"],
+        )
+
+        assert len(result) == 4
+        assert "subject" in result.columns
+        assert "session" in result.columns
+
+    def test_nested_mode_multiple_outputs(self):
+        """Each output type should become a separate column."""
+
+        def process(x):
+            return ("out_a", "out_b")
+
+        result = for_each(
+            process,
+            inputs={"x": MockVariableA},
+            outputs=[MockOutput, MockOutputB],
+            subject=[1, 2],
+        )
+
+        assert len(result) == 2
+        assert "MockOutput" in result.columns
+        assert "MockOutputB" in result.columns
+        assert list(result["MockOutput"]) == ["out_a", "out_a"]
+        assert list(result["MockOutputB"]) == ["out_b", "out_b"]
+
+    def test_nested_mode_uses_view_name(self):
+        """Output column name should use view_name() when defined."""
+
+        class MyOutput:
+            saved_data = []
+
+            def __init__(self, data):
+                self.data = data
+
+            @classmethod
+            def save(cls, data, **metadata):
+                cls.saved_data.append(data)
+
+            @classmethod
+            def view_name(cls):
+                return "my_custom_name"
+
+        def process(x):
+            return 7.0
+
+        result = for_each(
+            process,
+            inputs={"x": MockVariableA},
+            outputs=[MyOutput],
+            subject=[1],
+        )
+
+        assert "my_custom_name" in result.columns
+        assert "MyOutput" not in result.columns
+
+    def test_nested_mode_falls_back_to_class_name(self):
+        """Output column name falls back to __name__ when view_name() absent."""
+
+        class NoViewName:
+            @classmethod
+            def save(cls, data, **metadata):
+                pass
+
+        def process(x):
+            return 5.0
+
+        result = for_each(
+            process,
+            inputs={"x": MockVariableA},
+            outputs=[NoViewName],
+            subject=[1],
+        )
+
+        assert "NoViewName" in result.columns
+
+    def test_skipped_iterations_excluded(self):
+        """Rows where fn raised should not appear in the result."""
+        call_count = [0]
+
+        def sometimes_fails(x):
+            call_count[0] += 1
+            if call_count[0] == 2:
+                raise ValueError("fail")
+            return "ok"
+
+        result = for_each(
+            sometimes_fails,
+            inputs={"x": MockVariableA},
+            outputs=[MockOutput],
+            subject=[1, 2, 3],
+        )
+
+        assert len(result) == 2
+        assert list(result["subject"]) == [1, 3]
+
+    def test_all_skipped_returns_empty_dataframe(self):
+        """When all iterations fail, result should be an empty DataFrame."""
+
+        def always_fails(x):
+            raise ValueError("always")
+
+        result = for_each(
+            always_fails,
+            inputs={"x": MockVariableA},
+            outputs=[MockOutput],
+            subject=[1, 2],
+        )
+
+        assert isinstance(result, pd.DataFrame)
+        assert len(result) == 0
+
+    def test_dry_run_returns_none(self):
+        """dry_run=True should return None, not a DataFrame."""
+
+        def process(x):
+            return "result"
+
+        result = for_each(
+            process,
+            inputs={"x": MockVariableA},
+            outputs=[MockOutput],
+            dry_run=True,
+            subject=[1],
+        )
+
+        assert result is None
+
+    def test_save_false_still_returns_data(self):
+        """save=False should still return the computed data."""
+
+        def process(x):
+            return 123
+
+        result = for_each(
+            process,
+            inputs={"x": MockVariableA},
+            outputs=[MockOutput],
+            save=False,
+            subject=[1, 2],
+        )
+
+        assert isinstance(result, pd.DataFrame)
+        assert len(result) == 2
+        assert list(result["MockOutput"]) == [123, 123]
+        assert len(MockOutput.saved_data) == 0
+
+    def test_flatten_mode_dataframe_outputs(self):
+        """When fn returns DataFrames, metadata is replicated per row."""
+
+        def process(x):
+            return pd.DataFrame({"val": [10.0, 20.0, 30.0]})
+
+        result = for_each(
+            process,
+            inputs={"x": MockVariableA},
+            outputs=[MockOutput],
+            subject=[1, 2],
+        )
+
+        # 2 subjects * 3 rows each = 6 total rows
+        assert len(result) == 6
+        assert "subject" in result.columns
+        assert "val" in result.columns
+        # Subject 1 rows
+        s1 = result[result["subject"] == 1]
+        assert len(s1) == 3
+        np.testing.assert_array_equal(s1["val"].values, [10.0, 20.0, 30.0])
+        # Subject 2 rows
+        s2 = result[result["subject"] == 2]
+        assert len(s2) == 3
+
+    def test_flatten_mode_multiple_df_outputs(self):
+        """Multiple DataFrame outputs are concatenated horizontally per combination."""
+
+        def process(x):
+            df_a = pd.DataFrame({"col_a": [1.0, 2.0]})
+            df_b = pd.DataFrame({"col_b": [10.0, 20.0]})
+            return (df_a, df_b)
+
+        result = for_each(
+            process,
+            inputs={"x": MockVariableA},
+            outputs=[MockOutput, MockOutputB],
+            subject=[1],
+        )
+
+        # 1 subject * 2 rows = 2 rows, with both output columns inline
+        assert len(result) == 2
+        assert "subject" in result.columns
+        assert "col_a" in result.columns
+        assert "col_b" in result.columns
+
+    def test_return_does_not_affect_saves(self):
+        """Returning data should not change what gets saved."""
+
+        def process(x):
+            return "saved_value"
+
+        result = for_each(
+            process,
+            inputs={"x": MockVariableA},
+            outputs=[MockOutput],
+            subject=[1, 2],
+        )
+
+        assert len(MockOutput.saved_data) == 2
+        assert len(result) == 2

@@ -22,7 +22,7 @@ def for_each(
     distribute: bool = False,
     where=None,
     **metadata_iterables: list[Any],
-) -> None:
+) -> "pd.DataFrame | None":
     """
     Execute a function for all combinations of metadata, loading inputs
     and saving outputs automatically.
@@ -73,8 +73,16 @@ def for_each(
                Example: where=Side == "R"  (only process combos where Side is R)
         **metadata_iterables: Iterables of metadata values to combine
 
+    Returns:
+        A pandas DataFrame containing all computed results, with metadata
+        columns and one column per output type (named via view_name() or
+        __name__). If all outputs are DataFrames, metadata is replicated
+        per row and data columns are expanded inline (flatten mode).
+        Otherwise each combination becomes one row with output data nested
+        in its column (nested mode). Returns None when dry_run=True.
+
     Example:
-        for_each(
+        result = for_each(
             filter_data,
             inputs={"step_length": StepLength, "smoothing": 0.2},
             outputs=[FilteredStepLength],
@@ -231,6 +239,7 @@ def for_each(
 
     completed = 0
     skipped = 0
+    collected_rows: list[tuple[dict, tuple]] = []
 
     for values in all_combos:
         metadata = dict(zip(keys, values))
@@ -337,6 +346,8 @@ def for_each(
         if not isinstance(result, tuple):
             result = (result,)
 
+        collected_rows.append((metadata, result))
+
         # Save outputs (include constants and for_each config as version keys)
         save_metadata = {**metadata, **constant_inputs, **config_keys}
         if save:
@@ -376,8 +387,10 @@ def for_each(
     print()
     if dry_run:
         print(f"[dry-run] would process {total} iterations")
+        return None
     else:
         print(f"[done] completed={completed}, skipped={skipped}, total={total}")
+        return _results_to_output_dataframe(collected_rows, outputs)
 
 
 def _is_loadable(var_spec: Any) -> bool:
@@ -488,6 +501,65 @@ def _multi_result_to_dataframe(results: list, var_type: type):
         for var in results:
             row = dict(var.metadata) if var.metadata else {}
             row[view_name] = var.data
+            rows.append(row)
+        return pd.DataFrame(rows)
+
+
+def _results_to_output_dataframe(
+    collected_rows: list[tuple[dict, tuple]],
+    outputs: list[type],
+) -> "pd.DataFrame":
+    """Build a combined DataFrame from all for_each results.
+
+    collected_rows: list of (metadata_dict, result_tuple) for each successful
+                    function call.
+    outputs: list of output types (used for column naming).
+
+    Returns a DataFrame with metadata columns + one column per output type.
+
+    If all output values across all rows are DataFrames (flatten mode):
+    - Metadata is replicated per data row
+    - Multiple output DataFrames per combination are concatenated horizontally
+    - All combinations are stacked vertically
+
+    Otherwise (nested mode):
+    - One row per combination
+    - Each output value is stored in a column named via view_name() / __name__
+    """
+    import pandas as pd
+
+    if not collected_rows:
+        return pd.DataFrame()
+
+    output_names = [
+        output.view_name() if hasattr(output, 'view_name') else output.__name__
+        for output in outputs
+    ]
+
+    all_dataframes = all(
+        isinstance(value, pd.DataFrame)
+        for _, result_tuple in collected_rows
+        for value in result_tuple
+    )
+
+    if all_dataframes:
+        parts = []
+        for metadata, result_tuple in collected_rows:
+            combined_data = pd.concat(
+                [df.reset_index(drop=True) for df in result_tuple], axis=1
+            )
+            nr = len(combined_data)
+            meta_df = pd.DataFrame({k: [v] * nr for k, v in metadata.items()})
+            parts.append(pd.concat(
+                [meta_df.reset_index(drop=True), combined_data], axis=1
+            ))
+        return pd.concat(parts, ignore_index=True)
+    else:
+        rows = []
+        for metadata, result_tuple in collected_rows:
+            row = dict(metadata)
+            for name, value in zip(output_names, result_tuple):
+                row[name] = value
             rows.append(row)
         return pd.DataFrame(rows)
 

@@ -18,7 +18,8 @@
       "Bash(curl:*)",
       "Bash(pip index:*)",
       "Bash(pip3 index:*)",
-      "WebSearch"
+      "WebSearch",
+      "mcp__ide__getDiagnostics"
     ]
   }
 }
