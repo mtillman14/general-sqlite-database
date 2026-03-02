@@ -59,6 +59,11 @@ def for_each(
                 print(f"[warn] no values found for '{key}' in database, 0 iterations")
             metadata_iterables[key] = values
 
+    # Propagate schema keys to scifor so distribute and DataFrame detection work
+    # when a db is passed directly (e.g. in tests) without going through
+    # configure_database().
+    _propagate_schema(db, distribute)
+
     # Build ForEachConfig version keys (DB-specific; not part of scifor)
     config = ForEachConfig(
         fn=fn,
@@ -100,7 +105,7 @@ def for_each(
                       f"(from {len(raw_combos)} to {len(filtered)})")
             all_combos = filtered
 
-    # Delegate core loop to scifor
+    # Delegate core loop to scifor.
     return _scifor_for_each(
         fn,
         inputs,
@@ -116,3 +121,41 @@ def for_each(
         _all_combos=all_combos,
         **metadata_iterables,
     )
+
+
+def _propagate_schema(db, distribute: bool) -> None:
+    """Propagate dataset_schema_keys from the db into scifor.set_schema().
+
+    This is needed when a db is passed directly to for_each() without going
+    through configure_database() (e.g. in tests with a mock db).
+
+    When distribute=True and no database is reachable, raises a clear error
+    matching the original scirun behaviour (scifor's global schema is not used
+    as a fallback here — that fallback is only for scifor.for_each standalone).
+    """
+    import scifor as _scifor
+
+    # If a db was passed explicitly and has schema keys, use them.
+    if db is not None and hasattr(db, 'dataset_schema_keys'):
+        _scifor.set_schema(list(db.dataset_schema_keys))
+        return
+
+    # No explicit db: try the global database.
+    _global_db = None
+    try:
+        from scidb.database import get_database
+        _global_db = get_database()
+    except Exception:
+        pass
+
+    if _global_db is not None and hasattr(_global_db, 'dataset_schema_keys'):
+        _scifor.set_schema(list(_global_db.dataset_schema_keys))
+    elif distribute:
+        # In the DB-backed wrapper, distribute always requires a database
+        # source for schema keys.  Do not fall back to scifor.get_schema()
+        # here — that could silently use stale state from a prior call.
+        raise ValueError(
+            "distribute=True requires access to dataset_schema_keys, "
+            "but no database is available. Either pass db= to for_each or "
+            "call configure_database() first."
+        )
