@@ -171,7 +171,7 @@ needs additional stacking helpers.
 
 ## Key Files
 
-- `scidb-matlab/src/scidb_matlab/matlab/+scidb/+internal/to_python.m` — MATLAB → Python
-- `scidb-matlab/src/scidb_matlab/matlab/+scidb/+internal/from_python.m` — Python → MATLAB
-- `scidb-matlab/src/scidb_matlab/matlab/+scidb/BaseVariable.m` — save_from_table struct metadata
+- `sci-matlab/src/sci_matlab/matlab/+scidb/+internal/to_python.m` — MATLAB → Python
+- `sci-matlab/src/sci_matlab/matlab/+scidb/+internal/from_python.m` — Python → MATLAB
+- `sci-matlab/src/sci_matlab/matlab/+scidb/BaseVariable.m` — save_from_table struct metadata
 - `sciduck/src/sciduck/sciduck.py` — `_convert_for_json`, `_python_to_storage`, `_storage_to_python`, `_infer_duckdb_type`

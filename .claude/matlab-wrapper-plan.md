@@ -213,10 +213,10 @@ MATLAB thunks can't cache-hit against Python thunks (different function hashes),
 
 File Layout
 
-scidb-matlab/
+sci-matlab/
 ├── +scidb/
 │ ├── configure_database.m % → py.scidb.configure_database(...)
-│ ├── register_variable.m % → py.scidb_matlab.bridge.register_matlab_variable(...)
+│ ├── register_variable.m % → py.sci_matlab.bridge.register_matlab_variable(...)
 │ ├── save.m % → py.scidb.database.get_database().save_variable(...)
 │ ├── load.m % → py.scidb.database.get_database().load(...)
 │ ├── load_all.m % → py.scidb.database.get_database().load_all(...)

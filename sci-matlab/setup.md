@@ -1,4 +1,4 @@
-# scidb-matlab Setup Guide
+# sci-matlab Setup Guide
 
 ## 1. Install Python
 
@@ -29,7 +29,7 @@ pip install -e thunk-lib/
 pip install -e sciduck/
 pip install -e pipelinedb-lib/
 pip install -e scidb/         # scidb (main package)
-pip install -e scidb-matlab/  # MATLAB bridge
+pip install -e sci-matlab/  # MATLAB bridge
 ```
 
 ## 3. Point MATLAB at Your Python
@@ -50,7 +50,7 @@ To make this persistent across MATLAB sessions, add the `pyenv(...)` call to you
 ## 4. Add the MATLAB Package to the Path
 
 ```matlab
-addpath('/path/to/scidb-matlab/matlab')
+addpath('/path/to/sci-matlab/matlab')
 ```
 
 Add this to your `startup.m` as well to make it persistent.
@@ -62,7 +62,7 @@ Run the following in MATLAB to confirm everything is connected:
 ```matlab
 % Test that Python imports work
 py.importlib.import_module('scidb');
-py.importlib.import_module('scidb_matlab');
+py.importlib.import_module('sci_matlab');
 disp('Python packages loaded successfully.')
 
 % Test database configuration
@@ -103,8 +103,8 @@ FilteredSignal().save(result, subject=1, session="A");
 **"Python Error: ModuleNotFoundError: No module named 'scidb'"**
 The `pyenv` in MATLAB is not pointing at the Python environment where the packages are installed. Run `pyenv` in MATLAB to check the executable path, then verify that `python -c "import scidb"` works from a terminal using that same Python.
 
-**"Python Error: ModuleNotFoundError: No module named 'scidb_matlab'"**
-You need to `pip install -e scidb-matlab/` in the same Python environment that MATLAB is using.
+**"Python Error: ModuleNotFoundError: No module named 'sci_matlab'"**
+You need to `pip install -e sci-matlab/` in the same Python environment that MATLAB is using.
 
 **"Python is not loaded" or "Cannot change Python version after it has been loaded"**
 `pyenv('Version', ...)` must be called before any `py.` call in the MATLAB session. Restart MATLAB and set `pyenv` before doing anything else. Put it in `startup.m` so it happens automatically.

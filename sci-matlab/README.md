@@ -1,4 +1,4 @@
-# scidb-matlab
+# sci-matlab
 
 MATLAB wrapper for the SciDB scientific data versioning framework.
 
@@ -7,7 +7,7 @@ Provides `scidb.BaseVariable` and `scidb.Thunk` for MATLAB, with full lineage tr
 ## Requirements
 
 - MATLAB R2021b or later (for name=value argument syntax)
-- Python 3.10+ with the `scidb` and `scidb-matlab` packages installed
+- Python 3.10+ with the `scidb` and `sci-matlab` packages installed
 - MATLAB's Python environment configured (`pyenv`)
 
 ## Setup
@@ -17,7 +17,7 @@ Provides `scidb.BaseVariable` and `scidb.Thunk` for MATLAB, with full lineage tr
 pyenv('Version', '/path/to/python');
 
 % Add the MATLAB package to the path
-addpath('/path/to/scidb-matlab/matlab');
+addpath('/path/to/sci-matlab/matlab');
 ```
 
 ## Quick Start
@@ -66,7 +66,7 @@ MATLAB (user code)
    └── py. interface ──────────────────────────────┐
                                                     │
 Python (in-process)                                 │
-   ├── scidb_matlab.bridge                          │
+   ├── sci_matlab.bridge                          │
    │     ├── MatlabThunk          ← proxy for Thunk duck-typing contract
    │     ├── MatlabPipelineThunk  ← reuses classify_inputs() from thunk-lib
    │     └── make_thunk_output    ← creates real ThunkOutput instances

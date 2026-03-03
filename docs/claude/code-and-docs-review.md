@@ -24,7 +24,7 @@ print(f"    [_is_tabular_dict] FAIL: unequal lengths=...")
 
 ### 2. `BaseVariable.m` — Debug `fprintf` statements in `save()`
 
-**File:** `scidb-matlab/src/scidb_matlab/matlab/+scidb/BaseVariable.m`, lines 102–114
+**File:** `sci-matlab/src/sci_matlab/matlab/+scidb/BaseVariable.m`, lines 102–114
 
 The MATLAB `save()` method prints detailed debug info for every save call:
 
@@ -40,7 +40,7 @@ This generates significant noise for any user calling `save()` and cannot be dis
 
 ### 3. `for_each.m` — Debug `fprintf` during preload phase
 
-**File:** `scidb-matlab/src/scidb_matlab/matlab/+scidb/for_each.m`, line 299
+**File:** `sci-matlab/src/sci_matlab/matlab/+scidb/for_each.m`, line 299
 
 ```matlab
 fprintf('Bulk preloading variable %s\n', type_name);
@@ -56,7 +56,7 @@ This prints for every variable type being preloaded, using an inconsistent forma
 
 ### 4. `BaseVariable.m` — `provenance()` version support is unfinished
 
-**File:** `scidb-matlab/src/scidb_matlab/matlab/+scidb/BaseVariable.m`, line 451
+**File:** `sci-matlab/src/sci_matlab/matlab/+scidb/BaseVariable.m`, line 451
 
 ```matlab
 if version ~= "latest"
@@ -75,7 +75,7 @@ The `version` argument to `provenance()` is silently ignored for non-`"latest"` 
 
 **File:** `docs/claude/for-each-caching.md`
 
-The design document for `skip_computed=True` exists in `docs/claude/for-each-caching.md`, but the feature has not been implemented in either Python (`scirun-lib/src/scirun/foreach.py`) or MATLAB (`scidb-matlab/.../for_each.m`). Users re-running `for_each` always re-execute all iterations, even if outputs already exist in the database.
+The design document for `skip_computed=True` exists in `docs/claude/for-each-caching.md`, but the feature has not been implemented in either Python (`scirun-lib/src/scirun/foreach.py`) or MATLAB (`sci-matlab/.../for_each.m`). Users re-running `for_each` always re-execute all iterations, even if outputs already exist in the database.
 
 **Impact:** This is a significant usability gap for large datasets. Without it, users must implement their own existence checks or tolerate redundant computation.
 
@@ -97,7 +97,7 @@ The existing `api.md` documentation states that `table_name()` "returns the clas
 
 ### 7. `load()` return type is inconsistent
 
-**Files:** `src/scidb/variable.py`, `scidb-matlab/.../BaseVariable.m`
+**Files:** `src/scidb/variable.py`, `sci-matlab/.../BaseVariable.m`
 
 `load()` returns a single variable when one record matches and a **list** of variables when multiple records match. This means the return type is determined at runtime, which can cause `AttributeError` in user code:
 
@@ -116,7 +116,7 @@ Users frequently hit this when they expect one record but have multiple sessions
 
 ### 8. Cross-language thunk caching is not shared
 
-**Files:** `scidb-matlab/README.md` (documented), but missing from user-facing docs.
+**Files:** `sci-matlab/README.md` (documented), but missing from user-facing docs.
 
 Python and MATLAB thunks do not share cache entries, even for the same function applied to the same data. This is expected behavior (Python uses bytecode hash; MATLAB uses source file hash), but it is never explained in the user-facing documentation.
 
@@ -147,7 +147,7 @@ Returns:
 
 ### 11. `MATLAB parallel=True` restrictions not documented
 
-**Files:** `scidb-matlab/.../for_each.m` (documented in code), but not in user-facing docs.
+**Files:** `sci-matlab/.../for_each.m` (documented in code), but not in user-facing docs.
 
 `parallel=true` cannot be used with `scidb.Thunk` functions or `PathInput`. The error is raised at runtime with a clear message, but users have no way to know this limitation before running.
 

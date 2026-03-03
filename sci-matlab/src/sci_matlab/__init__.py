@@ -6,7 +6,7 @@ to participate in the SciDB lineage system without modifying any
 existing Python packages.
 
 Usage from MATLAB (via py. interface):
-    py.scidb_matlab.bridge.MatlabThunk(source_hash, 'my_func', false)
+    py.sci_matlab.bridge.MatlabThunk(source_hash, 'my_func', false)
 """
 
 from .bridge import (

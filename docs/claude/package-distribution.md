@@ -13,7 +13,7 @@ Each sub-package is independently publishable to PyPI. Two packages were renamed
 | `sciduck/` | `sciduckdb` | `sciduckdb` | Renamed from `sciduck` (taken on PyPI) |
 | `thunk-lib/` | `thunk` | `thunk` | |
 | `src/` (root) | `scidb` | `scidb` | |
-| `scidb-matlab/` | `scidb-matlab` | `scidb_matlab` | |
+| `sci-matlab/` | `scidb-matlab` | `scidb_matlab` | |
 | `scidb-net/` | `scidb-net` | `scidbnet` | |
 
 **Important**: The directory names on disk did NOT change (e.g. the folder is still `sciduck/`), only the Python package directory inside `src/` was renamed (e.g. `sciduck/src/sciduckdb/`). This means `sys.path.insert` references to `sciduck/src` in conftest files still work — they add the `src/` directory to the path, and Python finds the `sciduckdb` package inside it.

@@ -8,7 +8,7 @@ SciDB's public API spans three packages that work together. The same concepts an
 |---------|---------|--------|
 | `scidb` | Core: variables, database, lineage | `from scidb import ...` / `scidb.*` |
 | `scirun` | Batch processing (`for_each`) | `from scidb import for_each` / `scidb.for_each(...)` |
-| `scidb-matlab` | MATLAB wrapper | `addpath(...)` then `scidb.*` |
+| `sci-matlab` | MATLAB wrapper | `addpath(...)` then `scidb.*` |
 
 ## API Sections
 

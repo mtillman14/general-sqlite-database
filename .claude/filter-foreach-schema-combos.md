@@ -19,8 +19,8 @@ When `for_each` is called with `[]` (meaning "all values") for schema keys, it r
 
 | File | Change |
 |------|--------|
-| `scidb-matlab/src/scidb_matlab/matlab/+scidb/for_each.m` | Added filtering logic after cartesian product; added `has_pathinput()` and `schema_str()` local helpers; moved dry-run header after filtering so iteration count reflects filtered total |
-| `scidb-matlab/tests/matlab/TestForEachSchemaFiltering.m` | New test class with 9 integration tests |
+| `sci-matlab/src/sci_matlab/matlab/+scidb/for_each.m` | Added filtering logic after cartesian product; added `has_pathinput()` and `schema_str()` local helpers; moved dry-run header after filtering so iteration count reflects filtered total |
+| `sci-matlab/tests/matlab/TestForEachSchemaFiltering.m` | New test class with 9 integration tests |
 
 ## Key Design Decisions
 

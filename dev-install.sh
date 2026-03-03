@@ -19,7 +19,7 @@ pip install -e ./thunk-lib
 pip install -e ./scidb
 
 # Layer 3: depends on scidb
-pip install -e ./scidb-matlab
+pip install -e ./sci-matlab
 pip install -e ./scidb-net
 
 echo "All packages installed in editable mode."

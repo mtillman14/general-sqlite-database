@@ -1,5 +1,5 @@
 function results = run_tests()
-%RUN_TESTS  Run all MATLAB integration tests for scidb-matlab.
+%RUN_TESTS  Run all MATLAB integration tests for sci-matlab.
 %
 %   results = run_tests()
 %
@@ -7,7 +7,7 @@ function results = run_tests()
 %   and runs them using MATLAB's unittest framework.
 %
 %   Example:
-%       cd scidb-matlab/tests/matlab
+%       cd sci-matlab/tests/matlab
 %       results = run_tests();
 
     % clear functions;

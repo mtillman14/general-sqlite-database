@@ -59,7 +59,7 @@ The DatabaseManager methods use `var_group` (e.g. `add_to_var_group`) while the 
 
 ## MATLAB Access
 
-MATLAB cannot auto-convert BaseVariable objects to Python, so dedicated MATLAB wrapper functions handle conversion before calling the Python layer. These live in `scidb-matlab/src/scidb_matlab/matlab/+scidb/`:
+MATLAB cannot auto-convert BaseVariable objects to Python, so dedicated MATLAB wrapper functions handle conversion before calling the Python layer. These live in `sci-matlab/src/sci_matlab/matlab/+scidb/`:
 
 - `scidb.add_to_var_group(group_name, variables)`
 - `scidb.remove_from_var_group(group_name, variables)`

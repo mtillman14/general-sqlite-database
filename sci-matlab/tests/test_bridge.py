@@ -17,12 +17,12 @@ sys.path.insert(0, str(_root / "sciduck" / "src"))
 sys.path.insert(0, str(_root / "pipelinedb-lib" / "src"))
 sys.path.insert(0, str(_root / "path-gen" / "src"))
 sys.path.insert(0, str(_root / "scirun-lib" / "src"))
-sys.path.insert(0, str(_root / "scidb-matlab" / "src"))
+sys.path.insert(0, str(_root / "sci-matlab" / "src"))
 
 import numpy as np
 import pytest
 
-from scidb_matlab.bridge import (
+from sci_matlab.bridge import (
     MatlabThunk,
     MatlabPipelineThunk,
     check_cache,

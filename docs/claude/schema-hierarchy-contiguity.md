@@ -70,7 +70,7 @@ Mode A (DataFrame) and Mode C (tuple-dict) saves still use `_schema_key_columns`
 ## What Does NOT Change
 
 - **`for_each`** — No contiguity logic; passes flat metadata through
-- **Bridge layer** (`scidb-matlab/bridge.py`) — No contiguity logic
+- **Bridge layer** (`sci-matlab/bridge.py`) — No contiguity logic
 - **Variable views** (`_create_variable_view`) — Already SELECT all schema columns
 - **`_split_metadata()`** — Already a flat dict partition, no prefix logic
 

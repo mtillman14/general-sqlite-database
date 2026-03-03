@@ -48,7 +48,7 @@ which python
 
 ```matlab
 % Add the scidb-matlab MATLAB package to your MATLAB path
-addpath('/path/to/scidb-matlab/src/scidb_matlab/matlab');
+addpath('/path/to/sci-matlab/src/sci_matlab/matlab');
 
 % Verify it works
 help scidb.BaseVariable
@@ -101,7 +101,7 @@ my_project/
 
 ```matlab
 % In startup.m
-addpath('/path/to/scidb-matlab/src/scidb_matlab/matlab');
+addpath('/path/to/sci-matlab/src/sci_matlab/matlab');
 addpath(fullfile(pwd, 'vars'));
 ```
 

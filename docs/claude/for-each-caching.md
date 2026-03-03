@@ -196,5 +196,5 @@ These happen once during preload, not per-iteration.
 | `pipelinedb-lib/src/pipelinedb/pipelinedb.py` | Add `_for_each_cache` table creation in `_ensure_schema()`. Add `check_for_each_cache(output_var, metadata_key)` and `upsert_for_each_cache(output_var, metadata_key, fn_hash)` methods. |
 | `src/scidb/foreach.py` | Add `skip_computed=False` parameter. Compute fn_hash. Before each iteration, check cache + output existence. After saving, update cache. |
 | `src/scidb/database.py` | Add a `record_exists(cls, **metadata) -> bool` convenience method that checks `_find_record` without loading data. Expose `PipelineDB.check_for_each_cache` through `DatabaseManager`. |
-| `scidb-matlab/src/scidb_matlab/matlab/+scidb/for_each.m` | Add `skip_computed` to `split_options`. Compute fn_hash. During preload phase, bulk-query output existence and cache table. During iteration, check maps. After saving, update cache via Python bridge call. |
-| `scidb-matlab/src/scidb_matlab/bridge.py` (if needed) | Add bridge functions for cache check/update and output existence check, callable from MATLAB. |
+| `sci-matlab/src/sci_matlab/matlab/+scidb/for_each.m` | Add `skip_computed` to `split_options`. Compute fn_hash. During preload phase, bulk-query output existence and cache table. During iteration, check maps. After saving, update cache via Python bridge call. |
+| `sci-matlab/src/sci_matlab/bridge.py` (if needed) | Add bridge functions for cache check/update and output existence check, callable from MATLAB. |

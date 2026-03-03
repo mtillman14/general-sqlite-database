@@ -48,7 +48,7 @@ classdef Thunk < handle
             func_name = scidb.internal.function_name(fcn);
 
             % Create the Python-side proxy
-            obj.py_thunk = py.scidb_matlab.bridge.MatlabThunk( ...
+            obj.py_thunk = py.sci_matlab.bridge.MatlabThunk( ...
                 source_hash, func_name, options.unpack_output);
         end
 
@@ -77,10 +77,10 @@ classdef Thunk < handle
             end
 
             % --- Step 2: Create pipeline thunk & check cache ---
-            py_pt = py.scidb_matlab.bridge.MatlabPipelineThunk( ...
+            py_pt = py.sci_matlab.bridge.MatlabPipelineThunk( ...
                 obj.py_thunk, py_inputs);
 
-            cached = py.scidb_matlab.bridge.check_cache(py_pt);
+            cached = py.sci_matlab.bridge.check_cache(py_pt);
 
             if ~isa(cached, 'py.NoneType') && ~isempty(cached)
                 % --- Cache HIT ---
@@ -100,13 +100,13 @@ classdef Thunk < handle
             if obj.unpack_output
                 out = cell(1, n);
                 for i = 1:n
-                    py_to = py.scidb_matlab.bridge.make_thunk_output( ...
+                    py_to = py.sci_matlab.bridge.make_thunk_output( ...
                         py_pt, int64(i - 1), cached_cell{i});
                     out{i} = scidb.ThunkOutput( ...
                         scidb.internal.from_python(cached_cell{i}), py_to);
                 end
             else
-                py_to = py.scidb_matlab.bridge.make_thunk_output( ...
+                py_to = py.sci_matlab.bridge.make_thunk_output( ...
                     py_pt, int64(0), cached_cell{1});
                 out = {scidb.ThunkOutput( ...
                     scidb.internal.from_python(cached_cell{1}), py_to)};
@@ -135,14 +135,14 @@ classdef Thunk < handle
                 out = cell(1, n);
                 for i = 1:n
                     py_data = scidb.internal.to_python(result{i});
-                    py_to = py.scidb_matlab.bridge.make_thunk_output( ...
+                    py_to = py.sci_matlab.bridge.make_thunk_output( ...
                         py_pt, int64(i - 1), py_data);
                     out{i} = scidb.ThunkOutput(result{i}, py_to);
                 end
             else
                 result = feval(obj.fcn, matlab_args{:});
                 py_data = scidb.internal.to_python(result);
-                py_to = py.scidb_matlab.bridge.make_thunk_output( ...
+                py_to = py.sci_matlab.bridge.make_thunk_output( ...
                     py_pt, int64(0), py_data);
                 out = {scidb.ThunkOutput(result, py_to)};
             end

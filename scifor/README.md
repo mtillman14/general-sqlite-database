@@ -101,7 +101,7 @@ results = for_each(
 
 ## MATLAB Usage
 
-The `+scifor` namespace is part of the `scidb-matlab` package. Both `for_each`
+The `+scifor` namespace is part of the `sci-matlab` package. Both `for_each`
 and its supporting utilities (schema management, filters, file I/O) live in
 the `scifor` namespace. `scidb.for_each()` is a thin passthrough for
 backward compatibility.

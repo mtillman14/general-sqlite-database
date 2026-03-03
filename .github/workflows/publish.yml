@@ -38,7 +38,7 @@ jobs:
             sciduckdb)     DIR="sciduck" ;;
             thunk)         DIR="thunk-lib" ;;
             scidb)         DIR="." ;;
-            scidb-matlab)  DIR="scidb-matlab" ;;
+            sci-matlab)    DIR="sci-matlab" ;;
             scidb-net)     DIR="scidb-net" ;;
             *) echo "Unknown package: $PKG_NAME" && exit 1 ;;
           esac

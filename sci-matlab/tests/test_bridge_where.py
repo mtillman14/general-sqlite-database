@@ -16,12 +16,12 @@ sys.path.insert(0, str(_root / "sciduck" / "src"))
 sys.path.insert(0, str(_root / "pipelinedb-lib" / "src"))
 sys.path.insert(0, str(_root / "path-gen" / "src"))
 sys.path.insert(0, str(_root / "scirun-lib" / "src"))
-sys.path.insert(0, str(_root / "scidb-matlab" / "src"))
+sys.path.insert(0, str(_root / "sci-matlab" / "src"))
 
 import numpy as np
 import pytest
 
-from scidb_matlab.bridge import load_and_extract, register_matlab_variable
+from sci_matlab.bridge import load_and_extract, register_matlab_variable
 from scidb.database import configure_database
 from scidb.filters import VariableFilter, RawFilter, CompoundFilter, raw_sql
 

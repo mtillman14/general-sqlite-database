@@ -1,5 +1,5 @@
 Metadata-Version: 2.4
-Name: scidb-matlab
+Name: sci-matlab
 Version: 0.1.0
 Summary: MATLAB bridge for the SciDB scientific data versioning framework
 License: MIT

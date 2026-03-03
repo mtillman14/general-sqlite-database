@@ -7,7 +7,7 @@ function setup_paths()
 %   - All monorepo Python package source directories to py.sys.path
 
     this_dir = fileparts(mfilename('fullpath'));
-    matlab_root = fullfile(this_dir, '..', '..', 'src', 'scidb_matlab', 'matlab');
+    matlab_root = fullfile(this_dir, '..', '..', 'src', 'sci_matlab', 'matlab');
     helpers_dir = fullfile(this_dir, 'helpers');
     workspace_root = fullfile(this_dir, '..', '..', '..');
 
@@ -25,7 +25,7 @@ function setup_paths()
         fullfile(workspace_root, 'path-gen', 'src')
         fullfile(workspace_root, 'scifor', 'src')
         fullfile(workspace_root, 'scirun-lib', 'src')
-        fullfile(workspace_root, 'scidb-matlab', 'src')
+        fullfile(workspace_root, 'sci-matlab', 'src')
     };
 
     for i = 1:numel(py_paths)

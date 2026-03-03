@@ -63,8 +63,8 @@ The column names are passed to the `BaseVariable` constructor and stored in the 
 | `src/scidb/variable.py` | `BaseVariable.__class_getitem__` |
 | `scirun-lib/src/scirun/foreach.py` | Loading loop + `_apply_column_selection()` + fixed `_unwrap()` |
 | `scirun-lib/tests/test_foreach.py` | `TestForEachColumnSelection` test class |
-| `scidb-matlab/src/scidb_matlab/matlab/+scidb/BaseVariable.m` | `selected_columns` property + constructor |
-| `scidb-matlab/src/scidb_matlab/matlab/+scidb/for_each.m` | `apply_column_selection()` helper + call sites |
+| `sci-matlab/src/sci_matlab/matlab/+scidb/BaseVariable.m` | `selected_columns` property + constructor |
+| `sci-matlab/src/sci_matlab/matlab/+scidb/for_each.m` | `apply_column_selection()` helper + call sites |
 
 ## Important: `_unwrap()` Fix
 

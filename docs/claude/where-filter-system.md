@@ -156,7 +156,7 @@ filt = scidb.raw_sql('"value" > 0.70');         % RawFilter
 
 `scidb.Filter` holds a `.py_filter` property containing the Python filter object. The `&`, `|`, and `~` operators on `scidb.Filter` delegate to Python via `__and__`, `__or__`, `__invert__`.
 
-Key file: `scidb-matlab/src/scidb_matlab/matlab/+scidb/Filter.m`
+Key file: `sci-matlab/src/sci_matlab/matlab/+scidb/Filter.m`
 
 ### where= in load() / load_all()
 
@@ -174,7 +174,7 @@ The filter is forwarded to Python as `where_filter.py_filter` via the bridge. Sc
 For each non-Merge, non-PathInput input variable, `for_each` bulk-preloads all values for all iteration combos in a single Python call. The `where=` filter is passed to `load_and_extract`:
 
 ```matlab
-bulk = py.scidb_matlab.bridge.load_and_extract( ...
+bulk = py.sci_matlab.bridge.load_and_extract( ...
     py_class, py_metadata, ...
     pyargs('version_id', 'latest', 'db', py_db, 'where', where_filter.py_filter));
 ```

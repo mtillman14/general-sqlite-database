@@ -8,5 +8,5 @@ function py_class = ensure_registered(type_name)
 %   This is called automatically by BaseVariable instance methods (save,
 %   load, etc.) — users do not need to call this directly.
 
-    py_class = py.scidb_matlab.bridge.register_matlab_variable(type_name);
+    py_class = py.sci_matlab.bridge.register_matlab_variable(type_name);
 end
