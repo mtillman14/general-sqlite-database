@@ -86,14 +86,17 @@ def test_per_combo_df_multiple_rows_passed_as_df():
         "emg": [1.0, 2.0, 3.0, 4.0],
     })
     received_shapes = []
+    received_types = []
 
     def fn(data):
         received_shapes.append(data.shape)
+        received_types.append(type(data))
         return 0
 
     for_each(fn, inputs={"data": df}, subject=[1, 2])
-    # After dropping schema col "subject", we get 2 data cols: trial, emg
-    assert received_shapes == [(2, 2), (2, 2)]
+    # After dropping schema col "subject", we get a vector of 2 emg values
+    assert received_shapes == [(2,1), (2,1)]
+    assert received_types == [np.ndarray, np.ndarray]
 
 
 def test_as_table_forces_dataframe():

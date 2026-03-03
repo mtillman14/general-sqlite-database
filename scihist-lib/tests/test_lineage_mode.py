@@ -3,14 +3,11 @@
 import numpy as np
 import pytest
 
-from scidb import (
-    BaseVariable,
-    configure_database,
-    thunk,
-    UnsavedIntermediateError,
-)
+from scidb import BaseVariable, UnsavedIntermediateError
 from scidb.database import _local, DatabaseManager
-from scidb.lineage import find_unsaved_variables
+from thunk import thunk, find_unsaved_variables
+from scihist import configure_database, save
+
 from conftest import DEFAULT_TEST_SCHEMA_KEYS
 
 
@@ -40,6 +37,8 @@ def strict_db(tmp_path):
     db = configure_database(db_path, DEFAULT_TEST_SCHEMA_KEYS, lineage_mode="strict")
     yield db
     db.close()
+    from thunk import Thunk
+    Thunk.query = None
     if hasattr(_local, 'database'):
         delattr(_local, 'database')
 
@@ -51,56 +50,10 @@ def ephemeral_db(tmp_path):
     db = configure_database(db_path, DEFAULT_TEST_SCHEMA_KEYS, lineage_mode="ephemeral")
     yield db
     db.close()
-    if hasattr(_local, 'database'):
-        delattr(_local, 'database')
-
-
-@pytest.fixture(autouse=True)
-def clear_global_state():
-    """Clear global database state before and after each test."""
-    from scidb.thunk import Thunk
-    if hasattr(_local, 'database'):
-        delattr(_local, 'database')
+    from thunk import Thunk
     Thunk.query = None
-    yield
     if hasattr(_local, 'database'):
         delattr(_local, 'database')
-    Thunk.query = None
-
-
-# --- Configuration Tests ---
-
-class TestLineageModeConfiguration:
-    """Test lineage_mode configuration."""
-
-    def test_default_lineage_mode_is_strict(self, tmp_path):
-        """Default lineage mode should be 'strict'."""
-        db = DatabaseManager(tmp_path / "test.db", dataset_schema_keys=DEFAULT_TEST_SCHEMA_KEYS)
-        assert db.lineage_mode == "strict"
-        db.close()
-
-    def test_configure_strict_mode(self, tmp_path):
-        """Can explicitly configure strict mode."""
-        db = DatabaseManager(tmp_path / "test.db", dataset_schema_keys=DEFAULT_TEST_SCHEMA_KEYS, lineage_mode="strict")
-        assert db.lineage_mode == "strict"
-        db.close()
-
-    def test_configure_ephemeral_mode(self, tmp_path):
-        """Can configure ephemeral mode."""
-        db = DatabaseManager(tmp_path / "test.db", dataset_schema_keys=DEFAULT_TEST_SCHEMA_KEYS, lineage_mode="ephemeral")
-        assert db.lineage_mode == "ephemeral"
-        db.close()
-
-    def test_invalid_lineage_mode_raises_error(self, tmp_path):
-        """Invalid lineage mode should raise ValueError."""
-        with pytest.raises(ValueError, match="lineage_mode must be one of"):
-            DatabaseManager(tmp_path / "test.db", dataset_schema_keys=DEFAULT_TEST_SCHEMA_KEYS, lineage_mode="invalid")
-
-    def test_configure_database_passes_lineage_mode(self, tmp_path):
-        """configure_database should pass lineage_mode to DatabaseManager."""
-        db = configure_database(tmp_path / "test.db", DEFAULT_TEST_SCHEMA_KEYS, lineage_mode="ephemeral")
-        assert db.lineage_mode == "ephemeral"
-        db.close()
 
 
 # --- Find Unsaved Variables Tests ---
@@ -201,7 +154,7 @@ class TestStrictMode:
         result = process(raw)
 
         # Should not raise - all intermediates saved
-        record_id = ProcessedData.save(result, subject=1, stage="processed")
+        record_id = save(ProcessedData, result, subject=1, stage="processed")
         assert record_id is not None
 
     def test_strict_mode_raises_for_unsaved_intermediate(self, strict_db):
@@ -216,7 +169,7 @@ class TestStrictMode:
         result = process(raw)
 
         with pytest.raises(UnsavedIntermediateError) as exc_info:
-            ProcessedData.save(result, subject=1)
+            save(ProcessedData, result, subject=1)
 
         # Error message should be helpful
         assert "RawData" in str(exc_info.value)
@@ -233,7 +186,7 @@ class TestStrictMode:
         result = process(raw)
 
         with pytest.raises(UnsavedIntermediateError) as exc_info:
-            ProcessedData.save(result, subject=1)
+            save(ProcessedData, result, subject=1)
 
         assert "process()" in str(exc_info.value)
 
@@ -257,13 +210,13 @@ class TestStrictMode:
         raw = RawData.load(subject=1, stage="raw")
 
         result1 = step1(raw)
-        ProcessedData.save(result1, subject=1, stage="step1")
+        save(ProcessedData, result1, subject=1, stage="step1")
         processed = ProcessedData.load(subject=1, stage="step1")
 
         result2 = step2(processed)
 
         # Should work - all intermediates saved
-        record_id = FinalResult.save(result2, subject=1, stage="final")
+        record_id = save(FinalResult, result2, subject=1, stage="final")
         assert record_id is not None
 
     def test_strict_mode_fails_with_unsaved_in_middle(self, strict_db):
@@ -286,7 +239,7 @@ class TestStrictMode:
         result2 = step2(processed)
 
         with pytest.raises(UnsavedIntermediateError):
-            FinalResult.save(result2, subject=1, stage="final")
+            save(FinalResult, result2, subject=1, stage="final")
 
 
 # --- Ephemeral Mode Tests ---
@@ -306,7 +259,7 @@ class TestEphemeralMode:
         result = process(raw)
 
         # Should not raise in ephemeral mode
-        record_id = ProcessedData.save(result, subject=1)
+        record_id = save(ProcessedData, result, subject=1)
         assert record_id is not None
 
     def test_ephemeral_mode_stores_lineage_for_unsaved(self, ephemeral_db):
@@ -319,7 +272,7 @@ class TestEphemeralMode:
         # Don't save raw
 
         result = process(raw)
-        ProcessedData.save(result, subject=1)
+        save(ProcessedData, result, subject=1)
 
         # Check that provenance includes info about the unsaved variable
         provenance = ephemeral_db.get_provenance(ProcessedData, subject=1)
@@ -347,7 +300,7 @@ class TestEphemeralMode:
 
         # Process the unsaved intermediate
         result2 = step2(intermediate)
-        FinalResult.save(result2, subject=1, stage="final")
+        save(FinalResult, result2, subject=1, stage="final")
 
         # Query the _lineage table in DuckDB for ephemeral entries
         ephemeral_entries = ephemeral_db._duck._fetchall(
@@ -385,7 +338,7 @@ class TestEphemeralMode:
         r3 = step3(p2)
 
         # Should work in ephemeral mode
-        record_id = FinalResult.save(r3, subject=1)
+        record_id = save(FinalResult, r3, subject=1)
         assert record_id is not None
 
 
@@ -413,7 +366,7 @@ class TestMixedScenarios:
         # Don't save p1
 
         r2 = step2(p1)
-        FinalResult.save(r2, subject=1, stage="final")
+        save(FinalResult, r2, subject=1, stage="final")
 
         # Query provenance
         provenance = ephemeral_db.get_provenance(FinalResult, subject=1, stage="final")
@@ -433,11 +386,11 @@ class TestMixedScenarios:
         raw = RawData.load(subject=1, stage="raw")
 
         r1 = step1(raw)
-        ProcessedData.save(r1, subject=1, stage="step1")
+        save(ProcessedData, r1, subject=1, stage="step1")
         p1 = ProcessedData.load(subject=1, stage="step1")
 
         r2 = step2(p1)
-        FinalResult.save(r2, subject=1, stage="final")
+        save(FinalResult, r2, subject=1, stage="final")
 
         # Provenance should be available
         provenance = strict_db.get_provenance(FinalResult, subject=1, stage="final")
@@ -461,7 +414,7 @@ class TestEdgeCases:
         result = multiply(raw, 2)
 
         with pytest.raises(UnsavedIntermediateError):
-            ProcessedData.save(result, subject=1)
+            save(ProcessedData, result, subject=1)
 
     def test_multiple_outputs_thunk_with_unsaved(self, strict_db):
         """Multi-output thunk with unsaved input."""
@@ -476,7 +429,7 @@ class TestEdgeCases:
         left, right = split(raw)
 
         with pytest.raises(UnsavedIntermediateError):
-            ProcessedData.save(left, subject=1, half="left")
+            save(ProcessedData, left, subject=1, half="left")
 
     def test_ephemeral_no_duplicate_entries(self, ephemeral_db):
         """Ephemeral mode should not create duplicate entries."""
@@ -499,10 +452,10 @@ class TestEdgeCases:
 
         # Save two different final outputs from the same unsaved intermediate
         final1 = step2(intermediate)
-        FinalResult.save(final1, subject=1, version=1)
+        save(FinalResult, final1, subject=1, version=1)
 
         final2 = step2(intermediate)
-        FinalResult.save(final2, subject=1, version=2)
+        save(FinalResult, final2, subject=1, version=2)
 
         # Count ephemeral entries in DuckDB _lineage table
         rows = ephemeral_db._duck._fetchall(
@@ -511,7 +464,6 @@ class TestEdgeCases:
         count = rows[0][0]
 
         # Should only have one ephemeral entry for the intermediate
-        # (the same unsaved variable used twice should create one entry due to dedup)
         assert count >= 1  # At least one, implementation may vary
 
     def test_deeply_nested_unsaved_chain(self, ephemeral_db):
@@ -535,7 +487,7 @@ class TestEdgeCases:
         final_result = increment(current)
 
         # Should work in ephemeral mode
-        record_id = FinalResult.save(final_result, subject=1)
+        record_id = save(FinalResult, final_result, subject=1)
         assert record_id is not None
 
 
@@ -554,7 +506,7 @@ class TestProvenanceQueries:
         raw = RawData.load(subject=1, stage="raw")
 
         result = double(raw)
-        ProcessedData.save(result, subject=1, stage="processed")
+        save(ProcessedData, result, subject=1, stage="processed")
 
         provenance = strict_db.get_provenance(ProcessedData, subject=1, stage="processed")
         assert provenance["function_name"] == "double"
@@ -571,7 +523,7 @@ class TestProvenanceQueries:
         # Don't save raw
 
         result = double(raw)
-        ProcessedData.save(result, subject=1)
+        save(ProcessedData, result, subject=1)
 
         provenance = ephemeral_db.get_provenance(ProcessedData, subject=1)
         assert provenance["function_name"] == "double"
@@ -588,7 +540,7 @@ class TestProvenanceQueries:
         RawData.save(np.array([1.0, 2.0, 3.0]), subject=1)
         raw = RawData.load(subject=1)
         result = scale(raw, factor=2.0, offset=0.5)
-        ProcessedData.save(result, subject=1)
+        save(ProcessedData, result, subject=1)
 
         provenance = strict_db.get_provenance(ProcessedData, subject=1)
         assert provenance["function_name"] == "scale"
@@ -605,7 +557,7 @@ class TestProvenanceQueries:
         record_id = RawData.save(np.array([1.0, 2.0, 3.0]), subject=1)
         raw = RawData.load(subject=1)
         result = double(raw)
-        ProcessedData.save(result, subject=1)
+        save(ProcessedData, result, subject=1)
 
         provenance = strict_db.get_provenance(ProcessedData, subject=1)
         assert len(provenance["inputs"]) == 1
@@ -622,7 +574,7 @@ class TestProvenanceQueries:
         RawData.save(np.array([1, 2, 3]), subject=1)
         raw = RawData.load(subject=1)
         result = process(raw)
-        record_id = ProcessedData.save(result, subject=1)
+        record_id = save(ProcessedData, result, subject=1)
 
         assert strict_db.has_lineage(record_id)
 

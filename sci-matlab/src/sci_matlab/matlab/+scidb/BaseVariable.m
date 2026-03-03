@@ -113,18 +113,24 @@ classdef BaseVariable < dynamicprops
             type_name = class(obj);
             py_class = scidb.internal.ensure_registered(type_name);
 
-            % Marshal data to Python
+            % Extract db option and build kwargs (needed for all paths)
+            [metadata_nv, db_val] = extract_db(varargin);
+            py_kwargs = scidb.internal.metadata_to_pykwargs(metadata_nv{:});
+
+            % ThunkOutput: route to scihist's lineage-aware save
             if isa(data, 'scidb.ThunkOutput')
                 py_data = data.py_obj;
-            elseif isa(data, 'scidb.BaseVariable')
+                py_record_id = py.scihist.foreach.save(py_class, py_data, pyargs(py_kwargs{:}));
+                record_id = char(py_record_id);
+                return;
+            end
+
+            % Marshal data to Python for plain save
+            if isa(data, 'scidb.BaseVariable')
                 py_data = data.py_obj;
             else
                 py_data = scidb.internal.to_python(data);
             end
-
-            % Extract db option from metadata args
-            [metadata_nv, db_val] = extract_db(varargin);
-            py_kwargs = scidb.internal.metadata_to_pykwargs(metadata_nv{:});
 
             if isempty(db_val)
                 py_db = py.scidb.database.get_database();

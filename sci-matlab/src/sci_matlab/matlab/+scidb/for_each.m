@@ -13,7 +13,7 @@ function result_tbl = for_each(fn, inputs, outputs, varargin)
 %   7. Saves results from the returned table
 %
 %   Arguments:
-%       fn      - Function handle or scidb.Thunk
+%       fn      - Function handle (plain; use scihist.for_each for Thunk wrapping)
 %       inputs  - Struct mapping parameter names to BaseVariable instances,
 %                 scidb.Fixed wrappers, scidb.Merge wrappers,
 %                 scidb.PathInput instances, or constant values.
@@ -75,9 +75,7 @@ function result_tbl = for_each(fn, inputs, outputs, varargin)
     end
 
     % Get function name for display
-    if isa(fn, 'scidb.Thunk')
-        fn_name = func2str(fn.fcn);
-    elseif isa(fn, 'function_handle')
+    if isa(fn, 'function_handle')
         fn_name = func2str(fn);
     else
         fn_name = 'unknown';
@@ -247,10 +245,6 @@ function result_tbl = for_each(fn, inputs, outputs, varargin)
 
     % --- Parallel branch ---
     if opts.parallel && ~dry_run
-        if isa(fn, 'scidb.Thunk')
-            error('scidb:for_each', ...
-                'parallel=true is not supported with Thunk functions.');
-        end
         % Parallel stays self-contained — does NOT delegate to scifor
         [completed, skipped, total] = run_parallel(fn, inputs, outputs, ...
             meta_keys, meta_values, input_names, loadable_idx, ...
@@ -298,13 +292,6 @@ function result_tbl = for_each(fn, inputs, outputs, varargin)
         end
     end
 
-    % --- Wrap Thunk in a plain function ---
-    if isa(fn, 'scidb.Thunk')
-        fn_wrapped = wrap_thunk(fn);
-    else
-        fn_wrapped = fn;
-    end
-
     % --- Build metadata NV args for scifor ---
     scifor_meta_nv = {};
     for k = 1:numel(meta_keys)
@@ -346,7 +333,7 @@ function result_tbl = for_each(fn, inputs, outputs, varargin)
     % scifor's where= is for scifor.ColFilter on tables.
 
     % --- Delegate to scifor.for_each ---
-    result_tbl = scifor.for_each(fn_wrapped, scifor_inputs, ...
+    result_tbl = scifor.for_each(fn, scifor_inputs, ...
         scifor_opts{:}, scifor_meta_nv{:});
 
     if isempty(result_tbl) || dry_run
@@ -622,16 +609,6 @@ function s = format_save_meta(save_nv)
         end
     end
     s = strjoin(parts, ', ');
-end
-
-
-% =========================================================================
-% Thunk wrapping
-% =========================================================================
-
-function fn_wrapped = wrap_thunk(thunk)
-%WRAP_THUNK  Wrap a Thunk in a plain function handle for scifor.for_each.
-    fn_wrapped = @(varargin) thunk(varargin{:});
 end
 
 

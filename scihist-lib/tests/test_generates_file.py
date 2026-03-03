@@ -3,9 +3,10 @@
 import numpy as np
 import pytest
 
-from scidb import BaseVariable, configure_database, thunk
+from scidb import BaseVariable, configure_database as scidb_configure
 from scidb.database import _local, DatabaseManager
-from scirun import for_each
+from thunk import thunk
+from scihist import configure_database, for_each, save
 
 from conftest import DEFAULT_TEST_SCHEMA_KEYS
 
@@ -83,7 +84,7 @@ class TestSaveBehavior:
             return None  # side-effect function
 
         result = make_plot(loaded)
-        record_id = Figure.save(result, subject=1)
+        record_id = save(Figure, result, subject=1)
 
         assert record_id.startswith("generated:")
 
@@ -97,7 +98,7 @@ class TestSaveBehavior:
             return None
 
         result = make_plot(loaded)
-        record_id = Figure.save(result, subject=1)
+        save(Figure, result, subject=1)
 
         # Trying to load data from DuckDB should fail
         from scidb.exceptions import NotFoundError
@@ -114,7 +115,7 @@ class TestSaveBehavior:
             return None
 
         result = make_plot(loaded)
-        record_id = Figure.save(result, subject=1)
+        record_id = save(Figure, result, subject=1)
 
         # Check lineage exists
         assert db.has_lineage(record_id)
@@ -134,7 +135,7 @@ class TestSaveBehavior:
             return None
 
         result = make_plot(loaded)
-        record_id = Figure.save(result, subject=1, session="A")
+        record_id = save(Figure, result, subject=1, session="A")
 
         # Verify lineage is stored by querying _record_metadata via find_by_lineage
         lineage_hash = result.pipeline_thunk.compute_lineage_hash()
@@ -167,7 +168,7 @@ class TestCacheHit:
         # First run
         loaded = RawSignal.load(subject=1)
         result1 = make_plot(loaded)
-        Figure.save(result1, subject=1)
+        save(Figure, result1, subject=1)
         assert call_count == 1
 
         # Second run — should hit cache
@@ -187,7 +188,7 @@ class TestCacheHit:
 
         loaded = RawSignal.load(subject=1)
         result = make_plot(loaded)
-        Figure.save(result, subject=1)
+        save(Figure, result, subject=1)
 
         # Cache hit
         reloaded = RawSignal.load(subject=1)
@@ -205,14 +206,14 @@ class TestCacheHit:
 
         loaded = RawSignal.load(subject=1)
         result = make_plot(loaded)
-        id1 = Figure.save(result, subject=1)
+        id1 = save(Figure, result, subject=1)
 
         # Cache hit
         reloaded = RawSignal.load(subject=1)
         cached = make_plot(reloaded)
 
         # Save the cache-hit result — should succeed (idempotent)
-        id2 = Figure.save(cached, subject=1)
+        id2 = save(Figure, cached, subject=1)
         assert id2.startswith("generated:")
 
 
@@ -237,7 +238,7 @@ class TestDistinctComputations:
         # First subject
         loaded1 = RawSignal.load(subject=1)
         result1 = make_plot(loaded1)
-        Figure.save(result1, subject=1)
+        save(Figure, result1, subject=1)
         assert call_count == 1
 
         # Second subject — different input, should NOT hit cache
@@ -266,7 +267,7 @@ class TestDistinctComputations:
 
         loaded = RawSignal.load(subject=1)
         result_a = make_plot_a(loaded)
-        Figure.save(result_a, subject=1)
+        save(Figure, result_a, subject=1)
         assert call_count_a == 1
 
         # Different function — should NOT hit cache
@@ -297,9 +298,11 @@ class TestPersistence:
         RawSignal.save(np.array([1, 2, 3]), subject=1)
         loaded = RawSignal.load(subject=1)
         result = make_plot(loaded)
-        Figure.save(result, subject=1)
+        save(Figure, result, subject=1)
         assert call_count == 1
         db1.close()
+        from thunk import Thunk
+        Thunk.query = None
 
         # Second connection — cache hit should still work
         db2 = configure_database(db_path, DEFAULT_TEST_SCHEMA_KEYS)
@@ -309,6 +312,7 @@ class TestPersistence:
         assert cached.data is None
         assert cached.is_complete is True
         db2.close()
+        Thunk.query = None
 
 
 # --- for_each integration tests ---

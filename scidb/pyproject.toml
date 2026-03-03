@@ -25,12 +25,10 @@ dependencies = [
     "numpy>=1.20.0",
     "pandas>=1.3.0",
     "duckdb>=0.9.0",
-    "thunk>=0.1.0",
     "scipathgen>=0.1.0",
     "canonicalhash>=0.1.0",
     "sciduckdb>=0.1.0",
     "scifor>=0.1.0",
-    "scirun>=0.1.0",
 ]
 
 [project.optional-dependencies]

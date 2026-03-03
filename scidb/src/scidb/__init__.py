@@ -6,10 +6,9 @@ A lightweight database framework for scientific computing that provides:
 - Automatic content-based versioning
 - Flexible metadata-based addressing
 - DuckDB storage for data and lineage (via SciDuck)
-- Automatic lineage tracking via thunks
 
 Example:
-    from scidb import configure_database, BaseVariable, thunk
+    from scidb import configure_database, BaseVariable
     import numpy as np
 
     # Setup (single DuckDB file for data + lineage, auto-registers types)
@@ -18,17 +17,9 @@ Example:
     class RawSignal(BaseVariable):
         schema_version = 1
 
-    @thunk
-    def calibrate(signal, factor):
-        return signal * factor
-
     # Save/load
     RawSignal.save(np.array([1, 2, 3]), subject=1, session="A")
     raw = RawSignal.load(subject=1, session="A")
-
-    # Thunk caching works automatically
-    result = calibrate(raw, 2.5)
-    CalibratedSignal.save(result, subject=1, session="A")
 """
 
 from .database import configure_database, get_database, get_user_id
@@ -41,11 +32,16 @@ from .exceptions import (
     UnsavedIntermediateError,
 )
 
-# Re-export from scirun (for_each) and scifor (wrappers)
-from scirun import for_each
-from scifor import Fixed, Merge, ColumnSelection, PathInput, Col, set_schema, get_schema
+# Batch execution (Layer 2 — DB-backed, no lineage)
+from .foreach import for_each
+from .fixed import Fixed
+from .merge import Merge
+from .column_selection import ColumnSelection
+from .foreach_config import ForEachConfig
 
-from .thunk import ThunkOutput, Thunk, thunk
+# From scifor (Layer 1)
+from scifor import Col, set_schema, get_schema, PathInput
+
 from .variable import BaseVariable
 from .filters import raw_sql
 
@@ -57,20 +53,18 @@ __all__ = [
     # Configuration
     "configure_database",
     "get_database",
+    "get_user_id",
     # Batch execution
     "for_each",
     "Fixed",
     "Merge",
     "ColumnSelection",
+    "ForEachConfig",
     "PathInput",
     # Standalone / DataFrame support
     "Col",
     "set_schema",
     "get_schema",
-    # Thunk system
-    "thunk",
-    "Thunk",
-    "ThunkOutput",
     # Filter utilities
     "raw_sql",
     # Exceptions

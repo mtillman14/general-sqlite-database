@@ -260,23 +260,6 @@ classdef TestSaveLoad < matlab.unittest.TestCase
             testCase.verifyEqual(r2.data, [4 5 6]', 'AbsTol', 1e-10);
         end
 
-        % --- Save ThunkOutput (re-save with lineage) ---
-
-        function test_save_thunk_output_preserves_lineage(testCase)
-            % Save raw data, load it, pass through a thunk, save result
-            RawSignal().save([1 2 3], 'subject', 1, 'session', 'A');
-            raw = RawSignal().load('subject', 1, 'session', 'A');
-
-            thunk = scidb.Thunk(@double_values);
-            result = thunk(raw);
-
-            ProcessedSignal().save(result, 'subject', 1, 'session', 'A');
-            loaded = ProcessedSignal().load('subject', 1, 'session', 'A');
-
-            testCase.verifyEqual(loaded.data, [2 4 6]', 'AbsTol', 1e-10);
-            testCase.verifyTrue(strlength(loaded.lineage_hash) > 0);
-        end
-
         % --- Re-save loaded variable ---
 
         function test_resave_loaded_variable(testCase)

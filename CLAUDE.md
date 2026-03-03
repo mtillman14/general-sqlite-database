@@ -1,3 +1,5 @@
+NOTE: You do not have access to Python, it is not installed! Please give me Python commands in copy and paste to Terminal format. Multi-line commands should be given in a form that I can use in a tmp.py file
+
 This is a software package to facilitate scientific data processing. You should learn more about it by reading the README.md
 
 There are several submodules in this package. Here are the folders that they are in, and their general purpose within the package:

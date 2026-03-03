@@ -24,7 +24,7 @@ function setup_paths()
         fullfile(workspace_root, 'pipelinedb-lib', 'src')
         fullfile(workspace_root, 'path-gen', 'src')
         fullfile(workspace_root, 'scifor', 'src')
-        fullfile(workspace_root, 'scirun-lib', 'src')
+        fullfile(workspace_root, 'scihist-lib', 'src')
         fullfile(workspace_root, 'sci-matlab', 'src')
     };
 

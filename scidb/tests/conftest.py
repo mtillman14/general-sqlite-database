@@ -16,12 +16,12 @@ sys.path.insert(0, str(_root / "canonical-hash" / "src"))
 sys.path.insert(0, str(_root / "thunk-lib" / "src"))
 sys.path.insert(0, str(_root / "path-gen" / "src"))
 sys.path.insert(0, str(_root / "pipelinedb-lib" / "src"))
-sys.path.insert(0, str(_root / "scirun-lib" / "src"))
 sys.path.insert(0, str(_root / "sciduck" / "src"))
+sys.path.insert(0, str(_root / "scifor" / "src"))
+sys.path.insert(0, str(_root / "scihist-lib" / "src"))
 
 from scidb import BaseVariable, configure_database
 from scidb.database import _local
-from scidb.thunk import Thunk
 
 
 # Default schema keys for testing - defines the hierarchical dataset structure.
@@ -61,11 +61,9 @@ def clear_global_db():
     """Clear global database state before each test."""
     if hasattr(_local, 'database'):
         delattr(_local, 'database')
-    Thunk.query = None
     yield
     if hasattr(_local, 'database'):
         delattr(_local, 'database')
-    Thunk.query = None
 
 
 # --- Sample Variable Classes for Testing ---

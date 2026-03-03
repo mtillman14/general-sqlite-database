@@ -87,7 +87,20 @@ function result_tbl = for_each(fn, inputs, varargin)
 
     % --- Resolve output_names ---
     if isempty(opts.output_names)
-        resolved_output_names = {"output"};
+        % Auto-detect number of outputs via nargout introspection
+        try
+            n_out = nargout(fn);
+        catch
+            n_out = 1;
+        end
+        if n_out > 1
+            resolved_output_names = cell(1, n_out);
+            for i = 1:n_out
+                resolved_output_names{i} = sprintf('output_%d', i);
+            end
+        else
+            resolved_output_names = {"output"};
+        end
     elseif isnumeric(opts.output_names) && isscalar(opts.output_names)
         n = opts.output_names;
         resolved_output_names = cell(1, n);

@@ -19,7 +19,10 @@
       "Bash(pip index:*)",
       "Bash(pip3 index:*)",
       "WebSearch",
-      "mcp__ide__getDiagnostics"
+      "mcp__ide__getDiagnostics",
+      "Bash(cp -r /workspace/scirun-lib /workspace/scihist-lib)",
+      "Bash(mkdir -p /workspace/scihist-lib/src/scihist && cp -r /workspace/scirun-lib/src/scirun/* /workspace/scihist-lib/src/scihist/ 2>/dev/null; ls /workspace/scihist-lib/src/)",
+      "Bash(echo \"=== Root tests \\(scidb layer\\) ===\" && ls /workspace/sci-matlab/tests/matlab/*.m | xargs -I{} basename {} && echo \"\" && echo \"=== scihist/ tests ===\" && ls /workspace/sci-matlab/tests/matlab/scihist/*.m | xargs -I{} basename {})"
     ]
   }
 }

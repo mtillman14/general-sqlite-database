@@ -200,39 +200,6 @@ classdef TestForEach < matlab.unittest.TestCase
             testCase.verifyEmpty(results);
         end
 
-        % --- Thunk as function ---
-
-        function test_with_thunk_function(testCase)
-            RawSignal().save([5 10 15], 'subject', 1, 'session', 'A');
-
-            thunk = scidb.Thunk(@double_values);
-            scidb.for_each(thunk, ...
-                struct('x', RawSignal()), ...
-                {ProcessedSignal()}, ...
-                'subject', 1, ...
-                'session', "A");
-
-            result = ProcessedSignal().load('subject', 1, 'session', 'A');
-            testCase.verifyEqual(result.data, [10 20 30]', 'AbsTol', 1e-10);
-
-            % Thunk output should have lineage
-            testCase.verifyTrue(strlength(result.lineage_hash) > 0);
-        end
-
-        function test_with_thunk_and_constant(testCase)
-            RawSignal().save([5 10 15], 'subject', 1, 'session', 'A');
-
-            thunk = scidb.Thunk(@add_offset);
-            scidb.for_each(thunk, ...
-                struct('x', RawSignal(), 'offset', 100), ...
-                {ProcessedSignal()}, ...
-                'subject', 1, ...
-                'session', "A");
-
-            result = ProcessedSignal().load('subject', 1, 'session', 'A');
-            testCase.verifyEqual(result.data, [105 110 115]', 'AbsTol', 1e-10);
-        end
-
         % --- Multiple outputs ---
 
         function test_multiple_outputs_with_plain_function(testCase)
@@ -248,22 +215,6 @@ classdef TestForEach < matlab.unittest.TestCase
             r2 = SplitSecond().load('subject', 1, 'session', 'A');
             testCase.verifyEqual(r1.data, [1 2]', 'AbsTol', 1e-10);
             testCase.verifyEqual(r2.data, [3 4]', 'AbsTol', 1e-10);
-        end
-
-        function test_multiple_outputs_with_thunk(testCase)
-            RawSignal().save([10 20 30 40], 'subject', 1, 'session', 'A');
-
-            thunk = scidb.Thunk(@split_data, 'unpack_output', true);
-            scidb.for_each(thunk, ...
-                struct('x', RawSignal()), ...
-                {SplitFirst(), SplitSecond()}, ...
-                'subject', 1, ...
-                'session', "A");
-
-            r1 = SplitFirst().load('subject', 1, 'session', 'A');
-            r2 = SplitSecond().load('subject', 1, 'session', 'A');
-            testCase.verifyEqual(r1.data, [10 20]', 'AbsTol', 1e-10);
-            testCase.verifyEqual(r2.data, [30 40]', 'AbsTol', 1e-10);
         end
 
         % --- PathInput ---
@@ -410,21 +361,6 @@ classdef TestForEach < matlab.unittest.TestCase
             r2 = SplitSecond().load('subject', 1, 'session', 'A');
             testCase.verifyEqual(r1.data, [1 2]', 'AbsTol', 1e-10);
             testCase.verifyEqual(r2.data, [3 4]', 'AbsTol', 1e-10);
-        end
-
-        function test_parallel_thunk_errors(testCase)
-            % Thunks are not supported in parallel mode
-            RawSignal().save([1 2 3], 'subject', 1, 'session', 'A');
-
-            thunk = scidb.Thunk(@double_values);
-            testCase.verifyError(@() ...
-                scidb.for_each(thunk, ...
-                    struct('x', RawSignal()), ...
-                    {ProcessedSignal()}, ...
-                    'parallel', true, ...
-                    'subject', 1, ...
-                    'session', "A"), ...
-                'scidb:for_each');
         end
 
         % --- Column selection ---

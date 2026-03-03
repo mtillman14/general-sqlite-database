@@ -119,7 +119,7 @@ class BaseVariable(metaclass=VariableMeta):
             # Multiple columns — function receives DataFrame subset
             for_each(fn, inputs={"x": MyVar[["col_a", "col_b"]]}, ...)
         """
-        from scirun.column_selection import ColumnSelection
+        from scidb.column_selection import ColumnSelection
 
         if isinstance(key, str):
             return ColumnSelection(cls, [key])
@@ -217,13 +217,12 @@ class BaseVariable(metaclass=VariableMeta):
         """
         Save data to the database as this variable type.
 
-        Accepts ThunkOutput (from thunked computation), an existing BaseVariable
-        instance, or raw data. Lineage is automatically extracted and stored
-        when applicable, and computations are cached for future reuse.
+        Accepts an existing BaseVariable instance or raw data. For saving
+        ThunkOutput (lineage-tracked results), use scihist.for_each or
+        call scihist's save helpers.
 
         Args:
             data: The data to save. Can be:
-                - ThunkOutput: result from a @thunk decorated function
                 - BaseVariable: an existing variable instance
                 - Any other type: raw data (numpy array, etc.)
             index: Optional index for the DataFrame. Sets df.index after to_db()
@@ -245,10 +244,6 @@ class BaseVariable(metaclass=VariableMeta):
             ValueError: If index length doesn't match DataFrame row count
 
         Example:
-            # Save from a thunk computation
-            result = process(input_data)
-            record_id = CleanData.save(result, subject=1, trial=1)
-
             # Save raw data
             record_id = CleanData.save(np.array([1, 2, 3]), subject=1, trial=1)
 

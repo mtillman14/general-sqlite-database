@@ -8,13 +8,10 @@ import time
 import warnings
 from datetime import datetime
 from pathlib import Path
-from typing import TYPE_CHECKING, Type, Any
+from typing import Type, Any
 
 import numpy as np
 import pandas as pd
-
-if TYPE_CHECKING:
-    from .lineage import LineageRecord
 
 from .exceptions import (
     DatabaseNotConfiguredError,
@@ -1356,113 +1353,33 @@ class DatabaseManager:
         **metadata,
     ) -> str:
         """
-        Save data as a variable, handling input normalization and lineage.
+        Save data as a variable.
 
-        Accepts ThunkOutput (from thunked computation), an existing BaseVariable
-        instance, or raw data. Lineage is automatically extracted and stored
-        when applicable.
+        Accepts a BaseVariable instance (which may carry a lineage_hash) or
+        raw data. For ThunkOutput / lineage-tracked saves, use
+        scihist.save_variable() which wraps this method.
 
         Args:
             variable_class: The BaseVariable subclass to save as
-            data: The data to save (ThunkOutput, BaseVariable, or raw data)
+            data: The data to save (BaseVariable or raw data)
             index: Optional index to set on the DataFrame
             **metadata: Addressing metadata (e.g., subject=1, trial=1)
 
         Returns:
             The record_id of the saved data
         """
-        from .thunk import ThunkOutput
-        from .lineage import extract_lineage, find_unsaved_variables, get_raw_value
-        from .exceptions import UnsavedIntermediateError
-
-        # Normalize input: extract raw data and lineage info based on input type
-        lineage = None
         lineage_hash = None
-        pipeline_lineage_hash = None
-        raw_data = None
 
-        if isinstance(data, ThunkOutput):
-            # Lineage-only save for side-effect functions (generates_file=True)
-            if data.pipeline_thunk.thunk.generates_file:
-                lineage = extract_lineage(data)
-                pipeline_lineage_hash = data.pipeline_thunk.compute_lineage_hash()
-                generated_id = f"generated:{pipeline_lineage_hash[:32]}"
-                user_id = get_user_id()
-                nested_metadata = self._split_metadata(metadata)
-                # Store generated entry in _record_metadata for find_by_lineage() lookup
-                self._save_record_metadata(
-                    record_id=generated_id,
-                    timestamp=datetime.now().isoformat(),
-                    variable_name=variable_class.__name__,
-                    schema_id=0,
-                    version_keys=None,
-                    content_hash=None,
-                    lineage_hash=pipeline_lineage_hash,
-                    schema_version=variable_class.schema_version,
-                    user_id=user_id,
-                )
-                self._save_lineage(
-                    output_record_id=generated_id,
-                    output_type=variable_class.__name__,
-                    lineage=lineage,
-                    lineage_hash=pipeline_lineage_hash,
-                    user_id=user_id,
-                    schema_keys=nested_metadata.get("schema"),
-                    output_content_hash=None,
-                )
-                return generated_id
-
-            # Data from a thunk computation
-            unsaved = find_unsaved_variables(data)
-
-            if self.lineage_mode == "strict" and unsaved:
-                var_descriptions = []
-                for var, path in unsaved:
-                    var_type = type(var).__name__
-                    var_descriptions.append(f"  - {var_type} (path: {path})")
-                vars_str = "\n".join(var_descriptions)
-                raise UnsavedIntermediateError(
-                    f"Strict lineage mode requires all intermediate variables to be saved.\n"
-                    f"Found {len(unsaved)} unsaved variable(s) in the computation chain:\n"
-                    f"{vars_str}\n\n"
-                    f"Either save these variables first, or use lineage_mode='ephemeral' "
-                    f"in configure_database() to allow unsaved intermediates."
-                )
-
-            elif self.lineage_mode == "ephemeral" and unsaved:
-                user_id = get_user_id()
-                schema_keys = self._split_metadata(metadata).get("schema")
-                for var, path in unsaved:
-                    inner_data = getattr(var, "data", None)
-                    if isinstance(inner_data, ThunkOutput):
-                        ephemeral_id = f"ephemeral:{inner_data.hash[:32]}"
-                        var_type = type(var).__name__
-                        intermediate_lineage = extract_lineage(inner_data)
-                        self.save_ephemeral_lineage(
-                            ephemeral_id=ephemeral_id,
-                            variable_type=var_type,
-                            lineage=intermediate_lineage,
-                            user_id=user_id,
-                            schema_keys=schema_keys,
-                        )
-
-            lineage = extract_lineage(data)
-            lineage_hash = data.hash
-            pipeline_lineage_hash = data.pipeline_thunk.compute_lineage_hash()
-            raw_data = get_raw_value(data)
-
-        elif isinstance(data, BaseVariable):
+        if isinstance(data, BaseVariable):
             raw_data = data.data
             lineage_hash = data.lineage_hash
-
         else:
             raw_data = data
 
         instance = variable_class(raw_data)
 
         record_id = self.save(
-            instance, metadata, lineage=lineage, lineage_hash=lineage_hash,
-            pipeline_lineage_hash=pipeline_lineage_hash, index=index,
+            instance, metadata, lineage_hash=lineage_hash, index=index,
         )
 
         instance.record_id = record_id
@@ -1475,7 +1392,7 @@ class DatabaseManager:
         self,
         variable: BaseVariable,
         metadata: dict,
-        lineage: "LineageRecord | None" = None,
+        lineage: dict | None = None,
         lineage_hash: str | None = None,
         pipeline_lineage_hash: str | None = None,
         index: Any = None,
@@ -1486,7 +1403,8 @@ class DatabaseManager:
         Args:
             variable: The variable instance to save
             metadata: Addressing metadata (flat dict)
-            lineage: Optional lineage record if data came from a thunk
+            lineage: Optional lineage dict with keys 'function_name', 'function_hash',
+                'inputs', 'constants'
             lineage_hash: Optional pre-computed lineage hash (stored in DuckDB
                 for input classification when this variable is reused later)
             pipeline_lineage_hash: Optional pre-computed lineage hash for cache
@@ -1604,16 +1522,21 @@ class DatabaseManager:
         self,
         output_record_id: str,
         output_type: str,
-        lineage: "LineageRecord",
+        lineage: dict,
         lineage_hash: str | None = None,
         user_id: str | None = None,
         schema_keys: dict | None = None,
         output_content_hash: str | None = None,
     ) -> None:
-        """Save one lineage row to DuckDB _lineage table."""
+        """Save one lineage row to DuckDB _lineage table.
+
+        Args:
+            lineage: Dict with keys 'function_name', 'function_hash',
+                     'inputs', 'constants'.
+        """
         lh = lineage_hash or output_record_id
-        inputs_json = json.dumps(lineage.inputs, sort_keys=True)
-        constants_json = json.dumps(lineage.constants, sort_keys=True)
+        inputs_json = json.dumps(lineage.get("inputs", []), sort_keys=True)
+        constants_json = json.dumps(lineage.get("constants", {}), sort_keys=True)
         timestamp = datetime.now().isoformat()
 
         self._duck._execute(
@@ -1622,21 +1545,26 @@ class DatabaseManager:
             " inputs, constants, timestamp) "
             "VALUES (?, ?, ?, ?, ?, ?, ?, ?) "
             "ON CONFLICT (output_record_id) DO NOTHING",
-            [output_record_id, lh, output_type, lineage.function_name,
-             lineage.function_hash, inputs_json, constants_json, timestamp],
+            [output_record_id, lh, output_type, lineage.get("function_name"),
+             lineage.get("function_hash"), inputs_json, constants_json, timestamp],
         )
 
     def save_ephemeral_lineage(
         self,
         ephemeral_id: str,
         variable_type: str,
-        lineage: "LineageRecord",
+        lineage: dict,
         user_id: str | None = None,
         schema_keys: dict | None = None,
     ) -> None:
-        """Save an ephemeral lineage row to DuckDB _lineage table."""
-        inputs_json = json.dumps(lineage.inputs, sort_keys=True)
-        constants_json = json.dumps(lineage.constants, sort_keys=True)
+        """Save an ephemeral lineage row to DuckDB _lineage table.
+
+        Args:
+            lineage: Dict with keys 'function_name', 'function_hash',
+                     'inputs', 'constants'.
+        """
+        inputs_json = json.dumps(lineage.get("inputs", []), sort_keys=True)
+        constants_json = json.dumps(lineage.get("constants", {}), sort_keys=True)
         timestamp = datetime.now().isoformat()
 
         self._duck._execute(
@@ -1645,8 +1573,8 @@ class DatabaseManager:
             " inputs, constants, timestamp) "
             "VALUES (?, ?, ?, ?, ?, ?, ?, ?) "
             "ON CONFLICT (output_record_id) DO NOTHING",
-            [ephemeral_id, ephemeral_id, variable_type, lineage.function_name,
-             lineage.function_hash, inputs_json, constants_json, timestamp],
+            [ephemeral_id, ephemeral_id, variable_type, lineage.get("function_name"),
+             lineage.get("function_hash"), inputs_json, constants_json, timestamp],
         )
 
     def _load_with_where(
@@ -2114,26 +2042,19 @@ class DatabaseManager:
 
         return len(results)
 
-    def find_by_lineage(self, pipeline_thunk) -> list | None:
+    def find_by_lineage_hash(self, lineage_hash: str) -> list | None:
         """
-        Find output values by computation lineage.
+        Find output values by pipeline lineage hash.
 
-        Given a PipelineThunk (function + inputs), finds any previously
-        computed outputs that match by querying _record_metadata for
-        matching lineage_hash.
+        Low-level lookup used by scihist.find_by_lineage(). Queries
+        _record_metadata joined to _lineage for records matching the given hash.
 
         Args:
-            pipeline_thunk: The computation to look up
+            lineage_hash: The pipeline lineage hash to look up
 
         Returns:
             List of output values if found, None otherwise
         """
-        lineage_hash = pipeline_thunk.compute_lineage_hash()
-
-        # Join _record_metadata to _lineage on pipeline lineage_hash.
-        # _lineage.lineage_hash stores pipeline_lineage_hash (same for all outputs
-        # of a multi-output thunk), while _record_metadata.lineage_hash stores the
-        # per-output ThunkOutput.hash so that downstream input tracking is correct.
         records = self._duck._fetchall(
             "SELECT DISTINCT rm.record_id, rm.variable_name "
             "FROM _record_metadata rm "
@@ -2295,10 +2216,7 @@ class DatabaseManager:
         return classes
 
     def close(self):
-        """Close the database connection and reset Thunk.query if it points to self."""
-        from .thunk import Thunk
-        if getattr(Thunk, "query", None) is self:
-            Thunk.query = None
+        """Close the database connection."""
         self._duck.close()
         # remove global reference
         if getattr(_local, "database", None) is self:
@@ -2312,8 +2230,6 @@ class DatabaseManager:
 
     def set_current_db(self):
         """Set this DatabaseManager as the active global database."""
-        from .thunk import Thunk
-        Thunk.query = self
         _local.database = self
         self._closed = False
 
