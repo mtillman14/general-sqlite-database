@@ -60,11 +60,11 @@ classdef TestSciforForEach < matlab.unittest.TestCase
         end
 
         function test_per_combo_multiple_rows_passed_as_vector(tc)
-        %   Multiple matching rows -> sub-table passed.
+        %   Multiple matching rows, single data column -> numeric vector.
             scifor.set_schema(["subject"]);
 
-            tbl = table([1;1;2;2], [1;2;1;2], [1.0;2.0;3.0;4.0], ...
-                'VariableNames', {'subject','trial','emg'});
+            tbl = table([1;1;2;2], [1.0;2.0;3.0;4.0], ...
+                'VariableNames', {'subject','emg'});
 
             result = scifor.for_each(@(data) length(data), ...
                 struct('data', tbl), ...
@@ -75,6 +75,25 @@ classdef TestSciforForEach < matlab.unittest.TestCase
                 struct('data', tbl), ...
                 subject=[1 2]);
             tc.verifyEqual(result.output, [true; true]);
+        end
+
+        function test_per_combo_multiple_data_cols_passed_as_table(tc)
+        %   Multiple data columns -> table with constant schema cols removed.
+            scifor.set_schema(["subject"]);
+
+            tbl = table([1;1;2;2], [1;2;1;2], [1.0;2.0;3.0;4.0], ...
+                'VariableNames', {'subject','trial','emg'});
+
+            % subject is constant per combo -> dropped; trial+emg remain as table
+            result = scifor.for_each(@(data) istable(data), ...
+                struct('data', tbl), ...
+                subject=[1 2]);
+            tc.verifyEqual(result.output, [true; true]);
+
+            result = scifor.for_each(@(data) width(data), ...
+                struct('data', tbl), ...
+                subject=[1 2]);
+            tc.verifyEqual(result.output, [2; 2]);
         end
     end
 
@@ -99,6 +118,7 @@ classdef TestSciforForEach < matlab.unittest.TestCase
 
         function test_as_table_false_with_one_column_is_not_table(tc)
         %   Default (as_table=false): schema key columns dropped, scalar extracted.
+        %   Non-table result → table with metadata + 'output' column.
             scifor.set_schema(["subject"]);
 
             tbl = table([1;2], [10.0;20.0], 'VariableNames', {'subject','value'});
@@ -107,22 +127,20 @@ classdef TestSciforForEach < matlab.unittest.TestCase
             result = scifor.for_each(@(x) x + 2, ...
                 struct('x', tbl), ...
                 subject=[]);
-            tbl2 = tbl;
-            tbl2.value = tbl2.value + 2;
-            tc.verifyEqual(result, tbl2);
+            tc.verifyEqual(result.output, [12.0; 22.0]);
+            tc.verifyTrue(ismember('subject', result.Properties.VariableNames));
         end
 
         function test_as_table_false_with_multiple_data_columns_is_table(tc)
-        %   Default (as_table=false): schema key columns dropped, scalar extracted.
+        %   as_table=false: multiple data columns -> table with constant schema cols removed.
             scifor.set_schema(["subject"]);
 
             tbl = table([1;2], [10.0;20.0], [20.0;30.0], 'VariableNames', {'subject','value1','value2'});
 
-            % With as_table=false (default), 1 row + 1 data col -> scalar
+            % Multiple data columns -> table (not scalar or numeric array)
             result = scifor.for_each(@(x) height(x), ...
                 struct('x', tbl), ...
                 subject=[]);
-            % Table is returned
             tc.verifyEqual(result.output, [1; 1]);
         end
 
@@ -389,16 +407,19 @@ classdef TestSciforForEach < matlab.unittest.TestCase
         end
 
         function test_result_table_auto_output_names(tc)
-        %   output_names=3 auto-generates output_1, output_2, output_3.
+        %   output_names=3 returns 3 separate tables, each with 'output' column.
             scifor.set_schema(["subject"]);
 
-            result = scifor.for_each(@() deal(1, 2, 3), ...
+            [r1, r2, r3] = scifor.for_each(@() deal(1, 2, 3), ...
                 struct(), ...
                 output_names=3, ...
                 subject=[1]);
-            tc.verifyTrue(ismember('output_1', result.Properties.VariableNames));
-            tc.verifyTrue(ismember('output_2', result.Properties.VariableNames));
-            tc.verifyTrue(ismember('output_3', result.Properties.VariableNames));
+            tc.verifyTrue(ismember('output', r1.Properties.VariableNames));
+            tc.verifyEqual(r1.output, 1);
+            tc.verifyTrue(ismember('output', r2.Properties.VariableNames));
+            tc.verifyEqual(r2.output, 2);
+            tc.verifyTrue(ismember('output', r3.Properties.VariableNames));
+            tc.verifyEqual(r3.output, 3);
         end
 
         function test_all_skipped_returns_empty_table(tc)
@@ -435,16 +456,18 @@ classdef TestSciforForEach < matlab.unittest.TestCase
 
     methods (Test)
         function test_multiple_outputs_with_names(tc)
-        %   Multiple outputs with output_names.
+        %   Multiple outputs with output_names → separate tables.
             scifor.set_schema(["subject"]);
 
             tbl = table([1;2], [10.0;20.0], 'VariableNames', {'subject','value'});
-            result = scifor.for_each(@(x) deal(x*2, x*3), ...
+            [r1, r2] = scifor.for_each(@(x) deal(x*2, x*3), ...
                 struct('x', tbl), ...
                 output_names={"doubled","tripled"}, ...
                 subject=[1 2]);
-            tc.verifyTrue(ismember('doubled', result.Properties.VariableNames));
-            tc.verifyTrue(ismember('tripled', result.Properties.VariableNames));
+            tc.verifyTrue(ismember('doubled', r1.Properties.VariableNames));
+            tc.verifyEqual(r1.doubled, [20.0; 40.0]);
+            tc.verifyTrue(ismember('tripled', r2.Properties.VariableNames));
+            tc.verifyEqual(r2.tripled, [30.0; 60.0]);
         end
     end
 

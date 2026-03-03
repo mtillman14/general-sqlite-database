@@ -12,7 +12,7 @@ function result_tbl = for_each(fn, inputs, outputs, varargin)
 %       fn      - Function handle (auto-wrapped in Thunk if not already one)
 %       inputs  - Struct mapping parameter names to BaseVariable instances,
 %                 scidb.Fixed wrappers, scidb.Merge wrappers,
-%                 scidb.PathInput instances, or constant values.
+%                 scifor.PathInput instances, or constant values.
 %       outputs - Cell array of BaseVariable instances for output types
 %
 %   Name-Value Arguments: same as scidb.for_each

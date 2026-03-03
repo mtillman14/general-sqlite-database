@@ -1,23 +1,22 @@
 classdef PathInput < handle
-%SCIDB.PATHINPUT  Resolve a path template using iteration metadata.
+%SCIFOR.PATHINPUT  Resolve a path template using iteration metadata.
 %
-%   Works as an input to scidb.for_each: on each iteration, .load()
+%   Works as an input to for_each: on each iteration, .load()
 %   substitutes the current metadata values into the template and
 %   returns the resolved file path as a string.  The user's function
 %   receives the path and handles file reading itself.
 %
-%   PI = scidb.PathInput(TEMPLATE)
-%   PI = scidb.PathInput(TEMPLATE, root_folder=FOLDER)
+%   PI = scifor.PathInput(TEMPLATE)
+%   PI = scifor.PathInput(TEMPLATE, root_folder=FOLDER)
 %
 %   The template uses {key} placeholders that are replaced by the
 %   metadata values supplied by for_each on each iteration.
 %
 %   Example:
-%       scidb.for_each(@process_file, ...
-%           struct('filepath', scidb.PathInput("{subject}/trial_{trial}.mat", ...
+%       scifor.for_each(@process_file, ...
+%           struct('filepath', scifor.PathInput("{subject}/trial_{trial}.mat", ...
 %                                              root_folder="/data"), ...
-%                  'baseline', StepLength()), ...
-%           {ProcessedSignal()}, ...
+%                  'raw', data_table), ...
 %           subject=[1 2 3], ...
 %           trial=[0 1 2]);
 
@@ -30,8 +29,8 @@ classdef PathInput < handle
         function obj = PathInput(path_template, options)
         %PATHINPUT  Construct a PathInput.
         %
-        %   PI = scidb.PathInput(TEMPLATE)
-        %   PI = scidb.PathInput(TEMPLATE, root_folder=FOLDER)
+        %   PI = scifor.PathInput(TEMPLATE)
+        %   PI = scifor.PathInput(TEMPLATE, root_folder=FOLDER)
 
             arguments
                 path_template  string
@@ -54,7 +53,7 @@ classdef PathInput < handle
 
             % Parse name-value pairs
             if mod(numel(varargin), 2) ~= 0
-                error('scidb:PathInput', ...
+                error('scifor:PathInput', ...
                     'Metadata arguments must be name-value pairs.');
             end
 
@@ -84,10 +83,10 @@ classdef PathInput < handle
         function disp(obj)
         %DISP  Display the PathInput.
             if strlength(obj.root_folder) > 0
-                fprintf('  scidb.PathInput("%s", root_folder="%s")\n', ...
+                fprintf('  scifor.PathInput("%s", root_folder="%s")\n', ...
                     obj.path_template, obj.root_folder);
             else
-                fprintf('  scidb.PathInput("%s")\n', obj.path_template);
+                fprintf('  scifor.PathInput("%s")\n', obj.path_template);
             end
         end
     end

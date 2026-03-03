@@ -16,7 +16,7 @@ function result_tbl = for_each(fn, inputs, outputs, varargin)
 %       fn      - Function handle (plain; use scihist.for_each for Thunk wrapping)
 %       inputs  - Struct mapping parameter names to BaseVariable instances,
 %                 scidb.Fixed wrappers, scidb.Merge wrappers,
-%                 scidb.PathInput instances, or constant values.
+%                 scifor.PathInput instances, or constant values.
 %       outputs - Cell array of BaseVariable instances for output types
 %
 %   Name-Value Arguments:
@@ -377,8 +377,8 @@ function result = convert_input(var_spec, py_db, where_nv, db_nv)
         return;
     end
 
-    % scidb.PathInput -> return as constant (per-combo resolution happens via fn wrapper)
-    if isa(var_spec, 'scidb.PathInput')
+    % scifor.PathInput -> return as constant (per-combo resolution happens via fn wrapper)
+    if isa(var_spec, 'scifor.PathInput')
         result = var_spec;
         return;
     end
@@ -649,7 +649,7 @@ function [completed, skipped, total] = run_parallel(fn, inputs, outputs, ...
         if ~loadable_idx(p); continue; end
 
         var_spec = inputs.(input_names{p});
-        if isa(var_spec, 'scidb.PathInput'); continue; end
+        if isa(var_spec, 'scifor.PathInput'); continue; end
         if isa(var_spec, 'scidb.Merge'); continue; end
         if istable(var_spec); continue; end
         if isa(var_spec, 'scidb.Fixed') && istable(var_spec.var_type); continue; end
@@ -779,7 +779,7 @@ function [completed, skipped, total] = run_parallel(fn, inputs, outputs, ...
 
             var_spec = inputs.(input_names{p});
 
-            if isa(var_spec, 'scidb.PathInput')
+            if isa(var_spec, 'scifor.PathInput')
                 error('scidb:for_each', ...
                     'parallel=true is not supported with PathInput.');
             end
@@ -953,7 +953,7 @@ function tf = is_loadable(var_spec)
 %IS_LOADABLE  Check if an input spec is loadable (var type, Fixed, Merge, etc.).
     tf = isa(var_spec, 'scidb.BaseVariable') ...
       || isa(var_spec, 'scidb.Fixed') ...
-      || isa(var_spec, 'scidb.PathInput') ...
+      || isa(var_spec, 'scifor.PathInput') ...
       || isa(var_spec, 'scidb.Merge') ...
       || istable(var_spec) ...
       || (isa(var_spec, 'scidb.Fixed') && istable(var_spec.var_type));
@@ -976,10 +976,10 @@ function tf = has_pathinput(inputs)
     fnames = fieldnames(inputs);
     for i = 1:numel(fnames)
         v = inputs.(fnames{i});
-        if isa(v, 'scidb.PathInput')
+        if isa(v, 'scifor.PathInput')
             tf = true; return;
         end
-        if isa(v, 'scidb.Fixed') && isa(v.var_type, 'scidb.PathInput')
+        if isa(v, 'scidb.Fixed') && isa(v.var_type, 'scifor.PathInput')
             tf = true; return;
         end
     end
@@ -1218,7 +1218,7 @@ function key = input_spec_to_key(spec)
         end
     elseif isa(spec, 'scidb.BaseVariable')
         key = class(spec);
-    elseif isa(spec, 'scidb.PathInput')
+    elseif isa(spec, 'scifor.PathInput')
         if strlength(spec.root_folder) > 0
             key = sprintf('PathInput("%s", root_folder="%s")', ...
                 spec.path_template, spec.root_folder);

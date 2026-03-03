@@ -1,12 +1,19 @@
-function result_tbl = for_each(fn, inputs, varargin)
+function varargout = for_each(fn, inputs, varargin)
 %SCIFOR.FOR_EACH  Execute a function for all combinations of metadata.
 %
-%   result_tbl = scifor.for_each(@FN, INPUTS, Name, Value, ...)
+%   result = scifor.for_each(@FN, INPUTS, Name, Value, ...)
+%   [r1, r2] = scifor.for_each(@FN, INPUTS, Name, Value, ...)
 %
 %   Pure loop orchestrator — works with MATLAB tables only, no I/O.
 %   Iterates over every combination of the supplied metadata values.
 %   For each combination it filters table inputs by metadata columns,
 %   calls the function, and collects results.
+%
+%   Each function output becomes a separate result table:
+%   - Non-table outputs produce a table with metadata columns + an
+%     'output' data column (name customizable via output_names).
+%   - Table outputs are preserved with metadata columns prepended.
+%   Multiple outputs are returned via multiple return values.
 %
 %   Inputs can be:
 %   - MATLAB tables        — filtered per combo by schema key columns
@@ -34,29 +41,23 @@ function result_tbl = for_each(fn, inputs, varargin)
 %                       level below the deepest iterated key. (default: false)
 %       where         - Optional scifor.ColFilter to apply to table rows
 %                       after combo filtering. (default: [])
-%       output_names  - Cell array of strings for result column names,
-%                       or an integer N for auto-named ('output_1', etc.).
-%                       Defaults to {'output'} for single output.
+%       output_names  - Cell array of strings for result column names
+%                       (one per output). Defaults to {'output'} for each.
 %       _all_combos   - Pre-built cell array of combo structs (from DB
 %                       wrappers that pre-filter). Bypasses cartesian_product.
 %       (any other)   - Metadata iterables (numeric or string arrays)
 %
 %   Returns:
-%       result_tbl - MATLAB table with metadata columns and one column per
-%                   output. When all outputs are tables, metadata is
-%                   replicated per row and data columns are expanded inline
-%                   (flatten mode). Otherwise each combination becomes one
-%                   row with output data in a cell column (nested mode).
-%                   Returns [] for dry_run.
+%       One table per function output. Non-table outputs produce a table
+%       with metadata columns + a data column. Table outputs produce a
+%       table with metadata columns + original data columns. Returns []
+%       for dry_run.
 %
 %   Example:
 %       set_schema(["subject", "session"])
 %       result = scifor.for_each(@filter_data, ...
 %           struct('raw', data_table, 'smoothing', 0.2), ...
 %           subject=[1 2 3], session=["A" "B"])
-
-    % Default return value
-    result_tbl = [];
 
     % --- Parse options vs metadata name-value pairs ---
     [meta_args, opts] = split_options(varargin{:});
@@ -93,19 +94,20 @@ function result_tbl = for_each(fn, inputs, varargin)
         catch
             n_out = 1;
         end
-        if n_out > 1
-            resolved_output_names = cell(1, n_out);
-            for i = 1:n_out
-                resolved_output_names{i} = sprintf('output_%d', i);
-            end
-        else
-            resolved_output_names = {"output"};
+        if n_out < 0
+            n_out = max(nargout, 1);
+        elseif n_out < 1
+            n_out = 1;
+        end
+        resolved_output_names = cell(1, n_out);
+        for i = 1:n_out
+            resolved_output_names{i} = 'output';
         end
     elseif isnumeric(opts.output_names) && isscalar(opts.output_names)
         n = opts.output_names;
         resolved_output_names = cell(1, n);
         for i = 1:n
-            resolved_output_names{i} = sprintf('output_%d', i);
+            resolved_output_names{i} = 'output';
         end
     else
         resolved_output_names = opts.output_names;
@@ -228,7 +230,10 @@ function result_tbl = for_each(fn, inputs, varargin)
 
     completed = 0;
     skipped = 0;
-    collected_rows = {};
+    collected_per_output = cell(1, n_outputs);
+    for o = 1:n_outputs
+        collected_per_output{o} = {};
+    end
 
     for c = 1:numel(combos)
         combo = combos{c};
@@ -335,8 +340,9 @@ function result_tbl = for_each(fn, inputs, varargin)
             continue;
         end
 
-        % Handle distribute: expand result into multiple rows
+        % Collect results per output
         if strlength(distribute_key) > 0
+            % Distribute: expand each output into multiple rows
             for o = 1:min(n_outputs, numel(result))
                 raw_value = result{o};
                 try
@@ -353,24 +359,27 @@ function result_tbl = for_each(fn, inputs, varargin)
                         for rowIdx = 1:height(data_tbl)
                             dist_meta = metadata;
                             dist_meta.(dist_key_char) = dist_values(rowIdx);
-                            collected_rows{end+1} = {dist_meta, {data_tbl(rowIdx, :)}}; %#ok<AGROW>
+                            collected_per_output{o}{end+1} = {dist_meta, data_tbl(rowIdx, :)}; %#ok<AGROW>
                         end
                     else
                         pieces = split_for_distribute(raw_value);
                         for k = 1:numel(pieces)
                             dist_meta = metadata;
                             dist_meta.(dist_key_char) = k;
-                            collected_rows{end+1} = {dist_meta, {pieces{k}}}; %#ok<AGROW>
+                            collected_per_output{o}{end+1} = {dist_meta, pieces{k}}; %#ok<AGROW>
                         end
                     end
                 catch err2
-                    fprintf('[error] %s: cannot distribute: %s\n', ...
-                        metadata_str, err2.message);
+                    fprintf('[error] %s: cannot distribute output %d: %s\n', ...
+                        metadata_str, o, err2.message);
                     continue;
                 end
             end
         else
-            collected_rows{end+1} = {metadata, result}; %#ok<AGROW>
+            % Normal: collect each output value separately
+            for o = 1:min(n_outputs, numel(result))
+                collected_per_output{o}{end+1} = {metadata, result{o}}; %#ok<AGROW>
+            end
         end
 
         completed = completed + 1;
@@ -380,11 +389,28 @@ function result_tbl = for_each(fn, inputs, varargin)
     fprintf('\n');
     if dry_run
         fprintf('[dry-run] would process %d iterations\n', total);
-        result_tbl = [];
+        for o = 1:nargout
+            varargout{o} = [];
+        end
+        if nargout == 0
+            varargout{1} = [];
+        end
     else
         fprintf('[done] completed=%d, skipped=%d, total=%d\n', ...
             completed, skipped, total);
-        result_tbl = results_to_output_table(collected_rows, resolved_output_names);
+        output_tables = cell(1, n_outputs);
+        for o = 1:n_outputs
+            output_tables{o} = build_single_output_table( ...
+                collected_per_output{o}, resolved_output_names{o});
+        end
+        n_return = max(nargout, 1);
+        for o = 1:n_return
+            if o <= n_outputs
+                varargout{o} = output_tables{o};
+            else
+                varargout{o} = table();
+            end
+        end
     end
 end
 
@@ -509,34 +535,62 @@ end
 function result = extract_data(tbl, schema_keys, as_table)
 %EXTRACT_DATA  Extract data from a filtered table.
 %   If as_table: return full table (including schema columns).
-%   Otherwise: drop schema key columns; if 1 row + 1 data col -> extract scalar.
+%   Otherwise: drop schema key columns that are all-identical (constant
+%   within this combo), keep schema keys that still vary. If the result
+%   has one data column and one row, extract the scalar value. If multiple
+%   columns remain, return as a table.
     if as_table
         result = tbl;
         return;
     end
 
+    % Drop schema key columns that are all-identical in the filtered rows
     col_names = string(tbl.Properties.VariableNames);
-    data_cols = setdiff(col_names, schema_keys, 'stable');
+    cols_to_drop = string.empty;
+    for k = 1:numel(schema_keys)
+        sk = schema_keys(k);
+        if ismember(sk, col_names)
+            col_data = tbl.(char(sk));
+            if height(tbl) <= 1 || all_identical(col_data)
+                cols_to_drop(end+1) = sk; %#ok<AGROW>
+            end
+        end
+    end
+    keep_cols = setdiff(col_names, cols_to_drop, 'stable');
 
-    if height(tbl) == 1 && numel(data_cols) == 1
+    if height(tbl) == 1 && numel(keep_cols) == 1
         % Extract scalar value
-        val = tbl.(char(data_cols(1)));
+        val = tbl.(char(keep_cols(1)));
         if iscell(val)
             result = val{1};
         else
             result = val;
         end
-    elseif ~isempty(data_cols) && numel(data_cols) < numel(col_names)
-        sub_tbl = tbl(:, cellstr(data_cols));
-        % If all data columns are numeric, return as numeric array (vector or matrix)
-        all_numeric = all(cellfun(@(c) isnumeric(sub_tbl.(c)), cellstr(data_cols)));
-        if all_numeric
-            result = table2array(sub_tbl);
+    elseif ~isempty(keep_cols) && numel(keep_cols) < numel(col_names)
+        sub_tbl = tbl(:, cellstr(keep_cols));
+        if numel(keep_cols) == 1
+            % Single data column: return as array (vector)
+            if isnumeric(sub_tbl.(char(keep_cols(1))))
+                result = table2array(sub_tbl);
+            else
+                result = sub_tbl;
+            end
         else
+            % Multiple columns remain: return as table
             result = sub_tbl;
         end
     else
         result = tbl;
+    end
+end
+
+
+function tf = all_identical(col_data)
+%ALL_IDENTICAL  Return true if every element in col_data is the same.
+    if isnumeric(col_data) || islogical(col_data)
+        tf = all(col_data == col_data(1));
+    else
+        tf = all(string(col_data) == string(col_data(1)));
     end
 end
 
@@ -766,47 +820,52 @@ end
 % Return value helpers
 % =========================================================================
 
-function tbl = results_to_output_table(collected_rows, output_names)
-%RESULTS_TO_OUTPUT_TABLE  Build a combined MATLAB table from all for_each results.
+function tbl = build_single_output_table(collected, output_name)
+%BUILD_SINGLE_OUTPUT_TABLE  Build one result table for a single output.
+%
+%   collected - cell array of {metadata_struct, value} pairs for one output
+%   output_name - column name for non-table values (e.g., 'output')
+%
+%   If all values are tables → flatten mode (metadata + data columns).
+%   Otherwise → nested mode (metadata + single data column).
 
-    n_rows = numel(collected_rows);
-    n_outputs = numel(output_names);
+    n_rows = numel(collected);
 
     if n_rows == 0
         tbl = table();
         return;
     end
 
-    % Check whether all output values across all rows are tables (flatten mode)
+    % Check whether all values for this output are tables (flatten mode)
     all_tables = true;
     for r = 1:n_rows
-        if ~all_tables; break; end
-        result = collected_rows{r}{2};
-        for o = 1:min(n_outputs, numel(result))
-            if ~istable(result{o})
-                all_tables = false;
-                break;
-            end
+        if ~istable(collected{r}{2})
+            all_tables = false;
+            break;
         end
     end
 
     if all_tables
-        % Flatten mode: replicate metadata per data row, expand output columns
+        % Flatten mode: metadata columns + original table columns
         parts = cell(n_rows, 1);
         for r = 1:n_rows
-            metadata = collected_rows{r}{1};
-            result   = collected_rows{r}{2};
+            metadata = collected{r}{1};
+            data_tbl = collected{r}{2};
+            nr = height(data_tbl);
 
-            % Horizontally concatenate all output tables
-            combined_data = table();
-            for o = 1:min(n_outputs, numel(result))
-                combined_data = [combined_data, result{o}]; %#ok<AGROW>
+            % Validate no column name conflicts between metadata and data
+            meta_fields = fieldnames(metadata);
+            data_col_names = data_tbl.Properties.VariableNames;
+            for f = 1:numel(meta_fields)
+                if ismember(meta_fields{f}, data_col_names)
+                    error('scifor:for_each', ...
+                        'Table output has column ''%s'' which conflicts with metadata key ''%s''. Rename the column to avoid the conflict.', ...
+                        meta_fields{f}, meta_fields{f});
+                end
             end
-            nr = height(combined_data);
 
             % Build metadata table with one replicated row per data row
             meta_tbl = table();
-            meta_fields = fieldnames(metadata);
             for f = 1:numel(meta_fields)
                 val = metadata.(meta_fields{f});
                 if isnumeric(val) && isscalar(val)
@@ -817,19 +876,19 @@ function tbl = results_to_output_table(collected_rows, output_names)
                     meta_tbl.(meta_fields{f}) = repmat({val}, nr, 1);
                 end
             end
-            parts{r} = [meta_tbl, combined_data];
+            parts{r} = [meta_tbl, data_tbl];
         end
         tbl = vertcat(parts{:});
     else
-        % Nested mode: one row per combination
+        % Nested mode: metadata columns + single output column
         tbl = table();
-        meta_fields = fieldnames(collected_rows{1}{1});
+        meta_fields = fieldnames(collected{1}{1});
 
         % Metadata columns
         for f = 1:numel(meta_fields)
             col_data = cell(n_rows, 1);
             for r = 1:n_rows
-                metadata = collected_rows{r}{1};
+                metadata = collected{r}{1};
                 if isfield(metadata, meta_fields{f})
                     col_data{r} = metadata.(meta_fields{f});
                 else
@@ -839,19 +898,12 @@ function tbl = results_to_output_table(collected_rows, output_names)
             tbl.(meta_fields{f}) = normalize_cell_column(col_data);
         end
 
-        % Output columns (using output_names)
-        for o = 1:n_outputs
-            col_data = cell(n_rows, 1);
-            for r = 1:n_rows
-                result = collected_rows{r}{2};
-                if o <= numel(result)
-                    col_data{r} = result{o};
-                else
-                    col_data{r} = {missing};
-                end
-            end
-            tbl.(output_names{o}) = normalize_cell_column(col_data);
+        % Single output column
+        col_data = cell(n_rows, 1);
+        for r = 1:n_rows
+            col_data{r} = collected{r}{2};
         end
+        tbl.(output_name) = normalize_cell_column(col_data);
     end
 end
 
