@@ -105,8 +105,6 @@ function varargout = for_each(fn, inputs, varargin)
         end
         if n_out < 0
             n_out = max(nargout, 1);
-        elseif n_out < 1
-            n_out = 1;
         end
         resolved_output_names = cell(1, n_out);
         for i = 1:n_out
@@ -340,7 +338,15 @@ function varargout = for_each(fn, inputs, varargin)
             strjoin(string(input_names'), ', '));
 
         try
-            if n_outputs > 1
+            if n_outputs == 0
+                % Zero-output function (e.g. plotting side-effects only)
+                if should_pass_metadata
+                    fn(loaded{:}, meta_nv{:});
+                else
+                    fn(loaded{:});
+                end
+                result = {};
+            elseif n_outputs > 1
                 result = cell(1, n_outputs);
                 if should_pass_metadata
                     [result{1:n_outputs}] = fn(loaded{:}, meta_nv{:});
@@ -428,17 +434,26 @@ function varargout = for_each(fn, inputs, varargin)
     else
         fprintf('[done] completed=%d, skipped=%d, total=%d\n', ...
             completed, skipped, total);
-        output_tables = cell(1, n_outputs);
-        for o = 1:n_outputs
-            output_tables{o} = build_single_output_table( ...
-                collected_per_output{o}, resolved_output_names{o}, opts.categorical, effective_keys);
-        end
-        n_return = max(nargout, 1);
-        for o = 1:n_return
-            if o <= n_outputs
-                varargout{o} = output_tables{o};
-            else
-                varargout{o} = table();
+        if n_outputs == 0
+            % Zero-output function: nothing to collect
+            if nargout > 0
+                for o = 1:nargout
+                    varargout{o} = table();
+                end
+            end
+        else
+            output_tables = cell(1, n_outputs);
+            for o = 1:n_outputs
+                output_tables{o} = build_single_output_table( ...
+                    collected_per_output{o}, resolved_output_names{o}, opts.categorical, effective_keys);
+            end
+            n_return = max(nargout, 1);
+            for o = 1:n_return
+                if o <= n_outputs
+                    varargout{o} = output_tables{o};
+                else
+                    varargout{o} = table();
+                end
             end
         end
     end
