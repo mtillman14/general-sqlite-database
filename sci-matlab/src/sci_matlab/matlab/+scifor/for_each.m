@@ -321,8 +321,35 @@ function varargout = for_each(fn, inputs, varargin)
 
         for p = 1:n_inputs
             if ~data_idx(p)
-                % Constant — pass value directly to user function
-                loaded{p} = inputs.(input_names{p});
+                % Constant — pass value directly to user function,
+                % or resolve PathInput if _resolve_pathinput is set
+                val = inputs.(input_names{p});
+                if opts.resolve_pathinput && isa(val, 'scifor.PathInput')
+                    loaded{p} = val.load(meta_nv{:});
+                elseif opts.resolve_pathinput && isa(val, 'scifor.Fixed') && isa(val.data, 'scifor.PathInput')
+                    % Fixed(PathInput) — apply fixed overrides, then resolve
+                    fixed_nv = meta_nv;
+                    fixed_fields = fieldnames(val.fixed_metadata);
+                    for f = 1:numel(fixed_fields)
+                        key_name = fixed_fields{f};
+                        key_val = val.fixed_metadata.(key_name);
+                        replaced = false;
+                        for nvi = 1:2:numel(fixed_nv)
+                            if strcmp(fixed_nv{nvi}, key_name)
+                                fixed_nv{nvi+1} = key_val;
+                                replaced = true;
+                                break;
+                            end
+                        end
+                        if ~replaced
+                            fixed_nv{end+1} = key_name; %#ok<AGROW>
+                            fixed_nv{end+1} = key_val; %#ok<AGROW>
+                        end
+                    end
+                    loaded{p} = val.data.load(fixed_nv{:});
+                else
+                    loaded{p} = val;
+                end
                 continue;
             end
 
@@ -405,10 +432,13 @@ function varargout = for_each(fn, inputs, varargin)
                             data_tbl = raw_value;
                         end
                         % Strip columns that overlap with metadata keys
-                        meta_field_names = fieldnames(metadata);
-                        overlap = intersect(meta_field_names, data_tbl.Properties.VariableNames, 'stable');
-                        if ~isempty(overlap)
-                            data_tbl = removevars(data_tbl, overlap);
+                        % (only in flatten mode — nested mode preserves all columns)
+                        if ~opts.nest_table_outputs
+                            meta_field_names = fieldnames(metadata);
+                            overlap = intersect(meta_field_names, data_tbl.Properties.VariableNames, 'stable');
+                            if ~isempty(overlap)
+                                data_tbl = removevars(data_tbl, overlap);
+                            end
                         end
                         for rowIdx = 1:height(data_tbl)
                             dist_meta = metadata;
@@ -1188,6 +1218,7 @@ function [meta_args, opts] = split_options(varargin)
     opts.output_names = {};
     opts.all_combos = [];
     opts.nest_table_outputs = false;
+    opts.resolve_pathinput = false;
 
     meta_args = {};
     i = 1;
@@ -1241,6 +1272,10 @@ function [meta_args, opts] = split_options(varargin)
                     continue;
                 case "_nest_table_outputs"
                     opts.nest_table_outputs = logical(varargin{i+1});
+                    i = i + 2;
+                    continue;
+                case "_resolve_pathinput"
+                    opts.resolve_pathinput = logical(varargin{i+1});
                     i = i + 2;
                     continue;
             end

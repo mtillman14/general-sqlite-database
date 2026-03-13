@@ -398,6 +398,12 @@ function result_tbl = for_each(fn, inputs, outputs, varargin)
     scifor_opts{end+1} = '_nest_table_outputs';
     scifor_opts{end+1} = true;
 
+    % Resolve PathInput per-combo inside scifor loop
+    if has_pathinput(inputs)
+        scifor_opts{end+1} = '_resolve_pathinput';
+        scifor_opts{end+1} = true;
+    end
+
     % Note: scidb.Filter (where) is applied during loading, NOT passed to scifor.
     % scifor's where= is for scifor.ColFilter on tables.
 
@@ -477,7 +483,7 @@ function result = convert_input(var_spec, py_db, where_nv, db_nv)
         return;
     end
 
-    % scifor.PathInput -> return as constant (per-combo resolution happens via fn wrapper)
+    % scifor.PathInput -> return as constant (per-combo resolution via _resolve_pathinput)
     if isa(var_spec, 'scifor.PathInput')
         result = var_spec;
         return;
