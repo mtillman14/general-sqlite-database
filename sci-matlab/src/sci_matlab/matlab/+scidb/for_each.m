@@ -374,9 +374,19 @@ function result_tbl = for_each(fn, inputs, outputs, varargin)
         scifor_opts{end+1} = 'as_table';
         scifor_opts{end+1} = as_table_raw;
     elseif opts.distribute
-        % distribute needs schema columns preserved in table inputs
-        scifor_opts{end+1} = 'as_table';
-        scifor_opts{end+1} = true;
+        % distribute needs schema columns preserved in plain-table inputs
+        % but NOT in auto-loaded BaseVariable tables (where schema columns
+        % are metadata added by thunk_outputs_to_table, not user data)
+        table_input_names = string.empty;
+        for p = 1:n_inputs
+            if istable(inputs.(input_names{p}))
+                table_input_names(end+1) = string(input_names{p}); %#ok<AGROW>
+            end
+        end
+        if ~isempty(table_input_names)
+            scifor_opts{end+1} = 'as_table';
+            scifor_opts{end+1} = table_input_names;
+        end
     end
 
     if ~isempty(all_combos)
@@ -428,6 +438,10 @@ function result_tbl = for_each(fn, inputs, outputs, varargin)
             end
         end
     end
+
+    % --- Flatten nested table outputs for return ---
+    % _nest_table_outputs was forced for saving; un-nest for caller
+    result_tbl = flatten_nested_table_outputs(result_tbl, output_names);
 end
 
 
@@ -760,6 +774,74 @@ function s = format_save_meta(save_nv)
         end
     end
     s = strjoin(parts, ', ');
+end
+
+
+function tbl = flatten_nested_table_outputs(result_tbl, output_names)
+%FLATTEN_NESTED_TABLE_OUTPUTS  Un-nest table outputs for user-facing return.
+%   When _nest_table_outputs was forced for saving, result columns may contain
+%   cell arrays of tables. This flattens them: metadata is replicated per
+%   data row and data columns are inlined.
+    if isempty(result_tbl) || ~istable(result_tbl)
+        tbl = result_tbl;
+        return;
+    end
+
+    % Find output columns that contain cell arrays of tables
+    table_out_cols = {};
+    for oi = 1:numel(output_names)
+        col_name = output_names{oi};
+        if ~ismember(col_name, result_tbl.Properties.VariableNames)
+            continue;
+        end
+        col = result_tbl.(col_name);
+        if iscell(col) && ~isempty(col) && istable(col{1})
+            table_out_cols{end+1} = col_name; %#ok<AGROW>
+        end
+    end
+
+    if isempty(table_out_cols)
+        tbl = result_tbl;
+        return;
+    end
+
+    % Metadata columns = everything except output columns
+    all_cols = result_tbl.Properties.VariableNames;
+    meta_cols = setdiff(all_cols, output_names, 'stable');
+
+    parts = cell(height(result_tbl), 1);
+    for ri = 1:height(result_tbl)
+        % Combine all table output columns into one data table
+        data_tbl = result_tbl.(table_out_cols{1}){ri};
+        for tc = 2:numel(table_out_cols)
+            extra = result_tbl.(table_out_cols{tc}){ri};
+            data_tbl = [data_tbl, extra]; %#ok<AGROW>
+        end
+        nr = height(data_tbl);
+
+        % Replicate metadata for each data row
+        meta_tbl = table();
+        for mc = 1:numel(meta_cols)
+            val = result_tbl.(meta_cols{mc})(ri);
+            if iscell(val)
+                val = val{1};
+            end
+            if isnumeric(val) && isscalar(val)
+                meta_tbl.(meta_cols{mc}) = repmat(val, nr, 1);
+            elseif ischar(val) || (isstring(val) && isscalar(val))
+                meta_tbl.(meta_cols{mc}) = repmat(string(val), nr, 1);
+            else
+                meta_tbl.(meta_cols{mc}) = repmat({val}, nr, 1);
+            end
+        end
+        % Remove data columns that overlap with metadata to avoid duplicates
+        overlap = intersect(data_tbl.Properties.VariableNames, meta_cols, 'stable');
+        if ~isempty(overlap)
+            data_tbl = removevars(data_tbl, overlap);
+        end
+        parts{ri} = [meta_tbl, data_tbl];
+    end
+    tbl = vertcat(parts{:});
 end
 
 
