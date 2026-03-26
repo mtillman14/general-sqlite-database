@@ -7,7 +7,7 @@ import sys
 import numpy as np
 import pandas as pd
 
-from scirun import for_each, Fixed, ColumnSelection, Merge
+from scirun import for_each, Fixed, ColumnSelection, Merge, ColName
 
 
 class MockVariable:
@@ -1705,3 +1705,38 @@ class TestForEachReturnValue:
 
         assert len(MockOutput.saved_data) == 2
         assert len(result) == 2
+
+
+class TestColName:
+    """Tests for ColName wrapper."""
+
+    def test_colname_import(self):
+        """ColName should be importable from scirun."""
+        from scirun import ColName
+        cn = ColName(MockVariableA)
+        assert cn.var_type is MockVariableA
+
+    def test_colname_with_dataframe_input(self):
+        """ColName used with a DataFrame input (passes through scifor resolution)."""
+        import scifor
+        scifor.set_schema(["subject"])
+        df = pd.DataFrame({
+            "subject": [1, 2],
+            "velocity": [3.0, 4.0],
+        })
+        received = []
+
+        def fn(table, col_name):
+            received.append(col_name)
+            return table[col_name].iloc[0]
+
+        result = for_each(
+            fn,
+            inputs={"table": df, "col_name": scifor.ColName(df)},
+            outputs=[MockOutput],
+            as_table=True,
+            subject=[1, 2],
+        )
+        assert len(received) == 2
+        assert received[0] == "velocity"
+        assert received[1] == "velocity"

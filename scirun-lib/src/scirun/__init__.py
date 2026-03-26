@@ -19,6 +19,7 @@ Example:
     )
 """
 
+from .colname import ColName
 from .column_selection import ColumnSelection
 from .fixed import Fixed
 from .foreach import for_each
@@ -29,6 +30,7 @@ __version__ = "0.1.0"
 
 __all__ = [
     "for_each",
+    "ColName",
     "Fixed",
     "ColumnSelection",
     "Merge",

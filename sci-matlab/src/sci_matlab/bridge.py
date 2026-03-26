@@ -452,3 +452,83 @@ def get_surrogate_class(type_name: str):
             f"Call scidb.register_variable('{type_name}') first."
         )
     return cls
+
+
+def get_data_column_name(py_class, db=None):
+    """Resolve the single data column name for a variable type.
+
+    Used by MATLAB's scidb.ColName to resolve column names via the
+    Python bridge.
+
+    Parameters
+    ----------
+    py_class : type
+        BaseVariable subclass to query.
+    db : DatabaseManager or None
+        Optional database; uses global default when None.
+
+    Returns
+    -------
+    str
+        The single data column name.
+
+    Raises
+    ------
+    ValueError
+        If the variable has 0 or 2+ data columns.
+    """
+    import json
+    from scidb.database import get_database
+
+    _db = db if db is not None and not isinstance(db, type(None)) else get_database()
+    var_name = py_class.__name__
+    schema_keys = list(_db.dataset_schema_keys)
+
+    row = _db._execute(
+        "SELECT dtype FROM _variables WHERE variable_name = ?",
+        [var_name],
+    ).fetchone()
+
+    if row is None:
+        # Variable not yet saved — fall back to view_name
+        if hasattr(py_class, 'view_name'):
+            return py_class.view_name()
+        return var_name
+
+    dtype_meta = json.loads(row[0])
+    mode = dtype_meta.get("mode", "single_column")
+
+    if mode == "single_column":
+        col_names = list(dtype_meta.get("columns", {}).keys())
+        if col_names:
+            return col_names[0]
+        if hasattr(py_class, 'view_name'):
+            return py_class.view_name()
+        return var_name
+
+    if mode == "dataframe":
+        df_columns = dtype_meta.get("df_columns", list(dtype_meta.get("columns", {}).keys()))
+        data_cols = [c for c in df_columns if c not in schema_keys]
+        if len(data_cols) == 1:
+            return data_cols[0]
+        elif len(data_cols) == 0:
+            raise ValueError(
+                f"ColName({var_name}): variable has no data columns "
+                f"(all columns are schema keys). "
+                f"Columns: {df_columns}, schema keys: {schema_keys}"
+            )
+        else:
+            raise ValueError(
+                f"ColName({var_name}): variable has {len(data_cols)} "
+                f"data columns ({data_cols}), expected exactly 1. "
+                f"Schema keys: {schema_keys}"
+            )
+
+    if mode == "multi_column":
+        raise ValueError(
+            f"ColName({var_name}): not supported for dict-type (multi_column) variables."
+        )
+
+    if hasattr(py_class, 'view_name'):
+        return py_class.view_name()
+    return var_name

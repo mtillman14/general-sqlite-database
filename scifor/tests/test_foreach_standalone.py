@@ -5,7 +5,7 @@ import pandas as pd
 import numpy as np
 
 import scifor
-from scifor import set_schema, for_each, Fixed, Merge, ColumnSelection, Col
+from scifor import set_schema, for_each, Fixed, Merge, ColumnSelection, Col, ColName
 
 
 def setup_function():
@@ -283,25 +283,6 @@ def test_dry_run_returns_none(capsys):
     assert "[dry-run]" in captured.out
 
 
-# ---------------------------------------------------------------------------
-# pass_metadata
-# ---------------------------------------------------------------------------
-
-def test_pass_metadata():
-    set_schema(["subject"])
-    received_meta = []
-
-    def fn(subject):
-        received_meta.append(subject)
-        return subject
-
-    for_each(
-        fn,
-        inputs={},
-        pass_metadata=True,
-        subject=[1, 2],
-    )
-    assert received_meta == [1, 2]
 
 
 # ---------------------------------------------------------------------------
@@ -423,6 +404,102 @@ def test_column_selection_multiple():
     assert list(received[0].columns) == ["a", "b"]
 
 
+def test_as_table_with_single_column_selection():
+    """as_table=True + single ColumnSelection returns DataFrame with schema cols."""
+    set_schema(["subject"])
+    df = pd.DataFrame({
+        "subject": [1, 1, 2, 2],
+        "trial": [1, 2, 1, 2],
+        "signal": [10.0, 20.0, 30.0, 40.0],
+        "noise": [0.1, 0.2, 0.3, 0.4],
+    })
+    received = []
+
+    def fn(data):
+        received.append(data)
+        return 0
+
+    for_each(
+        fn,
+        inputs={"data": ColumnSelection(df, ["signal"])},
+        as_table=True,
+        subject=[1, 2],
+    )
+    assert len(received) == 2
+    # Must be DataFrames, not arrays
+    for r in received:
+        assert isinstance(r, pd.DataFrame), f"Expected DataFrame, got {type(r)}"
+    # Must have schema column + selected data column
+    assert "subject" in received[0].columns
+    assert "signal" in received[0].columns
+    # Must NOT have unselected columns
+    assert "noise" not in received[0].columns
+    assert "trial" not in received[0].columns
+    # Verify data values
+    np.testing.assert_array_equal(received[0]["signal"].values, [10.0, 20.0])
+    np.testing.assert_array_equal(received[1]["signal"].values, [30.0, 40.0])
+
+
+def test_as_table_with_multi_column_selection():
+    """as_table=True + multi ColumnSelection returns DataFrame with schema cols + selected cols."""
+    set_schema(["subject"])
+    df = pd.DataFrame({
+        "subject": [1, 1, 2, 2],
+        "a": [1.0, 2.0, 3.0, 4.0],
+        "b": [10.0, 20.0, 30.0, 40.0],
+        "c": [100.0, 200.0, 300.0, 400.0],
+    })
+    received = []
+
+    def fn(data):
+        received.append(data)
+        return 0
+
+    for_each(
+        fn,
+        inputs={"data": ColumnSelection(df, ["a", "b"])},
+        as_table=True,
+        subject=[1, 2],
+    )
+    assert len(received) == 2
+    for r in received:
+        assert isinstance(r, pd.DataFrame)
+    # Must have schema col + selected cols
+    assert "subject" in received[0].columns
+    assert "a" in received[0].columns
+    assert "b" in received[0].columns
+    # Must NOT have unselected col
+    assert "c" not in received[0].columns
+    # Verify values
+    np.testing.assert_array_equal(received[0]["a"].values, [1.0, 2.0])
+    np.testing.assert_array_equal(received[1]["b"].values, [30.0, 40.0])
+
+
+def test_as_table_false_with_column_selection_returns_array():
+    """as_table=False (default) + single ColumnSelection returns array, not DataFrame."""
+    set_schema(["subject"])
+    df = pd.DataFrame({
+        "subject": [1, 2],
+        "signal": [10.0, 20.0],
+        "noise": [0.1, 0.2],
+    })
+    received = []
+
+    def fn(data):
+        received.append(data)
+        return 0
+
+    for_each(
+        fn,
+        inputs={"data": ColumnSelection(df, ["signal"])},
+        subject=[1, 2],
+    )
+    assert len(received) == 2
+    # Without as_table, single column selection returns a numpy array
+    for r in received:
+        assert isinstance(r, np.ndarray), f"Expected ndarray, got {type(r)}"
+
+
 # ---------------------------------------------------------------------------
 # Error handling
 # ---------------------------------------------------------------------------
@@ -486,3 +563,80 @@ def test_flatten_mode_dataframe_outputs():
     assert len(result) == 6
     assert "subject" in result.columns
     assert "val" in result.columns
+
+
+# ---------------------------------------------------------------------------
+# ColName resolution
+# ---------------------------------------------------------------------------
+
+def test_colname_single_data_column():
+    """ColName(df) resolves to the one non-schema data column name."""
+    set_schema(["subject", "session"])
+    df = make_df()  # has columns: subject, session, emg
+    received = []
+
+    def fn(table, col_name):
+        received.append(col_name)
+        return table[col_name].mean()
+
+    result = for_each(
+        fn,
+        inputs={"table": df, "col_name": ColName(df)},
+        as_table=True,
+        subject=[1],
+        session=["pre"],
+    )
+    assert received[0] == "emg"
+
+
+def test_colname_multiple_data_columns_errors():
+    """ColName raises ValueError when the DataFrame has 2+ data columns."""
+    set_schema(["subject"])
+    df = pd.DataFrame({
+        "subject": [1, 2],
+        "emg": [0.1, 0.2],
+        "force": [1.0, 2.0],
+    })
+    with pytest.raises(ValueError, match="2 data columns"):
+        for_each(
+            lambda table, col_name: 0,
+            inputs={"table": df, "col_name": ColName(df)},
+            subject=[1],
+        )
+
+
+def test_colname_no_data_columns_errors():
+    """ColName raises ValueError when all columns are schema keys."""
+    set_schema(["subject", "session"])
+    df = pd.DataFrame({"subject": [1], "session": ["pre"]})
+    with pytest.raises(ValueError, match="no data columns"):
+        for_each(
+            lambda table, col_name: 0,
+            inputs={"table": df, "col_name": ColName(df)},
+            subject=[1],
+            session=["pre"],
+        )
+
+
+def test_colname_with_other_inputs():
+    """ColName works alongside regular table and constant inputs."""
+    set_schema(["subject"])
+    df = pd.DataFrame({
+        "subject": [1, 2],
+        "velocity": [3.0, 4.0],
+    })
+    received = []
+
+    def fn(table, col_name, scale):
+        received.append((col_name, scale))
+        return table[col_name].iloc[0] * scale
+
+    result = for_each(
+        fn,
+        inputs={"table": df, "col_name": ColName(df), "scale": 2.0},
+        as_table=True,
+        subject=[1, 2],
+    )
+    assert len(received) == 2
+    assert received[0] == ("velocity", 2.0)
+    assert received[1] == ("velocity", 2.0)

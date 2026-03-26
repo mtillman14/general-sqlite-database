@@ -2,7 +2,7 @@ classdef TestSciforForEachFeatures < matlab.unittest.TestCase
 %TESTSCIFORFOREACHFEATURES  Comprehensive tests for scifor.for_each feature interactions.
 %
 %   Tests covering combinations of where=, distribute=, as_table=,
-%   ColumnSelection, Merge, Fixed, pass_metadata, and output_names.
+%   ColumnSelection, Merge, Fixed, and output_names.
 %   Each section focuses on feature interactions not covered by the
 %   basic TestSciforForEach and TestSciforForEachOutput test files.
 
@@ -355,6 +355,94 @@ classdef TestSciforForEachFeatures < matlab.unittest.TestCase
 
             % Data is a table (100) with 3 columns: trial, force, emg (3)
             tc.verifyEqual(result.output, 103);
+        end
+
+        function test_as_table_with_single_column_selection(tc)
+        %   as_table=true + single ColumnSelection returns table with
+        %   schema cols + selected data column, not a raw vector.
+            scifor.set_schema(["subject"]);
+
+            tbl = table([1;1;2;2], [10;20;30;40], [0.1;0.2;0.3;0.4], ...
+                'VariableNames', {'subject','signal','noise'});
+
+            received = [];
+
+            function result = capture(data)
+                received = data;
+                result = 0;
+            end
+
+            scifor.for_each(@capture, ...
+                struct('data', scifor.ColumnSelection(tbl, "signal")), ...
+                as_table=true, subject=[1 2]);
+
+            % Must be a table (as_table controls this)
+            tc.verifyTrue(istable(received), ...
+                'as_table=true should produce a table even with column selection');
+            % Must have schema column
+            tc.verifyTrue(ismember('subject', received.Properties.VariableNames), ...
+                'Table should contain subject metadata column');
+            % Must have selected data column
+            tc.verifyTrue(ismember('signal', received.Properties.VariableNames), ...
+                'Table should contain the selected data column');
+            % Must NOT have unselected data column
+            tc.verifyFalse(ismember('noise', received.Properties.VariableNames), ...
+                'Table should NOT contain unselected data columns');
+        end
+
+        function test_as_table_with_multi_column_selection(tc)
+        %   as_table=true + multi ColumnSelection returns table with
+        %   schema cols + selected data columns only.
+            scifor.set_schema(["subject"]);
+
+            tbl = table([1;1;2;2], [1;2;3;4], [10;20;30;40], [100;200;300;400], ...
+                'VariableNames', {'subject','a','b','c'});
+
+            received = [];
+
+            function result = capture(data)
+                received = data;
+                result = 0;
+            end
+
+            scifor.for_each(@capture, ...
+                struct('data', scifor.ColumnSelection(tbl, ["a" "b"])), ...
+                as_table=true, subject=[1 2]);
+
+            % Must be a table
+            tc.verifyTrue(istable(received));
+            % Must have schema col + selected cols
+            tc.verifyTrue(ismember('subject', received.Properties.VariableNames));
+            tc.verifyTrue(ismember('a', received.Properties.VariableNames));
+            tc.verifyTrue(ismember('b', received.Properties.VariableNames));
+            % Must NOT have unselected col
+            tc.verifyFalse(ismember('c', received.Properties.VariableNames));
+        end
+
+        function test_as_table_false_column_selection_returns_vector(tc)
+        %   as_table=false (default) + single ColumnSelection returns
+        %   a plain vector, NOT a table — preserving existing behavior.
+            scifor.set_schema(["subject"]);
+
+            tbl = table([1;1;2;2], [10;20;30;40], [0.1;0.2;0.3;0.4], ...
+                'VariableNames', {'subject','signal','noise'});
+
+            received = [];
+
+            function result = capture(data)
+                received = data;
+                result = 0;
+            end
+
+            scifor.for_each(@capture, ...
+                struct('data', scifor.ColumnSelection(tbl, "signal")), ...
+                subject=[1 2]);
+
+            % Without as_table, single column selection returns a vector
+            tc.verifyFalse(istable(received), ...
+                'as_table=false + column selection should return a vector, not a table');
+            tc.verifyTrue(isnumeric(received), ...
+                'as_table=false + column selection should return a numeric vector');
         end
 
     end
@@ -718,31 +806,6 @@ classdef TestSciforForEachFeatures < matlab.unittest.TestCase
             tc.verifyEqual(result.output, [10; 20; 30; 40]);
         end
 
-        function test_pass_metadata_with_where_and_fixed(tc)
-        %   pass_metadata + where + Fixed: metadata passed as trailing NV args.
-            scifor.set_schema(["subject", "session"]);
-
-            tbl = table([1;1;1;1], ["pre";"pre";"post";"post"], ...
-                [10;20;30;40], ...
-                'VariableNames', {'subject','session','value'});
-
-            % Fixed locks session=pre, where filters value > 15
-            % pass_metadata adds trailing NV: 'subject',1,'session','post'
-            % fn receives (baseline_value, 'subject', 1, 'session', 'post')
-            result = scifor.for_each( ...
-                @(val, varargin) val + varargin{2}, ...
-                struct('val', scifor.Fixed(tbl, session="pre")), ...
-                where=scifor.Col("value") > 15, ...
-                pass_metadata=true, ...
-                subject=[1], session=["post"]);
-
-            % Fixed->session=pre rows: value=10,20; where value>15 -> value=20
-            % 1 row, 1 data col -> scalar extracted: val=20
-            % pass_metadata: varargin = {'subject', 1, 'session', 'post'}
-            % val(20) + varargin{2}(1) = 21
-            tc.verifyEqual(result.output, 21);
-        end
-
     end
 
     % =====================================================================
@@ -788,27 +851,6 @@ classdef TestSciforForEachFeatures < matlab.unittest.TestCase
             % After where: speed>1.0 keeps value=[20;30]
             % sum([20;30]) = 50, isa check = 1 -> 51
             tc.verifyEqual(result.output, 51);
-        end
-
-        function test_pathinput_with_pass_metadata(tc)
-        %   pass_metadata + PathInput: metadata passed as trailing NV args.
-            scifor.set_schema(["subject"]);
-
-            tbl = table([1;2], [10;20], 'VariableNames', {'subject','value'});
-            pi = scifor.PathInput("{subject}/data.mat", root_folder="/data");
-
-            % fn receives (data, fp, 'subject', val)
-            result = scifor.for_each( ...
-                @(data, fp, varargin) data + strlength(fp.load(varargin{:})), ...
-                struct('data', tbl, 'fp', pi), ...
-                pass_metadata=true, subject=[1 2]);
-
-            % For subject=1: data=10, fp.load('subject',1) -> /data/1/data.mat
-            % For subject=2: data=20, fp.load('subject',2) -> /data/2/data.mat
-            path1 = string(fullfile("/data", "1", "data.mat"));
-            path2 = string(fullfile("/data", "2", "data.mat"));
-            tc.verifyEqual(result.output, ...
-                [10 + strlength(path1); 20 + strlength(path2)]);
         end
 
         function test_pathinput_with_distribute(tc)

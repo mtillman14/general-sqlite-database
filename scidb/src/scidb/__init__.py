@@ -37,6 +37,7 @@ from .foreach import for_each
 from .fixed import Fixed
 from .merge import Merge
 from .column_selection import ColumnSelection
+from .colname import ColName
 from .foreach_config import ForEachConfig
 
 # From scifor (Layer 1)
@@ -59,6 +60,7 @@ __all__ = [
     "Fixed",
     "Merge",
     "ColumnSelection",
+    "ColName",
     "ForEachConfig",
     "PathInput",
     # Standalone / DataFrame support

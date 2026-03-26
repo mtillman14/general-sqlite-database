@@ -1,124 +1,102 @@
 # scifor
 
-Standalone `for_each` batch execution utilities for data pipelines.
+## Stop Writing Loops, Start Writing Analysis
 
-Available in both **Python** and **MATLAB**.
+`scifor` is the batch execution engine behind SciDB. It takes a function you've already written and runs it across every combination of experimental conditions — subjects, sessions, trials, whatever your data is organized by — automatically slicing your data to match each combination and collecting the results into a clean table.
 
-## What `for_each()` replaces
+It works in both **Python** and **MATLAB**, and it works standalone — no database required, just plain tables.
 
-A typical pipeline iterates over every combination of subjects and sessions,
-loads data, processes it, and saves results. Written by hand:
+## The Problem
 
-**Python**
-
-```python
-subjects = [1, 2, 3]
-sessions = ["pre", "post"]
-
-for subject in subjects:
-    for session in sessions:
-        df = pd.read_csv(f"data/{subject}/{session}.csv")
-        result = bandpass_filter(df["emg"].values)
-        out = pd.DataFrame({"emg": result})
-        out.to_csv(f"results/{subject}/{session}.csv", index=False)
-```
-
-**MATLAB**
+Scientific data is almost always organized by conditions: subjects, sessions, trials, limbs, speeds. Processing it means writing nested loops that slice, call a function, and collect results:
 
 ```matlab
-subjects = [1, 2, 3];
-sessions = ["pre", "post"];
-
 for i = 1:numel(subjects)
     for j = 1:numel(sessions)
-        tbl = readtable(sprintf("data/%d/%s.csv", subjects(i), sessions(j)));
-        result = bandpass_filter(tbl.emg);
-        writetable(table(result, 'VariableNames', {'emg'}), ...
-            sprintf("results/%d/%s.csv", subjects(i), sessions(j)));
+        rows = tbl(tbl.subject == subjects(i) & tbl.session == sessions(j), :);
+        result = my_analysis(rows.emg);
+        % ...now figure out where to put the result
     end
 end
 ```
 
-With `for_each()`, the same pipeline becomes:
+This gets worse as the number of conditions grows, and the loop logic buries the actual analysis. Every scientist writes some version of this, and it's never the interesting part.
+
+## How scifor Works
+
+You tell scifor two things:
+
+1. **Schema** — which columns in your tables represent experimental conditions (the things you iterate over)
+2. **Inputs** — which tables to slice, and which values are just constants
+
+Then scifor handles the rest: it loops over every combination, filters each table to the matching rows, calls your function, and collects the results.
+
+**MATLAB**
+
+```matlab
+scifor.set_schema(["subject", "session"]);
+
+results = scifor.for_each(@my_analysis, ...
+    struct('emg', data_table, 'cutoff_hz', 20), ...
+    subject=[1, 2, 3], session=["pre", "post"]);
+```
 
 **Python**
 
 ```python
-import pandas as pd
 from scifor import set_schema, for_each
 
 set_schema(["subject", "session"])
 
-raw_df = pd.DataFrame({
-    "subject": [1, 1, 2, 2, 3, 3] * 2,
-    "session": ["pre", "post"] * 6,
-    "emg": [...],
-})
-
 results = for_each(
-    bandpass_filter,
-    inputs={"emg": raw_df},
+    my_analysis,
+    inputs={"emg": data_table, "cutoff_hz": 20},
     subject=[1, 2, 3],
     session=["pre", "post"],
 )
 ```
 
-**MATLAB**
+For each of the 6 combinations (3 subjects x 2 sessions), scifor filters `data_table` to the matching rows, passes the `emg` column to `my_analysis` along with the constant `cutoff_hz=20`, and collects the return value. The result is a table with `subject`, `session`, and `output` columns — one row per combination.
 
-```matlab
-scifor.set_schema(["subject", "session"]);
+Your function doesn't need to know about looping, filtering, or metadata. It just receives data and returns a result.
 
-results = scifor.for_each(@bandpass_filter, ...
-    struct('emg', raw_tbl), ...
-    'subject', [1, 2, 3], ...
-    'session', ["pre", "post"]);
-```
+## What You Get Back
 
-The function body stays clean. `for_each()` handles the loop and
-returns a table of results indexed by subject and session.
+`for_each` returns a MATLAB table (or pandas DataFrame in Python) with one row per combination. Metadata columns come first, then the output:
 
-## Python Usage
+| subject | session | output |
+|---------|---------|--------|
+| 1       | pre     | 0.82   |
+| 1       | post    | 1.47   |
+| 2       | pre     | 0.91   |
+| 2       | post    | 1.38   |
+| 3       | pre     | 0.76   |
+| 3       | post    | 1.22   |
 
-```python
-import pandas as pd
-from scifor import set_schema, for_each, Col
+If your function returns a table, its columns are flattened into the result alongside the metadata. If your function returns multiple outputs, you get multiple result tables.
 
-set_schema(["subject", "session"])
+## Beyond the Basics
 
-raw_df = pd.DataFrame({
-    "subject": [1, 1, 2, 2],
-    "session": ["pre", "post", "pre", "post"],
-    "emg": [...],
-})
+The examples above cover the most common case, but real pipelines have real-world complications. scifor has tools for each of them:
 
-results = for_each(
-    my_fn,
-    inputs={"signal": raw_df},
-    subject=[1, 2],
-    session=["pre", "post"],
-)
-```
+- **Fixed inputs** — Pin one input to a specific condition while the others iterate. The classic case: comparing every session against a fixed baseline.
 
-## MATLAB Usage
+- **Merging tables** — When your function needs columns from two separate tables (say, kinematics and force data), combine them into a single input per combination.
 
-The `+scifor` namespace is part of the `sci-matlab` package. Both `for_each`
-and its supporting utilities (schema management, filters, file I/O) live in
-the `scifor` namespace. `scidb.for_each()` is a thin passthrough for
-backward compatibility.
+- **Column selection** — Extract just the columns you need from a multi-column table before your function sees it.
 
-```matlab
-% Set the schema key list once (called automatically by scidb.configure_database)
-scifor.set_schema(["subject", "session"]);
+- **File paths from metadata** — When your data lives in files organized by condition (e.g., `data/subject_1/trial_3.mat`), generate the right file path for each combination automatically.
 
-% Run a function over all subject/session combinations
-% Inputs can be plain tables or constants
-results = scifor.for_each(@my_fn, ...
-    struct('signal', raw_tbl), ...
-    'subject', [1, 2], ...
-    'session', ["pre", "post"]);
+- **Row filtering** — Apply column-based filters (like "only right-side trials" or "speed > 1.5") on top of the metadata filtering.
 
-% Column-based filtering
-f = (scifor.Col("side") == "R") & (scifor.Col("speed") > 1.5);
-results = scifor.for_each(@my_fn, struct('data', raw_tbl), ...
-    'subject', [1, 2], 'where', f);
-```
+- **Dry run** — Preview which combinations would be processed and what data would be passed, without actually running anything.
+
+- **Distribute** — When a function returns a vector of values that should each become their own row at a deeper schema level (e.g., splitting a trial into individual gait cycles), scifor can expand the output automatically.
+
+See the [API reference](../docs/api/for-each.md) and [batch processing guide](../docs/guide/for_each.md) for details on all of these.
+
+## Relationship to SciDB
+
+scifor is the engine that powers `scidb.for_each()`. When used through SciDB, inputs are loaded from the database and outputs are saved back automatically. When used standalone (as `scifor.for_each()`), it works with plain MATLAB tables or pandas DataFrames — no database needed.
+
+If you're already using SciDB, you're already using scifor under the hood. If you just want the loop orchestration without the database, use the `scifor` namespace directly.

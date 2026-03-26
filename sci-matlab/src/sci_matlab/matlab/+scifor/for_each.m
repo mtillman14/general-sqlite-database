@@ -31,8 +31,6 @@ function varargout = for_each(fn, inputs, varargin)
 %
 %   Name-Value Arguments:
 %       dry_run       - If true, preview without executing (default: false)
-%       pass_metadata - If true, pass metadata as trailing name-value
-%                       arguments to fn (default: false)
 %       as_table      - If true, keep schema key columns when passing
 %                       filtered tables. Can be a string array of specific
 %                       input names. (default: false)
@@ -61,6 +59,13 @@ function varargout = for_each(fn, inputs, varargin)
 %           struct('raw', data_table, 'smoothing', 0.2), ...
 %           subject=[1 2 3], session=["A" "B"])
 
+    % --- Fix struct-array inputs from struct() cell-array gotcha ---
+    %   struct('a', tbl, 'b', {'x','y'}) creates a 1x2 struct array
+    %   instead of a scalar struct with a cell field. Collapse it.
+    if ~isscalar(inputs)
+        inputs = collapse_struct_array(inputs);
+    end
+
     % --- Parse options vs metadata name-value pairs ---
     [meta_args, opts] = split_options(varargin{:});
 
@@ -68,13 +73,6 @@ function varargout = for_each(fn, inputs, varargin)
     as_table_raw = opts.as_table;
     distribute = opts.distribute;
     where_filter = opts.where;
-
-    % Auto-detect pass_metadata
-    if isempty(opts.pass_metadata)
-        should_pass_metadata = false;
-    else
-        should_pass_metadata = opts.pass_metadata;
-    end
 
     % Get function name for display
     if isa(fn, 'function_handle')
@@ -98,8 +96,6 @@ function varargout = for_each(fn, inputs, varargin)
         end
         if n_out < 0
             n_out = max(nargout, 1);
-        elseif n_out < 1
-            n_out = 1;
         end
         resolved_output_names = cell(1, n_out);
         for i = 1:n_out
@@ -150,6 +146,15 @@ function varargout = for_each(fn, inputs, varargin)
         end
     end
 
+    % --- Determine effective keys for filtering/extraction ---
+    %   No schema set → iteration keys are the source of truth.
+    %   Schema set    → schema keys are the source of truth.
+    if isempty(schema_keys)
+        effective_keys = meta_keys;
+    else
+        effective_keys = schema_keys;
+    end
+
     % --- Validate distribute parameter and resolve target key ---
     distribute_key = '';
     if distribute
@@ -174,8 +179,34 @@ function varargout = for_each(fn, inputs, varargin)
         distribute_key = schema_keys(deepest_idx + 1);
     end
 
-    % --- Parse inputs struct — separate data inputs from constants ---
+    % --- Resolve ColName wrappers before the data/constant split ---
     input_names = fieldnames(inputs);
+    for p = 1:numel(input_names)
+        var_spec = inputs.(input_names{p});
+        if isa(var_spec, 'scifor.ColName')
+            inner_tbl = var_spec.data;
+            if ~istable(inner_tbl)
+                error('scifor:ColName', ...
+                    'ColName(%s) expected a table, got %s', ...
+                    input_names{p}, class(inner_tbl));
+            end
+            tbl_cols = string(inner_tbl.Properties.VariableNames);
+            data_cols = setdiff(tbl_cols, schema_keys, 'stable');
+            if numel(data_cols) == 1
+                inputs.(input_names{p}) = char(data_cols(1));
+            elseif isempty(data_cols)
+                error('scifor:ColName', ...
+                    'ColName(%s): table has no data columns (all columns are schema keys). Columns: %s, schema keys: %s', ...
+                    input_names{p}, strjoin(tbl_cols, ', '), strjoin(schema_keys, ', '));
+            else
+                error('scifor:ColName', ...
+                    'ColName(%s): table has %d data columns (%s), expected exactly 1. Schema keys: %s', ...
+                    input_names{p}, numel(data_cols), strjoin(data_cols, ', '), strjoin(schema_keys, ', '));
+            end
+        end
+    end
+
+    % --- Parse inputs struct — separate data inputs from constants ---
     n_inputs = numel(input_names);
 
     data_idx = false(1, n_inputs);
@@ -214,7 +245,7 @@ function varargout = for_each(fn, inputs, varargin)
     elseif isempty(meta_values)
         combos = {{}};
     else
-        combos = cartesian_product(meta_values);
+        combos = scidb.internal.cartesian_product(meta_values);
     end
 
     total = numel(combos);
@@ -279,7 +310,7 @@ function varargout = for_each(fn, inputs, varargin)
         % --- Dry-run iteration ---
         if dry_run
             print_dry_run_iteration(inputs, input_names, data_idx, ...
-                metadata, metadata_str, should_pass_metadata, distribute_key);
+                metadata, metadata_str, distribute_key);
             completed = completed + 1;
             continue;
         end
@@ -290,10 +321,32 @@ function varargout = for_each(fn, inputs, varargin)
 
         for p = 1:n_inputs
             if ~data_idx(p)
-                % Constant — use value directly, or resolve PathInput
+                % Constant — pass value directly to user function,
+                % or resolve PathInput if _resolve_pathinput is set
                 val = inputs.(input_names{p});
-                if isa(val, 'scifor.PathInput')
+                if opts.resolve_pathinput && isa(val, 'scifor.PathInput')
                     loaded{p} = val.load(meta_nv{:});
+                elseif opts.resolve_pathinput && isa(val, 'scifor.Fixed') && isa(val.data, 'scifor.PathInput')
+                    % Fixed(PathInput) — apply fixed overrides, then resolve
+                    fixed_nv = meta_nv;
+                    fixed_fields = fieldnames(val.fixed_metadata);
+                    for f = 1:numel(fixed_fields)
+                        key_name = fixed_fields{f};
+                        key_val = val.fixed_metadata.(key_name);
+                        replaced = false;
+                        for nvi = 1:2:numel(fixed_nv)
+                            if strcmp(fixed_nv{nvi}, key_name)
+                                fixed_nv{nvi+1} = key_val;
+                                replaced = true;
+                                break;
+                            end
+                        end
+                        if ~replaced
+                            fixed_nv{end+1} = key_name; %#ok<AGROW>
+                            fixed_nv{end+1} = key_val; %#ok<AGROW>
+                        end
+                    end
+                    loaded{p} = val.data.load(fixed_nv{:});
                 else
                     loaded{p} = val;
                 end
@@ -304,10 +357,15 @@ function varargout = for_each(fn, inputs, varargin)
             wants_table = ~isempty(as_table_set) && ismember(string(input_names{p}), as_table_set);
 
             try
-                loaded{p} = prepare_input(var_spec, metadata, schema_keys, wants_table, where_filter);
+                loaded{p} = prepare_input(var_spec, metadata, effective_keys, wants_table, where_filter);
             catch err
-                fprintf('[skip] %s: failed to filter %s: %s\n', ...
-                    metadata_str, input_names{p}, err.message);
+                if strcmp(err.identifier, 'scifor:NoData')
+                    fprintf('[skip] %s: no data for %s\n', ...
+                        metadata_str, input_names{p});
+                else
+                    fprintf('[skip] %s: failed to filter %s: %s\n', ...
+                        metadata_str, input_names{p}, err.message);
+                end
                 filter_failed = true;
                 break;
             end
@@ -323,22 +381,28 @@ function varargout = for_each(fn, inputs, varargin)
             strjoin(string(input_names'), ', '));
 
         try
-            if n_outputs > 1
-                result = cell(1, n_outputs);
-                if should_pass_metadata
-                    [result{1:n_outputs}] = fn(loaded{:}, meta_nv{:});
-                else
+            if n_outputs == 0
+                % Zero-output function (e.g. plotting side-effects only)
+                fn(loaded{:});
+                result = {};
+            elseif n_outputs > 1
+                fn_nargout = nargout(fn);
+                if fn_nargout >= n_outputs || fn_nargout < 0
+                    % True multi-output function
+                    result = cell(1, n_outputs);
                     [result{1:n_outputs}] = fn(loaded{:});
+                else
+                    % Single-output function returning a cell array to unpack
+                    raw = fn(loaded{:});
+                    if iscell(raw) && numel(raw) >= n_outputs
+                        result = raw(1:n_outputs);
+                    else
+                        result = cell(1, n_outputs);
+                        result{1} = raw;
+                    end
                 end
             else
-                if should_pass_metadata
-                    result = fn(loaded{:}, meta_nv{:});
-                else
-                    result = fn(loaded{:});
-                end
-                if ~iscell(result)
-                    result = {result};
-                end
+                result = {fn(loaded{:})};
             end
         catch err
             fprintf('[skip] %s: %s raised: %s\n', ...
@@ -366,6 +430,15 @@ function varargout = for_each(fn, inputs, varargin)
                         else
                             dist_values = (1:height(raw_value))';
                             data_tbl = raw_value;
+                        end
+                        % Strip columns that overlap with metadata keys
+                        % (only in flatten mode — nested mode preserves all columns)
+                        if ~opts.nest_table_outputs
+                            meta_field_names = fieldnames(metadata);
+                            overlap = intersect(meta_field_names, data_tbl.Properties.VariableNames, 'stable');
+                            if ~isempty(overlap)
+                                data_tbl = removevars(data_tbl, overlap);
+                            end
                         end
                         for rowIdx = 1:height(data_tbl)
                             dist_meta = metadata;
@@ -409,17 +482,26 @@ function varargout = for_each(fn, inputs, varargin)
     else
         fprintf('[done] completed=%d, skipped=%d, total=%d\n', ...
             completed, skipped, total);
-        output_tables = cell(1, n_outputs);
-        for o = 1:n_outputs
-            output_tables{o} = build_single_output_table( ...
-                collected_per_output{o}, resolved_output_names{o}, opts.categorical, schema_keys);
-        end
-        n_return = max(nargout, 1);
-        for o = 1:n_return
-            if o <= n_outputs
-                varargout{o} = output_tables{o};
-            else
-                varargout{o} = table();
+        if n_outputs == 0
+            % Zero-output function: nothing to collect
+            if nargout > 0
+                for o = 1:nargout
+                    varargout{o} = table();
+                end
+            end
+        else
+            output_tables = cell(1, n_outputs);
+            for o = 1:n_outputs
+                output_tables{o} = build_single_output_table( ...
+                    collected_per_output{o}, resolved_output_names{o}, opts.categorical, effective_keys, opts.nest_table_outputs);
+            end
+            n_return = max(nargout, 1);
+            for o = 1:n_return
+                if o <= n_outputs
+                    varargout{o} = output_tables{o};
+                else
+                    varargout{o} = table();
+                end
             end
         end
     end
@@ -434,7 +516,7 @@ function tf = is_data_input(var_spec)
 %IS_DATA_INPUT  Check if an input spec is a data input (table, Fixed, Merge, ColumnSelection).
 %   Returns false for plain constants (numeric, string, logical, etc.).
     tf = istable(var_spec) ...
-      || isa(var_spec, 'scifor.Fixed') ...
+      || (isa(var_spec, 'scifor.Fixed') && ~isa(var_spec.data, 'scifor.PathInput')) ...
       || isa(var_spec, 'scifor.Merge') ...
       || isa(var_spec, 'scifor.ColumnSelection');
 end
@@ -491,9 +573,21 @@ function result = prepare_input(var_spec, metadata, schema_keys, as_table, where
         filtered = apply_where_filter(filtered, where_filter);
     end
 
+    % No matching rows → skip this combo (unless as_table, where empty table is valid)
+    if height(filtered) == 0 && ~as_table
+        error('scifor:NoData', 'No data for this combo after filtering.');
+    end
+
     % Column selection
     if ~isempty(col_sel)
-        result = apply_column_selection_on_table(filtered, col_sel);
+        if as_table
+            % Keep schema columns alongside selected data columns
+            schema_cols = intersect(string(filtered.Properties.VariableNames), schema_keys, 'stable');
+            keep_cols = [schema_cols(:)', col_sel(:)'];
+            result = filtered(:, cellstr(keep_cols));
+        else
+            result = apply_column_selection_on_table(filtered, col_sel);
+        end
         return;
     end
 
@@ -620,6 +714,10 @@ function result = apply_column_selection_on_table(tbl, cols)
 
     if numel(cols) == 1
         result = tbl.(char(cols(1)));
+        % Scalar cell extraction (consistent with extract_data)
+        if height(tbl) == 1 && iscell(result) && isscalar(result)
+            result = result{1};
+        end
     else
         result = tbl(:, cellstr(cols));
     end
@@ -661,6 +759,9 @@ function result = filter_table_for_combo(tbl, metadata, schema_keys)
             val = metadata.(char(key));
             col_data = tbl.(char(key));
             if isnumeric(col_data)
+                if isstring(val) || ischar(val)
+                    val = str2double(string(val));
+                end
                 mask = mask & (col_data == val);
             else
                 mask = mask & (string(col_data) == string(val));
@@ -688,14 +789,23 @@ function result = prepare_merge(merge_spec, metadata, schema_keys, where_filter)
 
         if is_per_combo_table(tbl, schema_keys)
             filtered = filter_table_for_combo(tbl, effective_meta, schema_keys);
-            if ~isempty(where_filter)
-                filtered = apply_where_filter(filtered, where_filter);
-            end
-            % Drop schema key columns for merge
+            % Drop only CONSTANT schema key columns (all-identical within
+            % this combo).  Varying schema keys (e.g. session when iterating
+            % at the subject level) are kept for the column-wise merge/join.
             col_names = string(filtered.Properties.VariableNames);
-            data_cols = setdiff(col_names, schema_keys, 'stable');
-            if ~isempty(data_cols) && numel(data_cols) < numel(col_names)
-                part_tbl = filtered(:, cellstr(data_cols));
+            cols_to_drop = string.empty;
+            for sk_i = 1:numel(schema_keys)
+                sk = schema_keys(sk_i);
+                if ismember(sk, col_names)
+                    col_data = filtered.(char(sk));
+                    if height(filtered) <= 1 || all_identical(col_data)
+                        cols_to_drop(end+1) = sk; %#ok<AGROW>
+                    end
+                end
+            end
+            keep_cols = setdiff(col_names, cols_to_drop, 'stable');
+            if ~isempty(keep_cols) && numel(keep_cols) < numel(col_names)
+                part_tbl = filtered(:, cellstr(keep_cols));
             else
                 part_tbl = filtered;
             end
@@ -723,52 +833,92 @@ function result = prepare_merge(merge_spec, metadata, schema_keys, where_filter)
         parts{i} = part_tbl;
     end
 
-    result = merge_parts_columnwise(parts);
+    merged = merge_parts_columnwise(parts);
+
+    % Apply where filter to merged result
+    if ~isempty(where_filter)
+        merged = apply_where_filter(merged, where_filter);
+    end
+
+    % No rows after merge/filter → skip this combo
+    if height(merged) == 0
+        error('scifor:NoData', 'No data for this combo after merge.');
+    end
+
+    % Add back constant schema columns (those not already in the merged table)
+    nr = height(merged);
+    merged_cols = string(merged.Properties.VariableNames);
+    if nr > 0
+        schema_tbl = table();
+        for k = 1:numel(schema_keys)
+            sk = char(schema_keys(k));
+            if isfield(metadata, sk) && ~ismember(string(sk), merged_cols)
+                val = metadata.(sk);
+                if isnumeric(val) && isscalar(val)
+                    schema_tbl.(sk) = repmat(val, nr, 1);
+                elseif isstring(val) || ischar(val)
+                    schema_tbl.(sk) = repmat(string(val), nr, 1);
+                else
+                    schema_tbl.(sk) = repmat({val}, nr, 1);
+                end
+            end
+        end
+        result = [schema_tbl, merged];
+    else
+        result = merged;
+    end
 end
 
 
 function result = merge_parts_columnwise(parts)
 %MERGE_PARTS_COLUMNWISE  Merge table fragments column-wise with broadcast.
-%   Validates no column conflicts and consistent row counts.
-%   Broadcasts single-row tables to match multi-row tables.
+%   When columns overlap between constituents, performs an inner join on the
+%   shared columns.  Otherwise concatenates column-wise, broadcasting
+%   single-row tables to match multi-row tables.
 
-    % Check column name conflicts
-    seen = {};
-    for i = 1:numel(parts)
-        cols = parts{i}.Properties.VariableNames;
-        for ci = 1:numel(cols)
-            if ismember(cols{ci}, seen)
-                error('scifor:Merge', ...
-                    'Column name conflict in Merge: column ''%s'' appears in multiple constituents.', ...
-                    cols{ci});
-            end
-            seen{end+1} = cols{ci}; %#ok<AGROW>
+    if numel(parts) < 2
+        if numel(parts) == 1
+            result = parts{1};
+        else
+            result = table();
         end
+        return;
     end
 
-    % Determine target row count from multi-row parts
-    row_counts = cellfun(@height, parts);
-    multi_row = row_counts(row_counts > 1);
+    % Build result iteratively by merging one part at a time
+    result = parts{1};
+    for i = 2:numel(parts)
+        result = merge_two_tables(result, parts{i});
+    end
+end
 
-    if ~isempty(multi_row)
-        unique_counts = unique(multi_row);
-        if numel(unique_counts) > 1
-            error('scifor:Merge', ...
-                'Cannot merge constituents with different row counts. All multi-row constituents must have the same number of rows.');
-        end
-        target_len = unique_counts(1);
+
+function result = merge_two_tables(left, right)
+%MERGE_TWO_TABLES  Merge two tables: join on shared columns, broadcast otherwise.
+    if isempty(left) || isempty(right)
+        error('scifor:Merge', 'Cannot merge: one or more constituents have no data.');
+    end
+
+    left_cols = string(left.Properties.VariableNames);
+    right_cols = string(right.Properties.VariableNames);
+    shared = intersect(left_cols, right_cols, 'stable');
+
+    if ~isempty(shared)
+        % Inner join on shared columns
+        result = innerjoin(left, right, 'Keys', cellstr(shared));
     else
-        target_len = 1;
-    end
-
-    % Broadcast single-row parts and concatenate
-    result = table();
-    for i = 1:numel(parts)
-        tbl_i = parts{i};
-        if height(tbl_i) == 1 && target_len > 1
-            tbl_i = repmat(tbl_i, target_len, 1);
+        % No shared columns — column-wise concatenation with broadcast
+        lh = height(left);
+        rh = height(right);
+        if lh == 1 && rh > 1
+            left = repmat(left, rh, 1);
+        elseif rh == 1 && lh > 1
+            right = repmat(right, lh, 1);
+        elseif lh ~= rh && lh > 1 && rh > 1
+            error('scifor:Merge', ...
+                'Cannot merge constituents with different row counts (%d vs %d).', lh, rh);
         end
-        result = [result, tbl_i]; %#ok<AGROW>
+        result = [left, right];
     end
 end
 
@@ -813,6 +963,32 @@ function values = distinct_values_from_inputs(inputs, key)
 end
 
 
+function s = collapse_struct_array(arr)
+%COLLAPSE_STRUCT_ARRAY  Convert a non-scalar struct array back to a scalar struct.
+%   When users write struct('a', tbl, 'b', {'x','y'}), MATLAB creates a
+%   struct array instead of a scalar struct with cell fields. This undoes
+%   that by collecting each field's values into a cell array, or unwrapping
+%   if all elements are identical (i.e. the field was a replicated scalar).
+    fnames = fieldnames(arr);
+    s = struct();
+    for i = 1:numel(fnames)
+        vals = {arr.(fnames{i})};
+        all_same = true;
+        for j = 2:numel(vals)
+            if ~isequal(vals{1}, vals{j})
+                all_same = false;
+                break;
+            end
+        end
+        if all_same
+            s.(fnames{i}) = vals{1};
+        else
+            s.(fnames{i}) = vals;
+        end
+    end
+end
+
+
 function tbl = get_raw_table(var_spec)
 %GET_RAW_TABLE  Extract the MATLAB table from a var_spec, if it contains one.
     if istable(var_spec)
@@ -831,16 +1007,22 @@ end
 % Return value helpers
 % =========================================================================
 
-function tbl = build_single_output_table(collected, output_name, categorical_flag, schema_keys)
+function tbl = build_single_output_table(collected, output_name, categorical_flag, schema_keys, nest_table_outputs)
 %BUILD_SINGLE_OUTPUT_TABLE  Build one result table for a single output.
 %
 %   collected - cell array of {metadata_struct, value} pairs for one output
 %   output_name - column name for non-table values (e.g., 'output')
 %   categorical_flag - if true, convert metadata columns to categorical
 %   schema_keys - string array of schema keys (for sort order)
+%   nest_table_outputs - if true, force nested mode even for table outputs
 %
-%   If all values are tables → flatten mode (metadata + data columns).
+%   If all values are tables and nest_table_outputs is false →
+%       flatten mode (metadata + data columns).
 %   Otherwise → nested mode (metadata + single data column).
+
+    if nargin < 5
+        nest_table_outputs = false;
+    end
 
     n_rows = numel(collected);
 
@@ -858,7 +1040,7 @@ function tbl = build_single_output_table(collected, output_name, categorical_fla
         end
     end
 
-    if all_tables
+    if all_tables && ~nest_table_outputs
         % Flatten mode: metadata columns + original table columns
         parts = cell(n_rows, 1);
         for r = 1:n_rows
@@ -908,7 +1090,7 @@ function tbl = build_single_output_table(collected, output_name, categorical_fla
                     col_data{r} = {missing};
                 end
             end
-            tbl.(meta_fields{f}) = normalize_cell_column(col_data);
+            tbl.(meta_fields{f}) = scidb.internal.normalize_cell_column(col_data);
         end
 
         % Single output column
@@ -916,7 +1098,7 @@ function tbl = build_single_output_table(collected, output_name, categorical_fla
         for r = 1:n_rows
             col_data{r} = collected{r}{2};
         end
-        tbl.(output_name) = normalize_cell_column(col_data);
+        tbl.(output_name) = scidb.internal.normalize_cell_column(col_data);
     end
 
     % Sort by schema columns and convert to categorical if requested
@@ -1029,13 +1211,14 @@ end
 function [meta_args, opts] = split_options(varargin)
 %SPLIT_OPTIONS  Separate known option flags from metadata name-value pairs.
     opts.dry_run = false;
-    opts.pass_metadata = [];
     opts.as_table = string.empty;
     opts.distribute = false;
     opts.where = [];
     opts.categorical = false;
     opts.output_names = {};
     opts.all_combos = [];
+    opts.nest_table_outputs = false;
+    opts.resolve_pathinput = false;
 
     meta_args = {};
     i = 1;
@@ -1045,10 +1228,6 @@ function [meta_args, opts] = split_options(varargin)
             switch lower(string(key))
                 case "dry_run"
                     opts.dry_run = logical(varargin{i+1});
-                    i = i + 2;
-                    continue;
-                case "pass_metadata"
-                    opts.pass_metadata = logical(varargin{i+1});
                     i = i + 2;
                     continue;
                 case "as_table"
@@ -1089,6 +1268,14 @@ function [meta_args, opts] = split_options(varargin)
                     continue;
                 case "_all_combos"
                     opts.all_combos = varargin{i+1};
+                    i = i + 2;
+                    continue;
+                case "_nest_table_outputs"
+                    opts.nest_table_outputs = logical(varargin{i+1});
+                    i = i + 2;
+                    continue;
+                case "_resolve_pathinput"
+                    opts.resolve_pathinput = logical(varargin{i+1});
                     i = i + 2;
                     continue;
             end
@@ -1151,7 +1338,7 @@ end
 
 
 function print_dry_run_iteration(inputs, input_names, data_idx, ...
-    metadata, metadata_str, pass_metadata, distribute_key)
+    metadata, metadata_str, distribute_key)
 %PRINT_DRY_RUN_ITERATION  Show what would happen for one iteration.
     fprintf('[dry-run] %s:\n', metadata_str);
 
@@ -1199,10 +1386,6 @@ function print_dry_run_iteration(inputs, input_names, data_idx, ...
         end
     end
 
-    if pass_metadata
-        fprintf('  pass metadata: %s\n', metadata_str);
-    end
-
     if strlength(distribute_key) > 0
         fprintf('  distribute by ''%s'' (1-based indexing)\n', distribute_key);
     end
@@ -1237,30 +1420,6 @@ end
 % Cartesian product
 % =========================================================================
 
-function combos = cartesian_product(value_cells)
-%CARTESIAN_PRODUCT  Compute Cartesian product of cell arrays.
-    n = numel(value_cells);
-    if n == 0
-        combos = {{}};
-        return;
-    end
-
-    sizes = cellfun(@numel, value_cells);
-    idx_args = arrayfun(@(s) 1:s, sizes, 'UniformOutput', false);
-    grids = cell(1, n);
-    [grids{:}] = ndgrid(idx_args{:});
-
-    total = prod(sizes);
-    combos = cell(1, total);
-    for t = 1:total
-        combo = cell(1, n);
-        for d = 1:n
-            combo{d} = value_cells{d}{grids{d}(t)};
-        end
-        combos{t} = combo;
-    end
-end
-
 
 % =========================================================================
 % Utility
@@ -1294,43 +1453,4 @@ function tbl = sort_by_schema_columns(tbl, sort_cols)
     end
     [~, order] = sortrows(sort_matrix);
     tbl = tbl(order, :);
-end
-
-
-function col = normalize_cell_column(col_data)
-%NORMALIZE_CELL_COLUMN  Convert a cell column to its native type.
-    n = numel(col_data);
-    all_scalar_numeric = true;
-    all_string = true;
-    all_scalar_struct = n > 0;
-    ref_fields = {};
-    for i = 1:n
-        v = col_data{i};
-        if ~((isnumeric(v) || islogical(v)) && isscalar(v))
-            all_scalar_numeric = false;
-        end
-        if ~(isstring(v) || ischar(v))
-            all_string = false;
-        end
-        if all_scalar_struct
-            if isstruct(v) && isscalar(v)
-                if i == 1
-                    ref_fields = sort(fieldnames(v));
-                elseif ~isequal(sort(fieldnames(v)), ref_fields)
-                    all_scalar_struct = false;
-                end
-            else
-                all_scalar_struct = false;
-            end
-        end
-    end
-    if all_scalar_numeric
-        col = cell2mat(col_data);
-    elseif all_string
-        col = string(col_data);
-    elseif all_scalar_struct
-        col = reshape([col_data{:}], [], 1);
-    else
-        col = col_data;
-    end
 end

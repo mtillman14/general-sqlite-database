@@ -1,8 +1,10 @@
 """Pure for_each loop — works with DataFrames only, no I/O."""
 
+import traceback
 from itertools import product
 from typing import Any, Callable
 
+from .colname import ColName
 from .column_selection import ColumnSelection
 from .fixed import Fixed
 from .merge import Merge
@@ -13,7 +15,6 @@ def for_each(
     fn: Callable,
     inputs: dict[str, Any],
     dry_run: bool = False,
-    pass_metadata: bool | None = None,
     as_table: list[str] | bool | None = None,
     distribute: bool = False,
     where=None,
@@ -33,7 +34,6 @@ def for_each(
         inputs: Dict mapping parameter names to DataFrames, Fixed wrappers,
                 Merge wrappers, ColumnSelection wrappers, or constant values.
         dry_run: If True, only print what would happen without executing.
-        pass_metadata: If True, pass metadata values as keyword arguments to fn.
         as_table: Controls which DataFrame inputs keep schema key columns.
                   True = all; list of names = selected; False/None = none.
         distribute: If True, split outputs by element/row and expand them
@@ -93,6 +93,9 @@ def for_each(
             )
         distribute_key = schema_keys[deepest_idx + 1]
 
+    # Resolve ColName wrappers before the data/constant split
+    inputs = _resolve_colnames(inputs, schema_keys)
+
     # Separate data inputs from constants
     data_inputs = {}
     constant_inputs = {}
@@ -127,7 +130,6 @@ def for_each(
 
     total = len(all_combos)
     fn_name = getattr(fn, "__name__", repr(fn))
-    should_pass_metadata = pass_metadata if pass_metadata is not None else getattr(fn, 'generates_file', False)
 
     if dry_run:
         print(f"[dry-run] for_each({fn_name})")
@@ -145,7 +147,7 @@ def for_each(
         metadata_str = ", ".join(f"{k}={v}" for k, v in metadata.items())
 
         if dry_run:
-            _print_dry_run_iteration(inputs, metadata, constant_inputs, should_pass_metadata, distribute_key)
+            _print_dry_run_iteration(inputs, metadata, constant_inputs, distribute_key)
             completed += 1
             continue
 
@@ -161,6 +163,7 @@ def for_each(
                 )
             except Exception as e:
                 print(f"[skip] {metadata_str}: failed to filter {param_name}: {e}")
+                traceback.print_exc()
                 filter_failed = True
                 break
 
@@ -176,12 +179,10 @@ def for_each(
         filtered_inputs.update(constant_inputs)
 
         try:
-            if should_pass_metadata:
-                result = _call_fn(fn, filtered_inputs, n_outputs, metadata)
-            else:
-                result = _call_fn(fn, filtered_inputs, n_outputs)
+            result = _call_fn(fn, filtered_inputs, n_outputs)
         except Exception as e:
             print(f"[skip] {metadata_str}: {fn_name} raised: {e}")
+            traceback.print_exc()
             skipped += 1
             continue
 
@@ -216,10 +217,8 @@ def for_each(
         return _results_to_output_dataframe(collected_rows, resolved_output_names)
 
 
-def _call_fn(fn, kwargs, n_outputs, extra_kwargs=None):
+def _call_fn(fn, kwargs, n_outputs):
     """Call fn with the right number of output captures."""
-    if extra_kwargs:
-        kwargs = {**kwargs, **extra_kwargs}
     return fn(**kwargs)
 
 
@@ -243,6 +242,48 @@ def _is_dataframe(value: Any) -> bool:
         return isinstance(value, pd.DataFrame)
     except ImportError:
         return False
+
+
+# ---------------------------------------------------------------------------
+# ColName resolution
+# ---------------------------------------------------------------------------
+
+def _resolve_colnames(inputs: dict[str, Any], schema_keys: list[str]) -> dict[str, Any]:
+    """Replace ColName wrappers with the resolved column name string.
+
+    For each ColName(df) in inputs:
+    1. Get the inner DataFrame
+    2. Compute data_cols = columns not in schema_keys
+    3. If exactly 1 data column -> replace with the string name
+    4. Otherwise -> raise ValueError
+    """
+    resolved = {}
+    for param_name, var_spec in inputs.items():
+        if isinstance(var_spec, ColName):
+            df = var_spec.data
+            if not _is_dataframe(df):
+                raise TypeError(
+                    f"ColName({param_name}) expected a DataFrame, "
+                    f"got {type(df).__name__}"
+                )
+            data_cols = [c for c in df.columns if c not in schema_keys]
+            if len(data_cols) == 1:
+                resolved[param_name] = data_cols[0]
+            elif len(data_cols) == 0:
+                raise ValueError(
+                    f"ColName({param_name}): DataFrame has no data columns "
+                    f"(all columns are schema keys). "
+                    f"Columns: {list(df.columns)}, schema keys: {schema_keys}"
+                )
+            else:
+                raise ValueError(
+                    f"ColName({param_name}): DataFrame has {len(data_cols)} "
+                    f"data columns ({data_cols}), expected exactly 1. "
+                    f"Schema keys: {schema_keys}"
+                )
+        else:
+            resolved[param_name] = var_spec
+    return resolved
 
 
 # ---------------------------------------------------------------------------
@@ -330,6 +371,10 @@ def _prepare_input(
     filtered = _apply_where_filter(filtered, where)
 
     if column_selection is not None:
+        if as_table:
+            # Keep schema columns alongside selected data columns
+            keep = [c for c in filtered.columns if c in schema_keys] + column_selection
+            return filtered[keep]
         return _apply_column_selection(filtered, column_selection)
 
     return _extract_data(filtered, schema_keys, as_table)
@@ -612,7 +657,6 @@ def _print_dry_run_iteration(
     inputs: dict[str, Any],
     metadata: dict[str, Any],
     constant_inputs: dict[str, Any],
-    pass_metadata: bool = False,
     distribute: str | None = None,
 ) -> None:
     """Print what would happen for one iteration in dry-run mode."""
@@ -643,9 +687,6 @@ def _print_dry_run_iteration(
             print(f"  filter {param_name} with {metadata}")
         else:
             print(f"  constant {param_name} = {var_spec!r}")
-
-    if pass_metadata:
-        print(f"  pass metadata: {metadata_str}")
 
     if distribute is not None:
         print(f"  distribute by '{distribute}' (1-based indexing)")

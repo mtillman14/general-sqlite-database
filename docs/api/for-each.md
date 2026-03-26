@@ -17,7 +17,6 @@
         outputs,
         dry_run=False,
         save=True,
-        pass_metadata=None,
         as_table=None,
         distribute=False,
         db=None,
@@ -42,7 +41,6 @@
     | `outputs` | `list[type]` | — | Variable types for the outputs, matched positionally to the function's return values. |
     | `dry_run` | `bool` | `False` | If `True`, print what would load/save without executing. |
     | `save` | `bool` | `True` | If `False`, run the function but don't save outputs. |
-    | `pass_metadata` | `bool \| None` | `None` | If `True`, pass iteration metadata as keyword arguments to `fn`. Auto-detects from `generates_file` when `None`. |
     | `as_table` | `bool \| list[str] \| None` | `None` | Convert multi-result loads to DataFrame. `True` = all inputs; list of names = only those inputs; `None` / `False` = none. |
     | `distribute` | `bool` | `False` | Split each output by element/row and save each piece at the next-deeper schema level (1-based indexing). |
     | `db` | `DatabaseManager \| None` | `None` | Use a specific database instead of the global one. |
@@ -58,12 +56,42 @@
     | `dry_run` | `logical` | `false` | Preview without executing. |
     | `save` | `logical` | `true` | If `false`, run but don't save. |
     | `preload` | `logical` | `true` | Bulk-load all inputs in one query per variable type before iterating. Faster but uses more memory. Set to `false` for very large datasets. |
-    | `pass_metadata` | `logical \| []` | `[]` | Pass iteration metadata as trailing name-value arguments to `fn`. |
     | `as_table` | `logical \| string array \| []` | `[]` | Convert multi-result loads to MATLAB table. `true` = all inputs; string array = only named inputs; `[]` = none. |
     | `distribute` | `logical` | `false` | Split outputs by element/row into the next-deeper schema level. |
     | `parallel` | `logical` | `false` | 3-phase parallel execution (pure MATLAB functions only; requires Parallel Computing Toolbox for true parallelism). |
     | `db` | `DatabaseManager \| []` | `[]` | Use a specific database instead of the global one. |
     | `subject=...` etc. | numeric or string array | — | Metadata iterables. Cartesian product is computed. Pass empty array `[]` to use all distinct values in the database. |
+
+### Reusing metadata iterables
+
+The metadata name-value pairs (`subject=[1 2 3], trial=["A" "B"]`) can be stored in a cell array and expanded with `{:}` for reuse across multiple `for_each` calls:
+
+=== "Python"
+
+    ```python
+    meta = dict(subject=[1, 2, 3], trial=["A", "B"])
+
+    for_each(fn1, inputs1, outputs1, **meta)
+    for_each(fn2, inputs2, outputs2, **meta)
+    ```
+
+=== "MATLAB"
+
+    ```matlab
+    meta = {'subject', [1 2 3], 'trial', ["A" "B"]};
+
+    scifor.for_each(@fn1, inputs1, meta{:})
+    scifor.for_each(@fn2, inputs2, meta{:})
+    ```
+
+    You can also build the list programmatically:
+
+    ```matlab
+    meta = {};
+    meta = [meta, {'subject', [1 2 3]}];
+    meta = [meta, {'trial', ["A" "B"]}];
+    scifor.for_each(@fn, inputs, meta{:})
+    ```
 
 ### Returns
 

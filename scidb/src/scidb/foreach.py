@@ -6,6 +6,7 @@ import scifor as _scifor
 from scifor import for_each as _scifor_for_each
 from scifor.pathinput import PathInput
 
+from .colname import ColName
 from .column_selection import ColumnSelection
 from .fixed import Fixed
 from .foreach_config import ForEachConfig
@@ -18,7 +19,6 @@ def for_each(
     outputs: list[type],
     dry_run: bool = False,
     save: bool = True,
-    pass_metadata: bool | None = None,
     as_table: list[str] | bool | None = None,
     db=None,
     distribute: bool = False,
@@ -45,7 +45,6 @@ def for_each(
         outputs: List of output types/objects with ``.save()``.
         dry_run: If True, only print what would happen without executing.
         save: If True (default), save each function run's output.
-        pass_metadata: If True, pass metadata values as keyword arguments to fn.
         as_table: Controls which inputs are passed as full DataFrames.
         db: Optional database instance.
         distribute: If True, split outputs and save each piece at the schema
@@ -88,7 +87,6 @@ def for_each(
         where=where,
         distribute=distribute,
         as_table=as_table,
-        pass_metadata=pass_metadata,
     )
     config_keys = config.to_version_keys()
 
@@ -132,7 +130,6 @@ def for_each(
         fn,
         scifor_inputs,
         dry_run=dry_run,
-        pass_metadata=pass_metadata,
         as_table=as_table,
         distribute=distribute,
         output_names=output_names,
@@ -165,12 +162,97 @@ def _convert_inputs(
     """
     result = {}
     for param_name, var_spec in inputs.items():
-        if _is_loadable(var_spec):
+        if isinstance(var_spec, ColName):
+            result[param_name] = _resolve_colname_from_db(var_spec, db)
+        elif _is_loadable(var_spec):
             result[param_name] = _load_input(var_spec, db, where)
         else:
             # Constant — pass through unchanged
             result[param_name] = var_spec
     return result
+
+
+def _resolve_colname_from_db(colname: "ColName", db: Any | None) -> str:
+    """Resolve a ColName wrapper to the single data column name string.
+
+    Uses the variable's dtype metadata from the database to determine
+    what data columns exist, then subtracts schema keys.
+    """
+    import json
+
+    var_type = colname.var_type
+
+    # Get the database
+    resolved_db = db
+    if resolved_db is None:
+        try:
+            from scidb.database import get_database
+            resolved_db = get_database()
+        except Exception:
+            raise ValueError(
+                "ColName requires a database to resolve column names. "
+                "Either pass db= to for_each or call configure_database() first."
+            )
+
+    var_name = var_type.__name__ if isinstance(var_type, type) else type(var_type).__name__
+    schema_keys = list(resolved_db.dataset_schema_keys)
+
+    # Query the _variables table for dtype metadata
+    try:
+        row = resolved_db._execute(
+            "SELECT dtype FROM _variables WHERE variable_name = ?",
+            [var_name],
+        ).fetchone()
+    except Exception:
+        row = None
+
+    if row is None:
+        # Variable not yet saved — try using view_name for single-column mode
+        if hasattr(var_type, 'view_name'):
+            return var_type.view_name()
+        return var_name
+
+    dtype_meta = json.loads(row[0])
+    mode = dtype_meta.get("mode", "single_column")
+
+    if mode == "single_column":
+        # Single-column variables always have exactly one data column
+        col_names = list(dtype_meta.get("columns", {}).keys())
+        if col_names:
+            return col_names[0]
+        if hasattr(var_type, 'view_name'):
+            return var_type.view_name()
+        return var_name
+
+    if mode == "dataframe":
+        # DataFrame variables: subtract schema keys from df_columns
+        df_columns = dtype_meta.get("df_columns", list(dtype_meta.get("columns", {}).keys()))
+        data_cols = [c for c in df_columns if c not in schema_keys]
+        if len(data_cols) == 1:
+            return data_cols[0]
+        elif len(data_cols) == 0:
+            raise ValueError(
+                f"ColName({var_name}): variable has no data columns "
+                f"(all columns are schema keys). "
+                f"Columns: {df_columns}, schema keys: {schema_keys}"
+            )
+        else:
+            raise ValueError(
+                f"ColName({var_name}): variable has {len(data_cols)} "
+                f"data columns ({data_cols}), expected exactly 1. "
+                f"Schema keys: {schema_keys}"
+            )
+
+    if mode == "multi_column":
+        raise ValueError(
+            f"ColName({var_name}): not supported for dict-type (multi_column) variables. "
+            f"ColName only works with single-column or single-data-column DataFrame variables."
+        )
+
+    # Unknown mode — fall back to view_name
+    if hasattr(var_type, 'view_name'):
+        return var_type.view_name()
+    return var_name
 
 
 def _load_input(var_spec: Any, db: Any | None, where: Any | None) -> Any:

@@ -4,7 +4,7 @@
 
 SciStack is a database framework purpose-built for scientific data analysis. It gives you a structured, versioned, and queryable home for every piece of data your pipeline produces — from raw signals to final results — with near zero infrastructure code on your part, and **zero changes to your analysis code**.
 
-It works natively in both **Python** and **MATLAB**.
+It works in both **Python** and **MATLAB**.
 
 ## The Problem
 
@@ -12,7 +12,7 @@ Every scientist who writes analysis code eventually builds the same thing: a tan
 
 That infrastructure code is never the point. But it eats weeks of your time, it's fragile, and it's different in every lab.
 
-**Scientists want to focus on the science, not data management.**
+## Three Layers, Use What You Need
 
 SciStack replaces all of it with three ideas:
 
@@ -45,23 +45,43 @@ cd general-sqlite-database
 Every project starts by configuring a database. You do this once.
 
 ```python
-from scidb import configure_database
+from scifor import set_schema, for_each
 
-db = configure_database(
-    "my_experiment_data.duckdb",                  # DuckDB file for data + lineage
-    dataset_schema_keys=["subject", "session"],   # How your dataset is organized
+set_schema(["subject", "session"])
+
+results = for_each(
+    bandpass_filter,
+    inputs={"signal": raw_df, "low_hz": 20},
+    subject=[1, 2, 3],
+    session=["pre", "post"],
 )
 ```
 
 `dataset_schema_keys` describes the structure of your experiment. If your data is organized by subject and session, say so — SciStack uses this to let you save and query data naturally.
 
-### Define Your Variable Types
+results = scifor.for_each(@bandpass_filter, ...
+struct('signal', raw_tbl, 'low_hz', 20), ...
+subject=[1, 2, 3], session=["pre", "post"]);
 
-Each kind of data in your pipeline gets its own type. This is just a one-liner:
+````
+
+You tell scifor which columns identify your experimental conditions (the "schema"), and it loops over every combination, filters each table to matching rows, calls your function, and collects the results into a clean output table.
+
+scifor is standalone and has no dependencies beyond standard data structures. It can be dropped into any project.
+
+See the [scifor README](scifor/README.md) for more.
+
+### Layer 2: scidb — Database Storage
+
+Wraps scifor with a database layer. Instead of working with tables you've already loaded, scidb loads inputs from a DuckDB database and saves results back. You define named variable types for each kind of data in your pipeline, and scidb gives you structured, queryable storage with metadata-based addressing.
 
 ```python
-from scidb import BaseVariable
+from scidb import BaseVariable, configure_database, for_each
 
+# One-time setup
+db = configure_database("experiment.duckdb", ["subject", "session"])
+
+# Define variable types (one-liners)
 class RawEMG(BaseVariable):
     pass
 
@@ -70,7 +90,7 @@ class FilteredEMG(BaseVariable):
 
 class MaxActivation(BaseVariable):
     pass
-```
+````
 
 That's it. No configuration, no serialization code. SciStack handles numpy arrays, scalars, lists, dicts, and DataFrames natively.
 
@@ -78,47 +98,51 @@ That's it. No configuration, no serialization code. SciStack handles numpy array
 
 ```python
 import numpy as np
+RawEMG.save(np.random.randn(1000), subject=1, session="pre")
 
-# Save with metadata that matches your schema
-RawEMG.save(np.random.randn(1000), subject=1, session="baseline")
-
-# Load it back — by the metadata you care about
-raw = RawEMG.load(subject=1, session="baseline")
+# Load it back
+raw = RawEMG.load(subject=1, session="pre")
 print(raw.data)  # your numpy array
+
+# Batch processing — loads from DB, runs function, saves results
+for_each(
+    bandpass_filter,
+    inputs={"signal": RawEMG, "low_hz": 20},
+    outputs=[FilteredEMG],
+    subject=[1, 2, 3],
+    session=["pre", "post"],
+)
 ```
 
-### Track Lineage Automatically
+````matlab
+scidb.configure_database("experiment.duckdb", ["subject", "session"]);
 
-Which function created that variable? Were the most recent settings used the last time I ran this?
+RawEMG().save(randn(1000, 1), subject=1, session="pre");
+raw = RawEMG().load(subject=1, session="pre");
 
 Wrap your analysis functions with `@thunk` and SciStack records which functions produced what **and the input variable values** — automatically:
 
 ```python
-from scidb import thunk
+from thunk import thunk
 
 @thunk
 def bandpass_filter(signal, low_hz, high_hz):
     # your filtering logic
     return filtered_signal
 
-@thunk
-def compute_max(signal):
-    return float(np.max(np.abs(signal)))
-
-# Run the pipeline — lineage is tracked behind the scenes
-raw = RawEMG.load(subject=1, session="baseline")
+# Run the pipeline — lineage is tracked automatically
+raw = RawEMG.load(subject=1, session="pre")
 filtered = bandpass_filter(raw, low_hz=20, high_hz=450)
-max_val = compute_max(filtered)
+FilteredEMG.save(filtered, subject=1, session="pre")
 
-# Save results
-FilteredEMG.save(filtered, subject=1, session="baseline")
-MaxActivation.save(max_val, subject=1, session="baseline")
-
-# Later: "What function produced this, and with what settings?"
-provenance = db.get_provenance(FilteredEMG, subject=1, session="baseline")
+# Later: "What function produced this?"
+provenance = db.get_provenance(FilteredEMG, subject=1, session="pre")
 print(provenance["function_name"])  # "bandpass_filter"
 print(provenance["constants"])      # {"low_hz": 20, "high_hz": 450}
-```
+
+# Run the same pipeline again — cache hit, no recomputation
+filtered = bandpass_filter(raw, low_hz=20, high_hz=450)  # returns instantly
+````
 
 Your functions stay clean, no boilerplate required. They receive normal numpy arrays and return normal values. The `@thunk` decorator handles all the bookkeeping at the boundary.
 
@@ -244,42 +268,28 @@ Your data is always one SQL query or visualization away — no Python or MATLAB 
 SciStack isn't Python-only. The entire framework works in MATLAB with a nearly identical API:
 
 ```matlab
-% One-time setup
-scidb.configure_database("my_experiment.duckdb", ["subject", "session"], "pipeline.db");
+db = scihist.configure_database("experiment.duckdb", ["subject", "session"]);
 
-% Save and load
-RawEMG().save(randn(1000, 1), subject=1, session="baseline");
-raw = RawEMG().load(subject=1, session="baseline");
-
-% Lineage-tracked functions
 filter_fn = scidb.Thunk(@bandpass_filter);
+raw = RawEMG().load(subject=1, session="pre");
 filtered = filter_fn(raw, 20, 450);
-FilteredEMG().save(filtered, subject=1, session="baseline");
-
-% Batch processing
-scidb.for_each(@bandpass_filter, ...
-    struct('signal', RawEMG()), ...
-    {FilteredEMG()}, ...
-    subject=[1 2 3 4 5], ...
-    session=["baseline" "post"]);
+FilteredEMG().save(filtered, subject=1, session="pre");
 ```
 
-Data saved from MATLAB can be loaded in Python and vice versa. Lineage chains are continuous across languages. Use whichever language fits the task.
+Your functions stay as plain functions — they receive normal arrays and return normal values. The `@thunk` decorator handles the bookkeeping at the boundary.
 
 ## What a Full Pipeline Looks Like
 
-Here's a complete, realistic pipeline from setup to results:
+Here's a complete pipeline using all three layers:
 
 ```python
-from scidb import BaseVariable, configure_database, thunk, for_each
+from scidb import BaseVariable, configure_database, for_each
+from thunk import thunk
 
-# --- Setup (once per project) ---
-db = configure_database("gait_study.duckdb",                # Where your data is stored
-                        ["subject", "session", "trial"],    # How your dataset is organized
-                         "pipeline.db"                      # Where lineage is tracked
-                    )
+# --- Setup ---
+db = configure_database("gait_study.duckdb", ["subject", "session", "trial"])
 
-# --- Define variable types ---
+# --- Variable types ---
 class RawKinematicData(BaseVariable):
     pass
 
@@ -289,13 +299,7 @@ class StepLength(BaseVariable):
 class MeanStepLength(BaseVariable):
     pass
 
-class RawForce(BaseVariable):
-    pass
-
-class FilteredForce(BaseVariable):
-    pass
-
-# --- Define processing functions ---
+# --- Processing functions ---
 @thunk
 def extract_step_length(kinematic_data):
     # your biomechanics logic here
@@ -321,16 +325,6 @@ for_each(
     outputs=[MeanStepLength],
     subject=[1, 2, 3],
     session=["pre", "post"],
-    trial=[1, 2, 3, 4, 5],
-)
-
-for_each(
-    filter_data,
-    inputs={"values": RawForce, "smoothing": 0.2},
-    outputs=[FilteredForce],
-    subject=[1, 2, 3],
-    session=["pre", "post"],
-    trial=[1, 2, 3, 4, 5],
 )
 
 # --- Analyze results ---
@@ -338,32 +332,29 @@ df = MeanStepLength.load_all(as_df=True)
 print(df.groupby("session")["data"].mean())
 ```
 
-That's the entire pipeline. No file I/O code. No path management. No version tracking logic. Just the science.
+No file I/O code. No path management. No version tracking logic.
 
 Want to change the function logic? SciStack will automatically detect the change, and will re-run that processing step on the next run of the script. Want to change a setting to the function? SciStack will detect that too, and re-run the processing step. Data will be saved to the database, **and the previous data will be preserved**. Understanding the effect of analysis decisions on our results has never been easier.
 
 ```python
-for_each(
-    filter_data,
-    inputs={"values": RawForce, "smoothing": 0.3}, # Changed from smoothing=0.2
-    outputs=[FilteredForce],
-    subject=[1, 2, 3],
-    session=["pre", "post"],
-    trial=[1, 2, 3, 4, 5],
-)
+# Load one record
+emg = FilteredEMG.load(subject=3, session="post")
 
-# Get the FilteredForce created with smoothing=0.2
-filtered_force0_2 = FilteredForce.load(smoothing=0.2) # Returns all subjects, sessions, and trials.
+# Load all sessions for a subject
+all_sessions = FilteredEMG.load(subject=3)
 
-# Get the FilteredForce created with smoothing=0.3
-filtered_force0_3 = FilteredForce.load(smoothing=0.3) # Returns all subjects, sessions, and trials.
+# Load everything as a DataFrame
+df = FilteredEMG.load_all(as_df=True)
 ```
 
-## The Bigger Picture: Shareable Pipelines
+```sql
+SELECT subject, session, value
+FROM FilteredEMG;
+```
 
 By abstracting away all infrastructure — file paths, storage formats, naming conventions — SciStack decouples your analysis logic from your local environment. Your pipeline code contains _only_ the scientific computation.
 
-This opens the door to **truly portable, shareable data processing pipelines.** When a pipeline is just a sequence of typed functions with declared inputs and outputs, it can be shared, reproduced, and built upon by anyone — regardless of how their data is organized on disk.
+Data saved from Python can be loaded in MATLAB and vice versa. The MATLAB API mirrors the Python API closely:
 
 Today, sharing a pipeline means sharing a pile of scripts with hardcoded paths and implicit assumptions. With SciStack, the pipeline _is_ the science, and the infrastructure adapts to wherever it runs.
 
@@ -373,4 +364,5 @@ Today, sharing a pipeline means sharing a pile of scripts with hardcoded paths a
 - [VO2 Max Walkthrough](docs/guide/walkthrough.md) — Full example pipeline with design explanations
 - [Variables Guide](docs/guide/variables.md) — Deep dive into variable types
 - [Lineage Guide](docs/guide/lineage.md) — How provenance tracking works
+- [Batch Processing Guide](docs/guide/for_each.md) — for_each in depth
 - [API Reference](docs/api.md) — Complete API documentation

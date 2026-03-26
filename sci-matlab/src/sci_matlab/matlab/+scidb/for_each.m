@@ -23,7 +23,6 @@ function result_tbl = for_each(fn, inputs, outputs, varargin)
 %       dry_run       - If true, preview without executing (default: false)
 %       save          - If true, save outputs (default: true)
 %       preload       - If true, pre-load all inputs (default: true)
-%       pass_metadata - If true, pass metadata as trailing NV args (default: auto)
 %       parallel      - If true, use 3-phase parallel execution (default: false)
 %       distribute    - If true, split outputs by element/row (default: false)
 %       db            - Optional DatabaseManager for load/save operations
@@ -65,13 +64,6 @@ function result_tbl = for_each(fn, inputs, outputs, varargin)
         where_nv = {};
     else
         where_nv = {'where', where_filter};
-    end
-
-    % Auto-detect pass_metadata
-    if isempty(opts.pass_metadata)
-        should_pass_metadata = false;
-    else
-        should_pass_metadata = opts.pass_metadata;
     end
 
     % Get function name for display
@@ -131,8 +123,69 @@ function result_tbl = for_each(fn, inputs, outputs, varargin)
     % --- Propagate schema keys to scifor ---
     propagate_schema(opts.db);
 
-    % --- Parse inputs struct — separate loadable from constants ---
+    % --- Resolve ColName wrappers before the loadable/constant split ---
     input_names = fieldnames(inputs);
+
+    % Resolve database for ColName lookups (only if needed)
+    has_colname = false;
+    for p = 1:numel(input_names)
+        if isa(inputs.(input_names{p}), 'scifor.ColName') || isa(inputs.(input_names{p}), 'scidb.ColName')
+            has_colname = true;
+            break;
+        end
+    end
+
+    if has_colname
+        if isempty(opts.db)
+            py_db_colname = py.scidb.database.get_database();
+        else
+            py_db_colname = opts.db;
+        end
+
+        for p = 1:numel(input_names)
+            var_spec = inputs.(input_names{p});
+            if isa(var_spec, 'scifor.ColName')
+                % scifor.ColName wrapping a table in scidb context
+                inner = var_spec.data;
+                if isa(inner, 'scidb.BaseVariable')
+                    type_name = class(inner);
+                    py_class = scidb.internal.ensure_registered(type_name);
+                    inputs.(input_names{p}) = char(py.sci_matlab.bridge.get_data_column_name(py_class, py_db_colname));
+                elseif istable(inner)
+                    % Resolve from table columns like scifor does
+                    propagate_schema(opts.db);
+                    sk = scifor.get_schema();
+                    tbl_cols = string(inner.Properties.VariableNames);
+                    data_cols = setdiff(tbl_cols, sk, 'stable');
+                    if numel(data_cols) == 1
+                        inputs.(input_names{p}) = char(data_cols(1));
+                    elseif isempty(data_cols)
+                        error('scidb:ColName', ...
+                            'ColName(%s): table has no data columns.', input_names{p});
+                    else
+                        error('scidb:ColName', ...
+                            'ColName(%s): table has %d data columns (%s), expected exactly 1.', ...
+                            input_names{p}, numel(data_cols), strjoin(data_cols, ', '));
+                    end
+                else
+                    error('scidb:ColName', ...
+                        'ColName in scidb.for_each requires a BaseVariable or table.');
+                end
+            elseif isa(var_spec, 'scidb.ColName')
+                inner = var_spec.var_type;
+                if isa(inner, 'scidb.BaseVariable')
+                    type_name = class(inner);
+                    py_class = scidb.internal.ensure_registered(type_name);
+                    inputs.(input_names{p}) = char(py.sci_matlab.bridge.get_data_column_name(py_class, py_db_colname));
+                else
+                    error('scidb:ColName', ...
+                        'scidb.ColName requires a BaseVariable instance.');
+                end
+            end
+        end
+    end
+
+    % --- Parse inputs struct — separate loadable from constants ---
     n_inputs = numel(input_names);
 
     loadable_idx = false(1, n_inputs);
@@ -156,7 +209,7 @@ function result_tbl = for_each(fn, inputs, outputs, varargin)
 
     % Build ForEachConfig version keys
     config_nv = build_config_nv(fn_name, inputs, input_names, loadable_idx, ...
-        where_filter, opts.distribute, as_table_raw, opts.pass_metadata);
+        where_filter, opts.distribute, as_table_raw);
 
     % Parse outputs cell array
     n_outputs = numel(outputs);
@@ -207,7 +260,7 @@ function result_tbl = for_each(fn, inputs, outputs, varargin)
             if isempty(meta_values)
                 raw_combos = {{}};
             else
-                raw_combos = cartesian_product(meta_values);
+                raw_combos = scidb.internal.cartesian_product(meta_values);
             end
             original_count = numel(raw_combos);
             keep = true(1, original_count);
@@ -249,7 +302,7 @@ function result_tbl = for_each(fn, inputs, outputs, varargin)
         [completed, skipped, total] = run_parallel(fn, inputs, outputs, ...
             meta_keys, meta_values, input_names, loadable_idx, ...
             constant_names, constant_values, constant_nv, config_nv, ...
-            as_table_raw, should_pass_metadata, fn_name, do_save, ...
+            as_table_raw, fn_name, do_save, ...
             db_nv, where_nv, opts);
         fprintf('\n[done] completed=%d, skipped=%d, total=%d\n', ...
             completed, skipped, total);
@@ -312,8 +365,6 @@ function result_tbl = for_each(fn, inputs, outputs, varargin)
     scifor_opts = {};
     scifor_opts{end+1} = 'dry_run';
     scifor_opts{end+1} = dry_run;
-    scifor_opts{end+1} = 'pass_metadata';
-    scifor_opts{end+1} = should_pass_metadata;
     scifor_opts{end+1} = 'distribute';
     scifor_opts{end+1} = opts.distribute;
     scifor_opts{end+1} = 'output_names';
@@ -322,6 +373,20 @@ function result_tbl = for_each(fn, inputs, outputs, varargin)
     if ~isempty(as_table_raw)
         scifor_opts{end+1} = 'as_table';
         scifor_opts{end+1} = as_table_raw;
+    elseif opts.distribute
+        % distribute needs schema columns preserved in plain-table inputs
+        % but NOT in auto-loaded BaseVariable tables (where schema columns
+        % are metadata added by thunk_outputs_to_table, not user data)
+        table_input_names = string.empty;
+        for p = 1:n_inputs
+            if istable(inputs.(input_names{p}))
+                table_input_names(end+1) = string(input_names{p}); %#ok<AGROW>
+            end
+        end
+        if ~isempty(table_input_names)
+            scifor_opts{end+1} = 'as_table';
+            scifor_opts{end+1} = table_input_names;
+        end
     end
 
     if ~isempty(all_combos)
@@ -329,21 +394,60 @@ function result_tbl = for_each(fn, inputs, outputs, varargin)
         scifor_opts{end+1} = all_combos;
     end
 
+    % Force nested mode so table outputs get a named column for save_results
+    scifor_opts{end+1} = '_nest_table_outputs';
+    scifor_opts{end+1} = true;
+
+    % Resolve PathInput per-combo inside scifor loop
+    if has_pathinput(inputs)
+        scifor_opts{end+1} = '_resolve_pathinput';
+        scifor_opts{end+1} = true;
+    end
+
     % Note: scidb.Filter (where) is applied during loading, NOT passed to scifor.
     % scifor's where= is for scifor.ColFilter on tables.
 
     % --- Delegate to scifor.for_each ---
-    result_tbl = scifor.for_each(fn, scifor_inputs, ...
-        scifor_opts{:}, scifor_meta_nv{:});
+    n_out = max(numel(outputs), 1);
+    result_tables = cell(1, n_out);
+    try
+        [result_tables{1:n_out}] = scifor.for_each(fn, scifor_inputs, ...
+            scifor_opts{:}, scifor_meta_nv{:});
+    catch err
+        % Re-throw scifor errors with scidb prefix
+        if startsWith(err.identifier, 'scifor:')
+            new_id = strrep(err.identifier, 'scifor:', 'scidb:');
+            error(new_id, '%s', err.message);
+        else
+            rethrow(err);
+        end
+    end
+
+    % Merge all output tables into a single return table
+    result_tbl = result_tables{1};
+    for oi = 2:n_out
+        if ~isempty(result_tables{oi}) && ismember(output_names{oi}, result_tables{oi}.Properties.VariableNames)
+            result_tbl.(output_names{oi}) = result_tables{oi}.(output_names{oi});
+        end
+    end
 
     if isempty(result_tbl) || dry_run
         return;
     end
 
     % --- Save results ---
-    if do_save && ~isempty(outputs) && ~isempty(result_tbl) && height(result_tbl) > 0
-        save_results(result_tbl, outputs, output_names, config_nv, constant_nv, db_nv, py_db);
+    if do_save && ~isempty(outputs)
+        for oi = 1:numel(outputs)
+            tbl_i = result_tables{oi};
+            if ~isempty(tbl_i) && height(tbl_i) > 0
+                save_results(tbl_i, outputs(oi), output_names(oi), config_nv, constant_nv, db_nv, py_db);
+            end
+        end
     end
+
+    % --- Flatten nested table outputs for return ---
+    % _nest_table_outputs was forced for saving; un-nest for caller
+    result_tbl = flatten_nested_table_outputs(result_tbl, output_names);
 end
 
 
@@ -355,10 +459,12 @@ function result = convert_input(var_spec, py_db, where_nv, db_nv)
 %CONVERT_INPUT  Load a single input and return a scifor-compatible wrapper or table.
 
     % scidb.Merge -> load each constituent -> scifor.Merge of tables
+    % Merge constituents are always loaded WITHOUT the where filter;
+    % where= applies at the scifor level, not during bulk loading.
     if isa(var_spec, 'scidb.Merge')
         loaded_tables = cell(1, numel(var_spec.var_specs));
         for i = 1:numel(var_spec.var_specs)
-            loaded_tables{i} = convert_input(var_spec.var_specs{i}, py_db, where_nv, db_nv);
+            loaded_tables{i} = convert_input(var_spec.var_specs{i}, py_db, {}, db_nv);
         end
         result = scifor.Merge(loaded_tables{:});
         return;
@@ -377,7 +483,7 @@ function result = convert_input(var_spec, py_db, where_nv, db_nv)
         return;
     end
 
-    % scifor.PathInput -> return as constant (per-combo resolution happens via fn wrapper)
+    % scifor.PathInput -> return as constant (per-combo resolution via _resolve_pathinput)
     if isa(var_spec, 'scifor.PathInput')
         result = var_spec;
         return;
@@ -508,14 +614,14 @@ function tbl = thunk_outputs_to_table(results, var_inst)
                     col_data{i} = missing;
                 end
             end
-            tbl.(meta_fields{f}) = normalize_cell_column(col_data);
+            tbl.(meta_fields{f}) = scidb.internal.normalize_cell_column(col_data);
         end
 
         data_col = cell(n, 1);
         for i = 1:n
             data_col{i} = results(i).data;
         end
-        tbl.(view_name) = normalize_cell_column(data_col);
+        tbl.(view_name) = scidb.internal.normalize_cell_column(data_col);
     end
 end
 
@@ -528,24 +634,33 @@ function save_results(result_tbl, outputs, output_names, config_nv, constant_nv,
 %SAVE_RESULTS  Save results from the result table to output variable types.
     n_outputs = numel(outputs);
 
-    % Determine which columns are metadata (not output names)
-    meta_cols = setdiff(result_tbl.Properties.VariableNames, output_names, 'stable');
+    % Determine which columns are metadata vs data
+    all_col_names = result_tbl.Properties.VariableNames;
+    output_col_present = ismember(output_names, all_col_names);
+
+    if all(output_col_present)
+        % Standard mode: output columns exist by name
+        meta_cols = setdiff(all_col_names, output_names, 'stable');
+    else
+        % Flatten mode: outputs are tables, data columns have original names
+        schema_keys = cellstr(scifor.get_schema());
+        meta_cols = intersect(all_col_names, schema_keys, 'stable');
+    end
+    data_cols = setdiff(all_col_names, meta_cols, 'stable');
 
     % Batch save: accumulate data+metadata, flush once
-    use_batch_save = true;
+    batch_accum = cell(1, n_outputs);
+    for o = 1:n_outputs
+        batch_accum{o}.py_data = py.list();
+        batch_accum{o}.py_metas = py.list();
+        batch_accum{o}.count = 0;
+    end
 
-    if use_batch_save
-        batch_accum = cell(1, n_outputs);
-        for o = 1:n_outputs
-            batch_accum{o}.py_data = py.list();
-            batch_accum{o}.py_metas = py.list();
-            batch_accum{o}.count = 0;
-        end
-
+    if all(output_col_present)
+        % Standard mode: one row = one save operation
         for ri = 1:height(result_tbl)
             row = result_tbl(ri, :);
 
-            % Build save metadata from metadata columns + constants + config keys
             save_nv = {};
             for mc = 1:numel(meta_cols)
                 save_nv{end+1} = meta_cols{mc}; %#ok<AGROW>
@@ -577,18 +692,74 @@ function save_results(result_tbl, outputs, output_names, config_nv, constant_nv,
                 end
             end
         end
+    elseif ~isempty(data_cols)
+        % Flatten mode: group rows by metadata, save each group as one table
+        group_keys = build_row_group_keys(result_tbl, meta_cols);
+        [unique_keys, ~, group_idx] = unique(group_keys, 'stable');
 
-        % Flush batch save
-        for o = 1:n_outputs
-            if batch_accum{o}.count > 0
-                type_name = class(outputs{o});
-                scidb.internal.ensure_registered(type_name);
-                py.sci_matlab.bridge.for_each_batch_save( ...
-                    type_name, batch_accum{o}.py_data, ...
-                    batch_accum{o}.py_metas, py_db);
-                fprintf('[save] %s: %d items (batch)\n', type_name, batch_accum{o}.count);
+        for gi = 1:numel(unique_keys)
+            rows = find(group_idx == gi);
+            first_row = result_tbl(rows(1), :);
+
+            save_nv = {};
+            for mc = 1:numel(meta_cols)
+                save_nv{end+1} = meta_cols{mc}; %#ok<AGROW>
+                val = first_row.(meta_cols{mc});
+                if iscell(val)
+                    save_nv{end+1} = val{1}; %#ok<AGROW>
+                else
+                    save_nv{end+1} = val; %#ok<AGROW>
+                end
+            end
+            save_nv = [save_nv, constant_nv, config_nv]; %#ok<AGROW>
+
+            output_value = result_tbl(rows, data_cols);
+
+            for o = 1:n_outputs
+                try
+                    batch_accum{o}.py_data.append(scidb.internal.to_python(output_value));
+                    batch_accum{o}.py_metas.append(scidb.internal.metadata_to_pydict(save_nv{:}));
+                    batch_accum{o}.count = batch_accum{o}.count + 1;
+                catch err
+                    meta_str = format_save_meta(save_nv);
+                    fprintf('[error] %s: failed to convert for batch: %s\n', meta_str, err.message);
+                end
             end
         end
+    end
+
+    % Flush batch save
+    for o = 1:n_outputs
+        if batch_accum{o}.count > 0
+            type_name = class(outputs{o});
+            scidb.internal.ensure_registered(type_name);
+            py.sci_matlab.bridge.for_each_batch_save( ...
+                type_name, batch_accum{o}.py_data, ...
+                batch_accum{o}.py_metas, py_db);
+            fprintf('[save] %s: %d items (batch)\n', type_name, batch_accum{o}.count);
+        end
+    end
+end
+
+
+function keys = build_row_group_keys(tbl, meta_cols)
+%BUILD_ROW_GROUP_KEYS  Build a grouping key string per row from metadata columns.
+    n_rows = height(tbl);
+    keys = strings(n_rows, 1);
+    for ri = 1:n_rows
+        parts = cell(1, numel(meta_cols));
+        for mc = 1:numel(meta_cols)
+            val = tbl.(meta_cols{mc})(ri);
+            if iscell(val)
+                val = val{1};
+            end
+            if isnumeric(val)
+                parts{mc} = sprintf('%g', val);
+            else
+                parts{mc} = char(string(val));
+            end
+        end
+        keys(ri) = strjoin(parts, '|');
     end
 end
 
@@ -612,6 +783,74 @@ function s = format_save_meta(save_nv)
 end
 
 
+function tbl = flatten_nested_table_outputs(result_tbl, output_names)
+%FLATTEN_NESTED_TABLE_OUTPUTS  Un-nest table outputs for user-facing return.
+%   When _nest_table_outputs was forced for saving, result columns may contain
+%   cell arrays of tables. This flattens them: metadata is replicated per
+%   data row and data columns are inlined.
+    if isempty(result_tbl) || ~istable(result_tbl)
+        tbl = result_tbl;
+        return;
+    end
+
+    % Find output columns that contain cell arrays of tables
+    table_out_cols = {};
+    for oi = 1:numel(output_names)
+        col_name = output_names{oi};
+        if ~ismember(col_name, result_tbl.Properties.VariableNames)
+            continue;
+        end
+        col = result_tbl.(col_name);
+        if iscell(col) && ~isempty(col) && istable(col{1})
+            table_out_cols{end+1} = col_name; %#ok<AGROW>
+        end
+    end
+
+    if isempty(table_out_cols)
+        tbl = result_tbl;
+        return;
+    end
+
+    % Metadata columns = everything except output columns
+    all_cols = result_tbl.Properties.VariableNames;
+    meta_cols = setdiff(all_cols, output_names, 'stable');
+
+    parts = cell(height(result_tbl), 1);
+    for ri = 1:height(result_tbl)
+        % Combine all table output columns into one data table
+        data_tbl = result_tbl.(table_out_cols{1}){ri};
+        for tc = 2:numel(table_out_cols)
+            extra = result_tbl.(table_out_cols{tc}){ri};
+            data_tbl = [data_tbl, extra]; %#ok<AGROW>
+        end
+        nr = height(data_tbl);
+
+        % Replicate metadata for each data row
+        meta_tbl = table();
+        for mc = 1:numel(meta_cols)
+            val = result_tbl.(meta_cols{mc})(ri);
+            if iscell(val)
+                val = val{1};
+            end
+            if isnumeric(val) && isscalar(val)
+                meta_tbl.(meta_cols{mc}) = repmat(val, nr, 1);
+            elseif ischar(val) || (isstring(val) && isscalar(val))
+                meta_tbl.(meta_cols{mc}) = repmat(string(val), nr, 1);
+            else
+                meta_tbl.(meta_cols{mc}) = repmat({val}, nr, 1);
+            end
+        end
+        % Remove data columns that overlap with metadata to avoid duplicates
+        overlap = intersect(data_tbl.Properties.VariableNames, meta_cols, 'stable');
+        if ~isempty(overlap)
+            data_tbl = removevars(data_tbl, overlap);
+        end
+        parts{ri} = [meta_tbl, data_tbl];
+    end
+    tbl = vertcat(parts{:});
+end
+
+
 % =========================================================================
 % Parallel execution (3-phase: pre-resolve -> parfor -> batch save)
 % =========================================================================
@@ -619,7 +858,7 @@ end
 function [completed, skipped, total] = run_parallel(fn, inputs, outputs, ...
     meta_keys, meta_values, input_names, loadable_idx, ...
     constant_names, constant_values, constant_nv, config_nv, ...
-    as_table_raw, should_pass_metadata, fn_name, do_save, db_nv, where_nv, opts)
+    as_table_raw, fn_name, do_save, db_nv, where_nv, opts)
 %RUN_PARALLEL  Three-phase parallel execution for for_each.
 
     n_inputs = numel(input_names);
@@ -636,7 +875,7 @@ function [completed, skipped, total] = run_parallel(fn, inputs, outputs, ...
     if isempty(meta_values)
         combos = {{}};
     else
-        combos = cartesian_product(meta_values);
+        combos = scidb.internal.cartesian_product(meta_values);
     end
     total = numel(combos);
 
@@ -842,6 +1081,17 @@ function [completed, skipped, total] = run_parallel(fn, inputs, outputs, ...
             if ~istable(loaded{p}) && ~isnumeric(loaded{p})
                 loaded{p} = scidb.internal.unwrap_input(loaded{p});
             end
+
+            % Apply column selection if specified
+            if istable(loaded{p}) && ~isempty(var_inst.selected_columns)
+                cols = var_inst.selected_columns;
+                present = intersect(cols, string(loaded{p}.Properties.VariableNames), 'stable');
+                if numel(present) == 1
+                    loaded{p} = loaded{p}.(char(present(1)));
+                elseif numel(present) > 1
+                    loaded{p} = loaded{p}(:, cellstr(present));
+                end
+            end
         end
 
         if load_failed
@@ -873,11 +1123,7 @@ function [completed, skipped, total] = run_parallel(fn, inputs, outputs, ...
 
     parfor j = 1:n_resolved
         try
-            if should_pass_metadata
-                r = fn(par_inputs{j}{:}, par_meta_nv{j}{:});
-            else
-                r = fn(par_inputs{j}{:});
-            end
+            r = fn(par_inputs{j}{:});
             if ~iscell(r); r = {r}; end
             results_par{j} = r;
         catch err
@@ -1044,6 +1290,9 @@ function result = filter_table_for_combo_simple(tbl, metadata, schema_keys, as_t
             val = metadata.(char(key));
             col_data = tbl.(char(key));
             if isnumeric(col_data)
+                if isstring(val) || ischar(val)
+                    val = str2double(string(val));
+                end
                 mask = mask & (col_data == val);
             else
                 mask = mask & (string(col_data) == string(val));
@@ -1124,7 +1373,7 @@ end
 % =========================================================================
 
 function nv = build_config_nv(fn_name, inputs, input_names, loadable_idx, ...
-    where_filter, distribute, as_table_raw, pass_metadata)
+    where_filter, distribute, as_table_raw)
 %BUILD_CONFIG_NV  Build ForEachConfig version keys.
     nv = {};
 
@@ -1155,10 +1404,6 @@ function nv = build_config_nv(fn_name, inputs, input_names, loadable_idx, ...
         nv{end+1} = strjoin(sort(as_table_raw), ',');
     end
 
-    if ~isempty(pass_metadata) && islogical(pass_metadata) && pass_metadata
-        nv{end+1} = '__pass_metadata';
-        nv{end+1} = true;
-    end
 end
 
 
@@ -1282,7 +1527,6 @@ function [meta_args, opts] = split_options(varargin)
     opts.dry_run = false;
     opts.save = true;
     opts.preload = true;
-    opts.pass_metadata = [];
     opts.as_table = string.empty;
     opts.db = [];
     opts.parallel = false;
@@ -1303,9 +1547,6 @@ function [meta_args, opts] = split_options(varargin)
                     i = i + 2; continue;
                 case "preload"
                     opts.preload = logical(varargin{i+1});
-                    i = i + 2; continue;
-                case "pass_metadata"
-                    opts.pass_metadata = logical(varargin{i+1});
                     i = i + 2; continue;
                 case "as_table"
                     val = varargin{i+1};
@@ -1342,51 +1583,3 @@ end
 % =========================================================================
 % Utility
 % =========================================================================
-
-function combos = cartesian_product(value_cells)
-%CARTESIAN_PRODUCT  Compute Cartesian product of cell arrays.
-    n = numel(value_cells);
-    if n == 0
-        combos = {{}};
-        return;
-    end
-
-    sizes = cellfun(@numel, value_cells);
-    idx_args = arrayfun(@(s) 1:s, sizes, 'UniformOutput', false);
-    grids = cell(1, n);
-    [grids{:}] = ndgrid(idx_args{:});
-
-    total = prod(sizes);
-    combos = cell(1, total);
-    for t = 1:total
-        combo = cell(1, n);
-        for d = 1:n
-            combo{d} = value_cells{d}{grids{d}(t)};
-        end
-        combos{t} = combo;
-    end
-end
-
-
-function col = normalize_cell_column(col_data)
-%NORMALIZE_CELL_COLUMN  Convert a cell column to its native type.
-    n = numel(col_data);
-    all_scalar_numeric = true;
-    all_string = true;
-    for i = 1:n
-        v = col_data{i};
-        if ~(isnumeric(v) && isscalar(v))
-            all_scalar_numeric = false;
-        end
-        if ~(isstring(v) || ischar(v))
-            all_string = false;
-        end
-    end
-    if all_scalar_numeric
-        col = cell2mat(col_data);
-    elseif all_string
-        col = string(col_data);
-    else
-        col = col_data;
-    end
-end

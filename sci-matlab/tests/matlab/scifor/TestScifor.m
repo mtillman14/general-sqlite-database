@@ -203,6 +203,43 @@ classdef TestScifor < matlab.unittest.TestCase
         end
     end
 
+    % =====================================================================
+    % ColName tests
+    % =====================================================================
+
+    methods (Test)
+        function test_colname_single_data_column(tc)
+        %   ColName resolves to the single non-schema data column name.
+            scifor.set_schema(["subject", "session"]);
+            tbl = table([1; 2], ["pre"; "post"], [10.0; 20.0], ...
+                'VariableNames', {'subject', 'session', 'emg'});
+
+            received = {};
+            function out = check_col(t, col_name)
+                received{end+1} = col_name;
+                out = mean(t.(col_name));
+            end
+
+            scifor.for_each(@check_col, ...
+                struct('t', tbl, 'col_name', scifor.ColName(tbl)), ...
+                as_table=true, ...
+                subject=1, session="pre");
+            tc.verifyEqual(received{1}, 'emg');
+        end
+
+        function test_colname_multiple_data_columns_errors(tc)
+        %   ColName errors when the table has 2+ non-schema data columns.
+            scifor.set_schema(["subject"]);
+            tbl = table([1; 2], [0.1; 0.2], [1.0; 2.0], ...
+                'VariableNames', {'subject', 'emg', 'force'});
+
+            tc.verifyError(@() scifor.for_each(@(t, c) 0, ...
+                struct('t', tbl, 'c', scifor.ColName(tbl)), ...
+                'subject', 1), ...
+                'scifor:ColName');
+        end
+    end
+
 end
 
 

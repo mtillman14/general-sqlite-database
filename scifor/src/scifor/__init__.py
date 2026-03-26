@@ -27,6 +27,7 @@ from .foreach import for_each
 from .fixed import Fixed
 from .merge import Merge
 from .column_selection import ColumnSelection
+from .colname import ColName
 from .pathinput import PathInput
 from .filters import Col, ColFilter, CompoundFilter, NotFilter
 __version__ = "0.1.0"
@@ -41,6 +42,7 @@ __all__ = [
     "Fixed",
     "Merge",
     "ColumnSelection",
+    "ColName",
     "PathInput",
     # Filters
     "Col",
