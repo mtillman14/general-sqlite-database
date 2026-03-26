@@ -33,6 +33,7 @@ from .core import (
     PipelineThunk,
     Thunk,
     thunk,
+    manual,
 )
 from .hashing import canonical_hash
 from .inputs import InputKind, ClassifiedInput, classify_input, is_trackable_variable
@@ -53,6 +54,8 @@ __all__ = [
     "ThunkOutput",
     # Decorator
     "thunk",
+    # Manual intervention
+    "manual",
     # Input classification
     "InputKind",
     "ClassifiedInput",

@@ -446,3 +446,61 @@ def thunk(
         return decorator(func)
     # Called with parentheses: @thunk() or @thunk(unpack_output=True)
     return decorator
+
+
+# -----------------------------------------------------------------------------
+# Manual intervention
+# -----------------------------------------------------------------------------
+
+
+def _create_manual_sentinel() -> Thunk:
+    """Create a named sentinel Thunk for manual interventions."""
+    def manual():
+        """Placeholder for manual data interventions."""
+        pass
+    return Thunk(manual)
+
+
+_MANUAL_THUNK: Thunk = _create_manual_sentinel()
+
+
+def manual(data: Any, label: str, reason: str = "") -> ThunkOutput:
+    """
+    Wrap manually edited data in a ThunkOutput, preserving pipeline lineage.
+
+    Use this when you step outside the tracked pipeline to make a manual
+    correction, then want to re-enter it. The label and reason are recorded
+    in the lineage graph so the intervention is documented and auditable.
+
+    Args:
+        data:   The manually edited data to re-enter the pipeline.
+        label:  Short identifier for this intervention (e.g. "outlier_removal").
+                Shows up in lineage records.
+        reason: Human-readable explanation of why the edit was made.
+                Stored in the lineage graph for future reference.
+
+    Returns:
+        ThunkOutput carrying the data and a lineage record marking it as
+        a manual intervention.
+
+    Example:
+        result = bandpass_filter(raw_emg)
+
+        # Step out — manual correction
+        edited = result.data.copy()
+        edited = edited[edited["amplitude"] > 0.1]
+
+        # Re-enter — manual step is now documented in lineage
+        corrected = manual(
+            edited,
+            label="outlier_removal",
+            reason="amplitude < 0.1 in trial 3 is sensor artifact",
+        )
+        MaxActivation.save(compute_max(corrected), subject=1, session="A")
+    """
+    # Store label, reason, and data as inputs so the lineage hash depends on
+    # both the annotation and the actual content of the data.
+    pt = PipelineThunk(_MANUAL_THUNK, label=label, reason=reason, data=data)
+    output = ThunkOutput(pt, 0, True, data)
+    pt.outputs = (output,)
+    return output

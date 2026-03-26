@@ -27,7 +27,7 @@ With SciStack, your analysis scripts contain _only_ analysis logic. The infrastr
 ### Installation
 
 ```bash
-pip install scidb
+pip install scistack
 ```
 
 This pulls in all core dependencies (`sciduckdb`, `thunk`, `scipathgen`, `canonicalhash`, `scirun`).
@@ -35,8 +35,8 @@ This pulls in all core dependencies (`sciduckdb`, `thunk`, `scipathgen`, `canoni
 For development (editable installs of all packages):
 
 ```bash
-git clone https://github.com/mtillman14/general-sqlite-database
-cd general-sqlite-database
+git clone https://github.com/mtillman14/scistack
+cd scistack
 ./dev-install.sh
 ```
 

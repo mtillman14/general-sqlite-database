@@ -7,6 +7,7 @@ from thunk import (
     PipelineThunk,
     Thunk,
     thunk,
+    manual,
 )
 
 
@@ -225,6 +226,84 @@ class TestSavedVariableClassification:
         hash_reloaded = out2_reloaded.pipeline_thunk.compute_lineage_hash()
 
         assert hash_live == hash_reloaded
+
+
+class TestManual:
+    """Test manual() intervention function."""
+
+    def test_returns_thunk_output(self):
+        result = manual([1, 2, 3], label="test_edit")
+        assert isinstance(result, ThunkOutput)
+
+    def test_data_is_preserved(self):
+        data = [1, 2, 3]
+        result = manual(data, label="test_edit")
+        assert result.data == data
+
+    def test_function_name_is_manual(self):
+        from thunk import extract_lineage
+        result = manual([1, 2, 3], label="test_edit")
+        lineage = extract_lineage(result)
+        assert lineage.function_name == "manual"
+
+    def test_label_in_lineage_constants(self):
+        from thunk import extract_lineage
+        result = manual([1, 2, 3], label="outlier_removal", reason="bad sensor")
+        lineage = extract_lineage(result)
+        constant_reprs = [c["value_repr"] for c in lineage.constants]
+        assert any("outlier_removal" in r for r in constant_reprs)
+
+    def test_reason_in_lineage_constants(self):
+        from thunk import extract_lineage
+        result = manual([1, 2, 3], label="test_edit", reason="bad sensor")
+        lineage = extract_lineage(result)
+        constant_reprs = [c["value_repr"] for c in lineage.constants]
+        assert any("bad sensor" in r for r in constant_reprs)
+
+    def test_hash_is_deterministic(self):
+        data = [1, 2, 3]
+        r1 = manual(data, label="edit", reason="reason")
+        r2 = manual(data, label="edit", reason="reason")
+        assert r1.hash == r2.hash
+
+    def test_different_data_gives_different_hash(self):
+        r1 = manual([1, 2, 3], label="edit")
+        r2 = manual([4, 5, 6], label="edit")
+        assert r1.hash != r2.hash
+
+    def test_different_label_gives_different_hash(self):
+        data = [1, 2, 3]
+        r1 = manual(data, label="edit_a")
+        r2 = manual(data, label="edit_b")
+        assert r1.hash != r2.hash
+
+    def test_usable_as_input_to_downstream_thunk(self):
+        @thunk
+        def double(x):
+            return [v * 2 for v in x]
+
+        corrected = manual([1, 2, 3], label="outlier_removal")
+        result = double(corrected)
+        assert result.data == [2, 4, 6]
+
+    def test_downstream_lineage_includes_manual_step(self):
+        from thunk import get_upstream_lineage
+
+        @thunk
+        def double(x):
+            return [v * 2 for v in x]
+
+        corrected = manual([1, 2, 3], label="outlier_removal")
+        result = double(corrected)
+        lineage_chain = get_upstream_lineage(result)
+        function_names = [r["function_name"] for r in lineage_chain]
+        assert "manual" in function_names
+        assert "double" in function_names
+
+    def test_reason_defaults_to_empty_string(self):
+        result = manual([1, 2, 3], label="edit")
+        assert isinstance(result, ThunkOutput)
+        assert result.data == [1, 2, 3]
 
 
 class TestChaining:
