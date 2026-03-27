@@ -1,7 +1,7 @@
-"""Thunk: Lineage Tracking for Python.
+"""SciLineage: Lineage Tracking for Python.
 
 A lightweight library for building data processing pipelines with automatic
-provenance tracking, inspired by Haskell's thunk concept.
+provenance tracking.
 
 Features:
 - Full lineage tracking for reproducibility
@@ -9,30 +9,31 @@ Features:
 - Lightweight (core dependency: canonicalhash)
 
 Example:
-    from thunk import thunk
+    from scilineage import lineage_fcn
 
-    @thunk
+    @lineage_fcn
     def process(data, factor):
         return data * factor
 
-    result = process(input_data, 2.5)  # Returns ThunkOutput
+    result = process(input_data, 2.5)  # Returns LineageFcnResult
     print(result.data)  # The computed value
-    print(result.pipeline_thunk.inputs)  # Captured inputs for provenance
+    print(result.invoked.inputs)  # Captured inputs for provenance
 
 For multi-output functions, use unpack_output=True:
 
-    @thunk(unpack_output=True)
+    @lineage_fcn(unpack_output=True)
     def split(data):
         return data[:len(data)//2], data[len(data)//2:]
 
-    first_half, second_half = split(my_data)  # Each is a ThunkOutput
+    first_half, second_half = split(my_data)  # Each is a LineageFcnResult
 """
 
+from .backend import configure_backend, _clear_backend
 from .core import (
-    ThunkOutput,
-    PipelineThunk,
-    Thunk,
-    thunk,
+    LineageFcnResult,
+    LineageFcnInvocation,
+    LineageFcn,
+    lineage_fcn,
     manual,
 )
 from .hashing import canonical_hash
@@ -47,12 +48,14 @@ from .lineage import (
 __version__ = "0.1.0"
 
 __all__ = [
+    # Backend registry
+    "configure_backend",
     # Core classes
-    "Thunk",
-    "PipelineThunk",
-    "ThunkOutput",
+    "LineageFcn",
+    "LineageFcnInvocation",
+    "LineageFcnResult",
     # Decorator
-    "thunk",
+    "lineage_fcn",
     # Manual intervention
     "manual",
     # Input classification

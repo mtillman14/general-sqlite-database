@@ -22,6 +22,43 @@ SciStack replaces all of it with three ideas:
 
 With SciStack, your analysis scripts contain _only_ analysis logic. The infrastructure is handled for you.
 
+## Package Architecture
+
+SciStack is a stack of libraries. You can enter at any level — each layer adds more features at the cost of a bit more setup.
+
+```
+┌────────────────────────────────────────────────────────────────────┐
+│                            scihist                                 │
+│  One-import entry point: for_each() with automatic DB load/save    │
+│  and lineage tracking. Re-exports everything from the layers below │
+│  deps: scidb + scilineage                                          │
+├───────────────────────────────┬────────────────────────────────────┤
+│            scidb              │            scilineage              │
+│  Typed variable storage;      │  Wraps any function to record its  │
+│  configure_database(),        │  full computational lineage.       │
+│  for_each() that loads from   │  Enables caching and provenance    │
+│  DB and saves results back    │  queries — no DB required.         │
+│  deps: scifor + sciduck +     │  deps: canonical-hash              │
+│        canonical-hash +       │                                    │
+│        path-gen               │                                    │
+├───────────────────────────────┴────────────────────────────────────┤
+│                            scifor                                  │
+│  Batch execution on plain tables / DataFrames — iterates over      │
+│  condition combinations, slices data, collects results.            │
+│  No database, no tracking, no dependencies.                        │
+└────────────────────────────────────────────────────────────────────┘
+```
+
+**scifor** is the foundation: a standalone batch execution engine that works with plain MATLAB tables or pandas DataFrames. There is no setup overhead — just give it a function, your data, and the experimental conditions to iterate over.
+
+**scidb** adds typed, versioned database storage so your variables live in queryable DuckDB tables instead of scattered files on disk. It provides `configure_database()`, `BaseVariable`, and a `for_each()` that automatically loads inputs from the database and saves results back.
+
+**scilineage** is an independent parallel track that has no database dependency. It wraps functions with `@lineage_fcn` to record exactly what function and inputs produced each result. This unlocks caching (skip re-running a computation whose inputs haven't changed) and provenance queries.
+
+**scihist** brings everything together. Its `for_each()` automatically wraps your functions in `@lineage_fcn`, loads inputs from the database, and saves outputs back with full lineage attached. It also re-exports the entire API from the layers below, so most users can `from scihist import *` and have everything they need.
+
+Each layer can be used independently. `scifor` is useful when your data is already in memory and you just want structured batch processing. `scilineage` can be dropped into any pipeline to add provenance without touching your storage layer. `scidb` gives you the database without requiring lineage tracking. `scihist` is the recommended starting point for new pipelines that want the full feature set.
+
 ## Quick Start
 
 ### Installation
@@ -120,12 +157,12 @@ scidb.configure_database("experiment.duckdb", ["subject", "session"]);
 RawEMG().save(randn(1000, 1), subject=1, session="pre");
 raw = RawEMG().load(subject=1, session="pre");
 
-Wrap your analysis functions with `@thunk` and SciStack records which functions produced what **and the input variable values** — automatically:
+Wrap your analysis functions with `@lineage_fcn` and SciStack records which functions produced what **and the input variable values** — automatically:
 
 ```python
-from thunk import thunk
+from scilineage import lineage_fcn
 
-@thunk
+@lineage_fcn
 def bandpass_filter(signal, low_hz, high_hz):
     # your filtering logic
     return filtered_signal
@@ -144,9 +181,9 @@ print(provenance["constants"])      # {"low_hz": 20, "high_hz": 450}
 filtered = bandpass_filter(raw, low_hz=20, high_hz=450)  # returns instantly
 ````
 
-Your functions stay clean, no boilerplate required. They receive normal numpy arrays and return normal values. The `@thunk` decorator handles all the bookkeeping at the boundary.
+Your functions stay clean, no boilerplate required. They receive normal numpy arrays and return normal values. The `@lineage_fcn` decorator handles all the bookkeeping at the boundary.
 
-If the `@thunk` decorator is still too close to your code for your test, wrap it in a `Thunk()` call later on:
+If the `@lineage_fcn` decorator is still too close to your code for your test, wrap it in a `Thunk()` call later on:
 
 ```python
 
@@ -276,7 +313,7 @@ filtered = filter_fn(raw, 20, 450);
 FilteredEMG().save(filtered, subject=1, session="pre");
 ```
 
-Your functions stay as plain functions — they receive normal arrays and return normal values. The `@thunk` decorator handles the bookkeeping at the boundary.
+Your functions stay as plain functions — they receive normal arrays and return normal values. The `@lineage_fcn` decorator handles the bookkeeping at the boundary.
 
 ## What a Full Pipeline Looks Like
 
@@ -284,7 +321,7 @@ Here's a complete pipeline using all three layers:
 
 ```python
 from scidb import BaseVariable, configure_database, for_each
-from thunk import thunk
+from scilineage import lineage_fcn
 
 # --- Setup ---
 db = configure_database("gait_study.duckdb", ["subject", "session", "trial"])
@@ -300,12 +337,12 @@ class MeanStepLength(BaseVariable):
     pass
 
 # --- Processing functions ---
-@thunk
+@lineage_fcn
 def extract_step_length(kinematic_data):
     # your biomechanics logic here
     return step_lengths
 
-@thunk
+@lineage_fcn
 def compute_mean(values):
     return float(np.mean(values))
 

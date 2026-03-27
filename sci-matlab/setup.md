@@ -25,7 +25,7 @@ From the root of this repository, install the packages in dependency order. The 
 ```bash
 pip install -e canonical-hash/
 pip install -e path-gen/
-pip install -e thunk-lib/
+pip install -e scilineage/
 pip install -e sciduck/
 pip install -e pipelinedb-lib/
 pip install -e scidb/         # scidb (main package)
@@ -92,7 +92,7 @@ scidb.configure_database("experiment.duckdb", ["subject", "session"], "pipeline.
 RawSignal().save(randn(100, 3), subject=1, session="A");
 
 % Thunked computation
-filter_fn = scidb.Thunk(@bandpass_filter);
+filter_fn = scidb.LineageFcn(@bandpass_filter);
 raw = RawSignal().load(subject=1, session="A");
 result = filter_fn(raw, 10, 200);
 FilteredSignal().save(result, subject=1, session="A");

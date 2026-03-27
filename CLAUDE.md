@@ -10,7 +10,7 @@ There are several submodules in this package. Here are the folders that they are
 - sciduck: DuckDB database layer
 - scirun-lib: The highest level user-facing abstractions for batch run/essential convenience operations
 - scidb: The core user-facing abstractions
-- thunk-lib: Lineage package
+- scilineage: Lineage package
 
 Each package's folder has a README.md file. When you go to look for implementation details, please start by reading the relevant README.md. If you have sufficient information after that, then please answer the question without exploring additional unnecessary files.
 

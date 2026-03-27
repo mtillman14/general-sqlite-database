@@ -20,7 +20,7 @@ from fastapi.responses import JSONResponse
 
 from scidb.database import DatabaseManager
 from scidb.variable import BaseVariable
-from thunk.lineage import LineageRecord
+from scilineage.lineage import LineageRecord
 
 from ._types import (
     CloseResponse,

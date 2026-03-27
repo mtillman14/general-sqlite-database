@@ -19,11 +19,11 @@ Implementing two lineage modes to control how intermediate variables are handled
 
 To detect unsaved intermediates, we need to traverse the in-memory chain:
 
-1. Start from an ThunkOutput
+1. Start from an LineageFcnResult
 2. Look at its pipeline_thunk.inputs
-3. For each input that's an ThunkOutput, recurse
+3. For each input that's an LineageFcnResult, recurse
 4. For each input that's a BaseVariable, check if it has a vhash
-5. If BaseVariable has no vhash but wraps an ThunkOutput, recurse into that
+5. If BaseVariable has no vhash but wraps an LineageFcnResult, recurse into that
 
 ### Strict Mode
 
@@ -46,7 +46,7 @@ When `lineage_mode="ephemeral"`:
 
 1. `src/scidb/exceptions.py` - Add `UnsavedIntermediateError`
 2. `src/scidb/database.py` - Add `lineage_mode` config, validation logic
-3. `thunk-lib/src/thunk/lineage.py` - Add traversal functions
+3. `scilineage/src/thunk/lineage.py` - Add traversal functions
 4. `src/scidb/lineage.py` - Re-export traversal functions
 5. `src/scidb/variable.py` - Call validation during save()
 
@@ -79,7 +79,7 @@ class UnsavedIntermediateError(SciStackError):
 
 **Status: DONE**
 
-Added to `thunk-lib/src/thunk/lineage.py`:
+Added to `scilineage/src/thunk/lineage.py`:
 
 - `find_unsaved_variables(thunk_output)` - Returns list of unsaved BaseVariables in the upstream chain
 - `traverse_upstream(thunk_output, visitor_fn)` - Generic traversal with callback
@@ -90,7 +90,7 @@ Added to `thunk-lib/src/thunk/lineage.py`:
 
 In `BaseVariable.save()` (variable.py lines 176-195):
 
-- When data is an ThunkOutput and lineage_mode="strict"
+- When data is an LineageFcnResult and lineage_mode="strict"
 - Call `find_unsaved_variables()` to check upstream chain
 - If any found, raise `UnsavedIntermediateError` with helpful message listing:
   - Each unsaved variable's type
@@ -104,7 +104,7 @@ In `BaseVariable.save()` (variable.py lines 176-195):
 Modified `extract_lineage()` in thunk library:
 
 - Unsaved BaseVariable now goes to `inputs` (not constants) with `source_type="unsaved_variable"`
-- If unsaved variable wraps an ThunkOutput, includes source function info
+- If unsaved variable wraps an LineageFcnResult, includes source function info
 - If just raw data, includes content_hash
 
 ### Step 6: Implement ephemeral lineage storage
@@ -120,9 +120,9 @@ Added `DatabaseManager.save_ephemeral_lineage()` method (database.py):
 In `BaseVariable.save()` when ephemeral mode (variable.py):
 
 - Finds unsaved variables using `find_unsaved_variables()`
-- For each unsaved variable wrapping an ThunkOutput:
+- For each unsaved variable wrapping an LineageFcnResult:
   - Generates ephemeral ID: `"ephemeral:" + thunk.hash[:32]`
-  - Extracts lineage from the inner ThunkOutput
+  - Extracts lineage from the inner LineageFcnResult
   - Saves ephemeral lineage record to database
 
 ### Step 7: Update lineage querying for ephemeral entries
@@ -155,7 +155,7 @@ Updated `src/scidb/lineage.py`:
 
 - Added re-exports for `find_unsaved_variables` and `get_upstream_lineage`
 
-Updated `thunk-lib/src/thunk/__init__.py`:
+Updated `scilineage/src/thunk/__init__.py`:
 
 - Added exports for new lineage functions
 
@@ -170,7 +170,7 @@ from scidb import configure_database, BaseVariable, thunk
 
 db = configure_database("experiment.db")  # lineage_mode="strict" by default
 
-@thunk
+@lineage_fcn
 def process(data):
     return data * 2
 
@@ -188,7 +188,7 @@ from scidb import configure_database, BaseVariable, thunk
 
 db = configure_database("experiment.db", lineage_mode="ephemeral")
 
-@thunk
+@lineage_fcn
 def process(data):
     return data * 2
 

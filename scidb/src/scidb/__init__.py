@@ -45,7 +45,7 @@ from scifor import Col, set_schema, get_schema, PathInput
 from .variable import BaseVariable
 from .filters import raw_sql
 
-from thunk import manual
+from scilineage import manual
 
 __version__ = "0.1.0"
 

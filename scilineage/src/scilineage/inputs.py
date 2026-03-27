@@ -9,18 +9,18 @@ from enum import Enum
 from typing import Any, TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from .core import ThunkOutput
+    from .core import LineageFcnResult
 
 from .hashing import canonical_hash
 
 
 class InputKind(Enum):
     """Classification of a function input for lineage tracking."""
-    THUNK_OUTPUT = "thunk"        # ThunkOutput from another computation
-    SAVED_VARIABLE = "variable"   # Variable with record_id (saved to DB)
-    UNSAVED_THUNK = "unsaved"     # Variable wrapping an ThunkOutput (not saved)
-    RAW_DATA = "raw"              # Variable with raw data (no lineage)
-    CONSTANT = "constant"         # Literal value (int, float, str, etc.)
+    LINEAGE_RESULT = "thunk"       # LineageFcnResult from another computation
+    SAVED_VARIABLE = "variable"    # Variable with record_id (saved to DB)
+    UNSAVED_RESULT = "unsaved"     # Variable wrapping a LineageFcnResult (not saved)
+    RAW_DATA = "raw"               # Variable with raw data (no lineage)
+    CONSTANT = "constant"          # Literal value (int, float, str, etc.)
 
 
 @dataclass
@@ -31,7 +31,7 @@ class ClassifiedInput:
     hash: str
     type_name: str | None = None
 
-    # For THUNK_OUTPUT and UNSAVED_THUNK
+    # For LINEAGE_RESULT and UNSAVED_RESULT
     source_function: str | None = None
     output_num: int | None = None
 
@@ -45,7 +45,7 @@ class ClassifiedInput:
 
     def to_lineage_dict(self) -> dict:
         """Convert to dict format for LineageRecord storage."""
-        if self.kind == InputKind.THUNK_OUTPUT:
+        if self.kind == InputKind.LINEAGE_RESULT:
             return {
                 "name": self.name,
                 "source_type": "thunk",
@@ -64,7 +64,7 @@ class ClassifiedInput:
             if self.content_hash is not None:
                 d["content_hash"] = self.content_hash
             return d
-        elif self.kind == InputKind.UNSAVED_THUNK:
+        elif self.kind == InputKind.UNSAVED_RESULT:
             return {
                 "name": self.name,
                 "source_type": "unsaved_variable",
@@ -91,11 +91,11 @@ class ClassifiedInput:
 
     def to_cache_tuple(self) -> tuple:
         """Convert to tuple format for cache key computation."""
-        if self.kind == InputKind.THUNK_OUTPUT:
+        if self.kind == InputKind.LINEAGE_RESULT:
             return (self.name, "output", self.hash)
         elif self.kind == InputKind.SAVED_VARIABLE:
             return (self.name, "lineage", self.hash)
-        elif self.kind == InputKind.UNSAVED_THUNK:
+        elif self.kind == InputKind.UNSAVED_RESULT:
             return (self.name, "unsaved_thunk", self.type_name, self.hash)
         elif self.kind == InputKind.RAW_DATA:
             return (self.name, "raw", self.type_name, self.hash)
@@ -133,15 +133,15 @@ def classify_input(name: str, value: Any) -> ClassifiedInput:
         ClassifiedInput with kind and relevant metadata
     """
     # Import here to avoid circular imports
-    from .core import ThunkOutput
+    from .core import LineageFcnResult
 
-    if isinstance(value, ThunkOutput):
-        # Input came from another thunk computation
+    if isinstance(value, LineageFcnResult):
+        # Input came from another lineage-tracked computation
         return ClassifiedInput(
-            kind=InputKind.THUNK_OUTPUT,
+            kind=InputKind.LINEAGE_RESULT,
             name=name,
             hash=value.hash,
-            source_function=value.pipeline_thunk.thunk.fcn.__name__,
+            source_function=value.invoked.fcn.fcn.__name__,
             output_num=value.output_num,
         )
 
@@ -156,10 +156,11 @@ def classify_input(name: str, value: Any) -> ClassifiedInput:
             content_hash = getattr(value, "content_hash", None)
 
             if lineage_hash is not None:
-                # Variable was produced by a thunk — classify it the same way
-                # so that to_cache_tuple() matches the original ThunkOutput
+                # Variable was produced by a lineage-tracked computation —
+                # classify it the same way so that to_cache_tuple() matches
+                # the original LineageFcnResult
                 return ClassifiedInput(
-                    kind=InputKind.THUNK_OUTPUT,
+                    kind=InputKind.LINEAGE_RESULT,
                     name=name,
                     hash=lineage_hash,
                 )
@@ -174,15 +175,15 @@ def classify_input(name: str, value: Any) -> ClassifiedInput:
                 content_hash=content_hash,
             )
 
-        # Unsaved variable - check if it wraps an ThunkOutput
+        # Unsaved variable - check if it wraps a LineageFcnResult
         inner_data = getattr(value, "data", None)
-        if isinstance(inner_data, ThunkOutput):
+        if isinstance(inner_data, LineageFcnResult):
             return ClassifiedInput(
-                kind=InputKind.UNSAVED_THUNK,
+                kind=InputKind.UNSAVED_RESULT,
                 name=name,
                 hash=inner_data.hash,
                 type_name=type_name,
-                source_function=inner_data.pipeline_thunk.thunk.fcn.__name__,
+                source_function=inner_data.invoked.fcn.fcn.__name__,
                 output_num=inner_data.output_num,
             )
 

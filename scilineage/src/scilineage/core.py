@@ -1,67 +1,65 @@
-"""Core thunk system for lineage tracking.
+"""Core lineage tracking system.
 
-This module provides a Python adaptation of Haskell's thunk concept for building
-data processing pipelines with automatic provenance tracking.
+This module provides a system for building data processing pipelines
+with automatic provenance tracking.
 
 Example:
-    @thunk
+    @lineage_fcn
     def process_signal(raw: np.ndarray, cal_factor: float) -> np.ndarray:
         return raw * cal_factor
 
-    result = process_signal(raw_data, 2.5)  # Returns ThunkOutput
+    result = process_signal(raw_data, 2.5)  # Returns LineageFcnResult
     print(result.data)  # The actual computed data
-    print(result.pipeline_thunk.inputs)  # Captured inputs for lineage
+    print(result.invoked.inputs)  # Captured inputs for lineage
 
 For multi-output functions:
-    @thunk(unpack_output=True)
+    @lineage_fcn(unpack_output=True)
     def split(data):
         return data[:len(data)//2], data[len(data)//2:]
 
-    first, second = split(data)  # Each is a separate ThunkOutput
+    first, second = split(data)  # Each is a separate LineageFcnResult
 """
 
 from functools import wraps
 from hashlib import sha256
 from typing import Any, Callable
 
+from .backend import _get_backend
 from .inputs import classify_inputs, is_trackable_variable
 
 STRING_REPR_DELIMITER = "-"
 
 
 # -----------------------------------------------------------------------------
-# Thunk Classes
+# Core Classes
 # -----------------------------------------------------------------------------
 
 
-class Thunk:
+class LineageFcn:
     """
     Wraps a function to enable lineage tracking.
 
-    When called, creates a PipelineThunk that tracks inputs.
+    When called, creates a LineageFcnInvocation that tracks inputs.
     The function's bytecode is hashed for reproducibility checking.
 
     Attributes:
         fcn: The wrapped function
-        unpack_output: Whether to unpack tuple returns into separate ThunkOutputs
+        unpack_output: Whether to unpack tuple returns into separate LineageFcnResults
         unwrap: Whether to unwrap special input types to raw data
         hash: SHA-256 hash of function bytecode + unpack_output
-        pipeline_thunks: All PipelineThunks created from this Thunk
-        query: Optional QueryByMetadata for metadata-driven queries
+        invocations: All LineageFcnInvocations created from this LineageFcn
     """
-
-    query: Any = None
 
     def __init__(self, fcn: Callable, unpack_output: bool = False, unwrap: bool = True, generates_file: bool = False):
         """
-        Initialize a Thunk wrapper of a function.
+        Initialize a LineageFcn wrapper of a function.
 
         Args:
             fcn: The function to wrap
-            unpack_output: If True, unpack tuple returns into separate ThunkOutputs.
+            unpack_output: If True, unpack tuple returns into separate LineageFcnResults.
                           If False (default), the return value is wrapped as a single
-                          ThunkOutput (even if it's a tuple).
-            unwrap: If True (default), unwrap ThunkOutput inputs to their raw
+                          LineageFcnResult (even if it's a tuple).
+            unwrap: If True (default), unwrap LineageFcnResult inputs to their raw
                    data before calling the function. If False, pass the wrapper
                    objects directly (useful for debugging/inspection).
             generates_file: If True, this function produces side-effect files
@@ -71,7 +69,7 @@ class Thunk:
         self.unpack_output = unpack_output
         self.unwrap = unwrap
         self.generates_file = generates_file
-        self.pipeline_thunks: tuple[PipelineThunk, ...] = ()
+        self.invocations: tuple[LineageFcnInvocation, ...] = ()
 
         # Hash function bytecode + constants for reproducibility
         # Include co_consts to distinguish functions with same structure but different literals
@@ -84,72 +82,73 @@ class Thunk:
         self.hash = sha256(string_repr.encode()).hexdigest()
 
     def __repr__(self) -> str:
-        return f"Thunk(fcn={self.fcn.__name__}, unpack_output={self.unpack_output}, unwrap={self.unwrap})"
+        return f"LineageFcn(fcn={self.fcn.__name__}, unpack_output={self.unpack_output}, unwrap={self.unwrap})"
 
     def __eq__(self, other: object) -> bool:
-        if not isinstance(other, Thunk):
+        if not isinstance(other, LineageFcn):
             return False
         return self.hash == other.hash
 
     def __hash__(self) -> int:
         return int(self.hash[:16], 16)
 
-    def __call__(self, *args, **kwargs) -> "ThunkOutput | tuple[ThunkOutput, ...]":
+    def __call__(self, *args, **kwargs) -> "LineageFcnResult | tuple[LineageFcnResult, ...]":
         """
-        Create a PipelineThunk and execute.
+        Create a LineageFcnInvocation and execute.
 
         Returns:
-            ThunkOutput or tuple of ThunkOutputs wrapping the result(s)
+            LineageFcnResult or tuple of LineageFcnResults wrapping the result(s)
         """
-        pipeline_thunk = PipelineThunk(self, *args, **kwargs)
+        invocation = LineageFcnInvocation(self, *args, **kwargs)
 
         # Check for cached results
-        if Thunk.query is not None:
+        _backend = _get_backend()
+        if _backend is not None:
             try:
-                cached = Thunk.query.find_by_lineage(pipeline_thunk)
+                cached = _backend.find_by_lineage(invocation)
                 if cached is not None:
-                    # Wrap cached values in ThunkOutput
+                    # Wrap cached values in LineageFcnResult
                     outputs = tuple(
-                        ThunkOutput(pipeline_thunk, i, True, val)
+                        LineageFcnResult(invocation, i, True, val)
                         for i, val in enumerate(cached)
                     )
-                    pipeline_thunk.outputs = outputs
+                    invocation.outputs = outputs
                     if len(outputs) == 1:
                         return outputs[0]
                     return outputs
             except Exception:
                 pass  # Not in database, proceed with execution
 
-        return pipeline_thunk(*args, **kwargs)
+        return invocation(*args, **kwargs)
 
 
-class PipelineThunk:
+class LineageFcnInvocation:
     """
-    Represents a specific invocation of a Thunk with captured inputs.
+    Represents a specific invocation of a LineageFcn with captured inputs.
 
     Tracks:
-    - The parent Thunk (function definition)
+    - The parent LineageFcn (function definition)
     - All input arguments (positional and keyword)
     - Output(s) after execution
 
     Attributes:
-        thunk: The parent Thunk that created this
+        fcn: The parent LineageFcn that created this
         inputs: Dict mapping argument names to values
-        outputs: Tuple of ThunkOutputs after execution
+        outputs: Tuple of LineageFcnResults after execution
         unwrap: Whether to unwrap inputs before calling the function
     """
 
-    def __init__(self, thunk: Thunk, *args, **kwargs):
+    def __init__(self, fcn: LineageFcn, *args, **kwargs):
         """
-        Initialize a PipelineThunk.
+        Initialize a LineageFcnInvocation.
 
         Args:
-            thunk: The parent Thunk
+            fcn: The parent LineageFcn
             *args: Positional arguments passed to the function
             **kwargs: Keyword arguments passed to the function
         """
-        self.thunk = thunk
-        self.unwrap = thunk.unwrap
+        self.fcn = fcn
+        self.unwrap = fcn.unwrap
         self.inputs: dict[str, Any] = {}
 
         # Capture positional args
@@ -159,11 +158,11 @@ class PipelineThunk:
         # Capture keyword args
         self.inputs.update(kwargs)
 
-        self.outputs: tuple[ThunkOutput, ...] = ()
+        self.outputs: tuple[LineageFcnResult, ...] = ()
 
     @property
     def hash(self) -> str:
-        """Dynamic hash based on thunk + inputs (lineage-based, metadata-agnostic)."""
+        """Dynamic hash based on fcn + inputs (lineage-based, metadata-agnostic)."""
         return self.compute_lineage_hash()
 
     def __hash__(self) -> int:
@@ -171,24 +170,24 @@ class PipelineThunk:
 
     def __repr__(self) -> str:
         return (
-            f"PipelineThunk(fcn={self.thunk.fcn.__name__}, "
-            f"n_inputs={len(self.inputs)}, unpack_output={self.thunk.unpack_output})"
+            f"LineageFcnInvocation(fcn={self.fcn.fcn.__name__}, "
+            f"n_inputs={len(self.inputs)}, unpack_output={self.fcn.unpack_output})"
         )
 
     @property
     def is_complete(self) -> bool:
-        """True if all inputs are concrete values (not pending thunks)."""
+        """True if all inputs are concrete values (not pending invocations)."""
         for value in self.inputs.values():
-            if isinstance(value, ThunkOutput) and not value.is_complete:
+            if isinstance(value, LineageFcnResult) and not value.is_complete:
                 return False
         return True
 
-    def __call__(self, *args, **kwargs) -> "ThunkOutput | tuple[ThunkOutput, ...]":
+    def __call__(self, *args, **kwargs) -> "LineageFcnResult | tuple[LineageFcnResult, ...]":
         """
-        Execute the function if complete, return ThunkOutput(s).
+        Execute the function if complete, return LineageFcnResult(s).
 
         Returns:
-            ThunkOutput or tuple of ThunkOutputs wrapping the result(s)
+            LineageFcnResult or tuple of LineageFcnResults wrapping the result(s)
         """
         if self.is_complete:
             # Resolve arguments - unwrap if self.unwrap is True
@@ -197,7 +196,6 @@ class PipelineThunk:
                 if self.unwrap:
                     resolved_args.append(self._deep_unwrap(arg))
                 else:
-                    # Pass through as-is (for debugging/inspection)
                     resolved_args.append(arg)
 
             resolved_kwargs = {}
@@ -207,25 +205,25 @@ class PipelineThunk:
                 else:
                     resolved_kwargs[k] = v
 
-            result = self.thunk.fcn(*resolved_args, **resolved_kwargs)
+            result = self.fcn.fcn(*resolved_args, **resolved_kwargs)
 
             # Handle output based on unpack_output setting
-            if self.thunk.unpack_output:
-                # Unpack tuple into separate ThunkOutputs
+            if self.fcn.unpack_output:
+                # Unpack tuple into separate LineageFcnResults
                 if not isinstance(result, tuple):
                     raise ValueError(
-                        f"Function {self.thunk.fcn.__name__} has unpack_output=True "
+                        f"Function {self.fcn.fcn.__name__} has unpack_output=True "
                         f"but did not return a tuple."
                     )
                 outputs = tuple(
-                    ThunkOutput(self, i, True, val) for i, val in enumerate(result)
+                    LineageFcnResult(self, i, True, val) for i, val in enumerate(result)
                 )
             else:
-                # Wrap entire result as single ThunkOutput
-                outputs = (ThunkOutput(self, 0, True, result),)
+                # Wrap entire result as single LineageFcnResult
+                outputs = (LineageFcnResult(self, 0, True, result),)
         else:
             # Not complete - create placeholder output(s)
-            outputs = (ThunkOutput(self, 0, False, None),)
+            outputs = (LineageFcnResult(self, 0, False, None),)
 
         self.outputs = outputs
 
@@ -234,22 +232,22 @@ class PipelineThunk:
         return outputs
 
     def _deep_unwrap(self, value: Any) -> Any:
-        """Recursively unwrap ThunkOutputs and trackable variables to raw data.
+        """Recursively unwrap LineageFcnResults and trackable variables to raw data.
 
         Handles cases like:
-        - ThunkOutput -> raw data
+        - LineageFcnResult -> raw data
         - BaseVariable -> raw data
-        - BaseVariable wrapping ThunkOutput -> raw data (recursive)
+        - BaseVariable wrapping LineageFcnResult -> raw data (recursive)
         """
-        # Unwrap ThunkOutput
-        if isinstance(value, ThunkOutput):
+        # Unwrap LineageFcnResult
+        if isinstance(value, LineageFcnResult):
             return value.data
 
         # Unwrap trackable variable (e.g., BaseVariable)
         if is_trackable_variable(value):
             inner = getattr(value, "data", value)
-            # If the variable's data is itself an ThunkOutput, unwrap that too
-            if isinstance(inner, ThunkOutput):
+            # If the variable's data is itself a LineageFcnResult, unwrap that too
+            if isinstance(inner, LineageFcnResult):
                 return inner.data
             return inner
 
@@ -261,7 +259,7 @@ class PipelineThunk:
 
         The hash is based on:
         - Function hash (bytecode + constants)
-        - For ThunkOutput inputs: use lineage-based hash
+        - For LineageFcnResult inputs: use lineage-based hash
         - For trackable variable inputs: use lineage_hash if computed, else content+type
         - For raw values: use content hash
 
@@ -270,12 +268,12 @@ class PipelineThunk:
         """
         classified = classify_inputs(self.inputs)
         input_tuples = [c.to_cache_tuple() for c in classified]
-        hash_input = f"{self.thunk.hash}{STRING_REPR_DELIMITER}{input_tuples}"
+        hash_input = f"{self.fcn.hash}{STRING_REPR_DELIMITER}{input_tuples}"
         return sha256(hash_input.encode()).hexdigest()
 
-    def _matches(self, other: "PipelineThunk") -> bool:
-        """Check if this is equivalent to another PipelineThunk."""
-        if self.thunk.hash != other.thunk.hash:
+    def _matches(self, other: "LineageFcnInvocation") -> bool:
+        """Check if this is equivalent to another LineageFcnInvocation."""
+        if self.fcn.hash != other.fcn.hash:
             return False
 
         # Check if inputs match
@@ -286,11 +284,11 @@ class PipelineThunk:
             self_val = self.inputs[key]
             other_val = other.inputs[key]
 
-            # Compare ThunkOutputs by hash
-            if isinstance(self_val, ThunkOutput) and isinstance(other_val, ThunkOutput):
+            # Compare LineageFcnResults by hash
+            if isinstance(self_val, LineageFcnResult) and isinstance(other_val, LineageFcnResult):
                 if self_val.hash != other_val.hash:
                     return False
-            elif isinstance(self_val, ThunkOutput) or isinstance(other_val, ThunkOutput):
+            elif isinstance(self_val, LineageFcnResult) or isinstance(other_val, LineageFcnResult):
                 return False
             else:
                 # Compare other values directly
@@ -315,20 +313,20 @@ class PipelineThunk:
         return True
 
 
-class ThunkOutput:
+class LineageFcnResult:
     """
     Wraps a function output with lineage information.
 
     Contains:
-    - Reference to the PipelineThunk that produced it
+    - Reference to the LineageFcnInvocation that produced it
     - Output index (for multi-output functions)
     - The actual computed data
 
-    This is the key to provenance: every ThunkOutput knows its parent
-    PipelineThunk, which knows its inputs (possibly other ThunkOutputs).
+    This is the key to provenance: every LineageFcnResult knows its parent
+    LineageFcnInvocation, which knows its inputs (possibly other LineageFcnResults).
 
     Attributes:
-        pipeline_thunk: The PipelineThunk that produced this output
+        invoked: The LineageFcnInvocation that produced this output
         output_num: Index of this output (0-based)
         is_complete: True if the data has been computed
         data: The actual computed data (None if not complete)
@@ -337,42 +335,42 @@ class ThunkOutput:
 
     def __init__(
         self,
-        pipeline_thunk: PipelineThunk,
+        invoked: LineageFcnInvocation,
         output_num: int,
         is_complete: bool,
         data: Any,
     ):
         """
-        Initialize a ThunkOutput.
+        Initialize a LineageFcnResult.
 
         Args:
-            pipeline_thunk: The PipelineThunk that produced this
+            invoked: The LineageFcnInvocation that produced this
             output_num: Index of this output
             is_complete: Whether the data has been computed
             data: The computed data (or None if not complete)
         """
-        self.pipeline_thunk = pipeline_thunk
+        self.invoked = invoked
         self.output_num = output_num
         self.is_complete = is_complete
         self.data = data if is_complete else None
 
         string_repr = (
-            f"{pipeline_thunk.hash}{STRING_REPR_DELIMITER}"
+            f"{invoked.hash}{STRING_REPR_DELIMITER}"
             f"output{STRING_REPR_DELIMITER}{output_num}"
         )
         self.hash = sha256(string_repr.encode()).hexdigest()
 
     def __repr__(self) -> str:
-        fcn_name = self.pipeline_thunk.thunk.fcn.__name__
-        return f"ThunkOutput(fn={fcn_name}, output={self.output_num}, complete={self.is_complete})"
+        fcn_name = self.invoked.fcn.fcn.__name__
+        return f"LineageFcnResult(fn={fcn_name}, output={self.output_num}, complete={self.is_complete})"
 
     def __str__(self) -> str:
         """Show only the data when printed."""
         return str(self.data)
 
     def __eq__(self, other: object) -> bool:
-        """Compare by hash if ThunkOutput, otherwise compare data."""
-        if isinstance(other, ThunkOutput):
+        """Compare by hash if LineageFcnResult, otherwise compare data."""
+        if isinstance(other, LineageFcnResult):
             return self.hash == other.hash
         return self.data == other
 
@@ -385,37 +383,37 @@ class ThunkOutput:
 # -----------------------------------------------------------------------------
 
 
-def thunk(
+def lineage_fcn(
     func: Callable | None = None,
     *,
     unpack_output: bool = False,
     unwrap: bool = True,
     generates_file: bool = False,
-) -> Callable[[Callable], Thunk] | Thunk:
+) -> "Callable[[Callable], LineageFcn] | LineageFcn":
     """
-    Decorator to convert a function into a Thunk for lineage tracking.
+    Decorator to convert a function into a LineageFcn for lineage tracking.
 
     Can be used with or without parentheses:
 
-        @thunk
+        @lineage_fcn
         def process_signal(raw, calibration):
             return raw * calibration
 
-        @thunk()
+        @lineage_fcn()
         def another_function(x):
             return x * 2
 
     For multi-output functions, use unpack_output=True:
 
-        @thunk(unpack_output=True)
+        @lineage_fcn(unpack_output=True)
         def split(data):
             return data[:len(data)//2], data[len(data)//2:]
 
-        first_half, second_half = split(my_data)  # Each is a ThunkOutput
+        first_half, second_half = split(my_data)  # Each is a LineageFcnResult
 
     For debugging/inspection, use unwrap=False to receive the full objects:
 
-        @thunk(unwrap=False)
+        @lineage_fcn(unwrap=False)
         def debug_process(var):
             print(f"Input record_id: {var.record_id}")
             print(f"Input metadata: {var.metadata}")
@@ -423,10 +421,10 @@ def thunk(
 
     Args:
         func: The function to wrap (when used without parentheses)
-        unpack_output: If True, unpack tuple returns into separate ThunkOutputs.
+        unpack_output: If True, unpack tuple returns into separate LineageFcnResults.
                       If False (default), the return value is wrapped as a single
-                      ThunkOutput (even if it's a tuple).
-        unwrap: If True (default), unwrap ThunkOutput and variable inputs
+                      LineageFcnResult (even if it's a tuple).
+        unwrap: If True (default), unwrap LineageFcnResult and variable inputs
                to their raw data (.data). If False, pass the wrapper
                objects directly for inspection/debugging.
         generates_file: If True, this function produces side-effect files
@@ -434,17 +432,17 @@ def thunk(
                        save and cache-hit behavior without storing data.
 
     Returns:
-        A Thunk wrapping the function, or a decorator that creates one
+        A LineageFcn wrapping the function, or a decorator that creates one
     """
 
-    def decorator(fcn: Callable) -> Thunk:
-        t = Thunk(fcn, unpack_output, unwrap, generates_file)
+    def decorator(fcn: Callable) -> LineageFcn:
+        t = LineageFcn(fcn, unpack_output, unwrap, generates_file)
         return wraps(fcn)(t)
 
     if func is not None:
-        # Called without parentheses: @thunk
+        # Called without parentheses: @lineage_fcn
         return decorator(func)
-    # Called with parentheses: @thunk() or @thunk(unpack_output=True)
+    # Called with parentheses: @lineage_fcn() or @lineage_fcn(unpack_output=True)
     return decorator
 
 
@@ -453,20 +451,20 @@ def thunk(
 # -----------------------------------------------------------------------------
 
 
-def _create_manual_sentinel() -> Thunk:
-    """Create a named sentinel Thunk for manual interventions."""
+def _create_manual_sentinel() -> LineageFcn:
+    """Create a named sentinel LineageFcn for manual interventions."""
     def manual():
         """Placeholder for manual data interventions."""
         pass
-    return Thunk(manual)
+    return LineageFcn(manual)
 
 
-_MANUAL_THUNK: Thunk = _create_manual_sentinel()
+_MANUAL_FCN: LineageFcn = _create_manual_sentinel()
 
 
-def manual(data: Any, label: str, reason: str = "") -> ThunkOutput:
+def manual(data: Any, label: str, reason: str = "") -> LineageFcnResult:
     """
-    Wrap manually edited data in a ThunkOutput, preserving pipeline lineage.
+    Wrap manually edited data in a LineageFcnResult, preserving pipeline lineage.
 
     Use this when you step outside the tracked pipeline to make a manual
     correction, then want to re-enter it. The label and reason are recorded
@@ -480,7 +478,7 @@ def manual(data: Any, label: str, reason: str = "") -> ThunkOutput:
                 Stored in the lineage graph for future reference.
 
     Returns:
-        ThunkOutput carrying the data and a lineage record marking it as
+        LineageFcnResult carrying the data and a lineage record marking it as
         a manual intervention.
 
     Example:
@@ -500,7 +498,7 @@ def manual(data: Any, label: str, reason: str = "") -> ThunkOutput:
     """
     # Store label, reason, and data as inputs so the lineage hash depends on
     # both the annotation and the actual content of the data.
-    pt = PipelineThunk(_MANUAL_THUNK, label=label, reason=reason, data=data)
-    output = ThunkOutput(pt, 0, True, data)
-    pt.outputs = (output,)
+    invocation = LineageFcnInvocation(_MANUAL_FCN, label=label, reason=reason, data=data)
+    output = LineageFcnResult(invocation, 0, True, data)
+    invocation.outputs = (output,)
     return output

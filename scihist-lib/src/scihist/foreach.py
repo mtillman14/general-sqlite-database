@@ -1,4 +1,4 @@
-"""SciHist for_each — auto-wraps function in Thunk and records lineage."""
+"""SciHist for_each — auto-wraps function in LineageFcn and records lineage."""
 
 from typing import Any, Callable
 
@@ -19,13 +19,13 @@ def for_each(
     Execute a function for all combinations of metadata, with lineage tracking.
 
     This is the scihist (Layer 3) wrapper. It auto-wraps plain functions in
-    Thunk so that lineage is recorded, then delegates to scidb.for_each with
-    save=False. After scidb.for_each returns, it saves each output via
+    LineageFcn so that lineage is recorded, then delegates to scidb.for_each
+    with save=False. After scidb.for_each returns, it saves each output via
     scihist's lineage-aware save (which calls scidb.save() with the extracted
     lineage dict).
 
     Args:
-        fn: The function to execute. If not already a Thunk, it is wrapped
+        fn: The function to execute. If not already a LineageFcn, it is wrapped
             automatically.
         inputs: Dict mapping parameter names to variable types, Fixed wrappers,
                 Merge wrappers, ColumnSelection wrappers, PathInput, or constants.
@@ -42,14 +42,14 @@ def for_each(
     Returns:
         A pandas DataFrame of results, or None when dry_run=True.
     """
-    from thunk import Thunk
+    from scilineage import LineageFcn
     from scidb.foreach import for_each as _scidb_for_each, _output_name
 
-    # Auto-wrap plain functions in Thunk
-    if not isinstance(fn, Thunk):
-        fn = Thunk(fn)
+    # Auto-wrap plain functions in LineageFcn
+    if not isinstance(fn, LineageFcn):
+        fn = LineageFcn(fn)
 
-    # Wrap Thunk in a plain callable for scidb.for_each
+    # Wrap LineageFcn in a plain callable for scidb.for_each
     fn_plain = _make_plain(fn)
 
     # Delegate to scidb.for_each with save=False (we handle saves ourselves)
@@ -77,11 +77,11 @@ def for_each(
     return result_tbl
 
 
-def _make_plain(thunk_fn) -> Callable:
-    """Wrap a Thunk in a plain function handle that returns ThunkOutput."""
+def _make_plain(lineage_fn) -> Callable:
+    """Wrap a LineageFcn in a plain function handle that returns LineageFcnResult."""
     def wrapped(*args, **kwargs):
-        return thunk_fn(*args, **kwargs)
-    wrapped.__name__ = getattr(thunk_fn, "__name__", "thunk")
+        return lineage_fn(*args, **kwargs)
+    wrapped.__name__ = getattr(lineage_fn, "__name__", "lineage_fcn")
     return wrapped
 
 
@@ -91,8 +91,8 @@ def _save_with_lineage(
     output_names: list[str],
     db: Any | None,
 ) -> None:
-    """Save results with lineage tracking, extracting lineage from ThunkOutput."""
-    from thunk import ThunkOutput
+    """Save results with lineage tracking, extracting lineage from LineageFcnResult."""
+    from scilineage import LineageFcnResult
     from scidb.foreach import _output_name
     from scidb.database import get_database
 
@@ -117,8 +117,8 @@ def _save_with_lineage(
             output_value = row[output_name]
 
             try:
-                if isinstance(output_value, ThunkOutput):
-                    _save_thunk_output(
+                if isinstance(output_value, LineageFcnResult):
+                    _save_lineage_fcn_result(
                         output_obj, output_value, save_metadata, active_db
                     )
                 else:
@@ -133,14 +133,14 @@ def _save_with_lineage(
                 print(f"[error] {meta_str}: failed to save {_output_name(output_obj)}: {e}")
 
 
-def _save_thunk_output(
+def _save_lineage_fcn_result(
     output_obj: Any,
-    data: "ThunkOutput",
+    data: "LineageFcnResult",
     metadata: dict,
     db: Any | None,
 ) -> str | None:
-    """Save a ThunkOutput with full lineage tracking."""
-    from thunk import ThunkOutput, extract_lineage, get_raw_value
+    """Save a LineageFcnResult with full lineage tracking."""
+    from scilineage import LineageFcnResult, extract_lineage, get_raw_value
     from scidb.database import get_database, get_user_id
     from datetime import datetime
 
@@ -149,10 +149,10 @@ def _save_thunk_output(
         active_db = get_database()
 
     # Lineage-only save for side-effect functions (generates_file=True)
-    if data.pipeline_thunk.thunk.generates_file:
+    if data.invoked.fcn.generates_file:
         lineage_record = extract_lineage(data)
         lineage_dict = _lineage_to_dict(lineage_record)
-        pipeline_lineage_hash = data.pipeline_thunk.compute_lineage_hash()
+        pipeline_lineage_hash = data.invoked.compute_lineage_hash()
         generated_id = f"generated:{pipeline_lineage_hash[:32]}"
         user_id = get_user_id()
         nested_metadata = active_db._split_metadata(metadata)
@@ -183,7 +183,7 @@ def _save_thunk_output(
     lineage_record = extract_lineage(data)
     lineage_dict = _lineage_to_dict(lineage_record)
     lineage_hash = data.hash
-    pipeline_lineage_hash = data.pipeline_thunk.compute_lineage_hash()
+    pipeline_lineage_hash = data.invoked.compute_lineage_hash()
     raw_data = get_raw_value(data)
 
     variable_class = output_obj if isinstance(output_obj, type) else type(output_obj)
@@ -200,31 +200,31 @@ def _save_thunk_output(
 def save(variable_class, data, db=None, **metadata) -> str | None:
     """Save data to the database with lineage tracking.
 
-    This is the scihist-level save that handles ThunkOutput:
-    - If ``data`` is a ThunkOutput, extracts lineage and saves with full
+    This is the scihist-level save that handles LineageFcnResult:
+    - If ``data`` is a LineageFcnResult, extracts lineage and saves with full
       provenance tracking.
     - Otherwise, delegates to ``variable_class.save(data, **metadata)``.
 
     Args:
         variable_class: The BaseVariable subclass to save as.
-        data: The data to save. Can be a ThunkOutput or raw data.
+        data: The data to save. Can be a LineageFcnResult or raw data.
         db: Optional database instance.
         **metadata: Addressing metadata (e.g., subject=1, trial=1).
 
     Returns:
         str: The record_id of the saved data.
     """
-    from thunk import ThunkOutput
+    from scilineage import LineageFcnResult
 
-    if isinstance(data, ThunkOutput):
-        return _save_thunk_output(variable_class, data, metadata, db)
+    if isinstance(data, LineageFcnResult):
+        return _save_lineage_fcn_result(variable_class, data, metadata, db)
     else:
         db_kwargs = {"db": db} if db is not None else {}
         return variable_class.save(data, **db_kwargs, **metadata)
 
 
 def _lineage_to_dict(lineage_record) -> dict:
-    """Convert a thunk.LineageRecord to the dict format scidb expects."""
+    """Convert a scilineage.LineageRecord to the dict format scidb expects."""
     return {
         "function_name": lineage_record.function_name,
         "function_hash": lineage_record.function_hash,

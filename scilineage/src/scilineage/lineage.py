@@ -1,13 +1,13 @@
 """Lineage extraction for provenance tracking.
 
 This module provides utilities for extracting lineage information from
-ThunkOutputs and converting it to a storable format.
+LineageFcnResults and converting it to a storable format.
 
 Example:
-    from thunk import thunk
-    from thunk.lineage import extract_lineage, get_raw_value
+    from scilineage import lineage_fcn
+    from scilineage.lineage import extract_lineage, get_raw_value
 
-    @thunk
+    @lineage_fcn
     def process_signal(raw_data, calibration):
         return raw_data * calibration
 
@@ -26,7 +26,7 @@ Example:
 from dataclasses import dataclass, field
 from typing import Any
 
-from .core import ThunkOutput
+from .core import LineageFcnResult
 from .inputs import classify_inputs, InputKind, is_trackable_variable
 
 
@@ -67,9 +67,9 @@ class LineageRecord:
         )
 
 
-def extract_lineage(thunk_output: ThunkOutput) -> LineageRecord:
+def extract_lineage(result: LineageFcnResult) -> LineageRecord:
     """
-    Extract lineage information from a ThunkOutput.
+    Extract lineage information from a LineageFcnResult.
 
     Traverses the input graph to capture:
     - Function name and hash
@@ -77,17 +77,17 @@ def extract_lineage(thunk_output: ThunkOutput) -> LineageRecord:
     - Constant values
 
     Args:
-        thunk_output: The ThunkOutput to extract lineage from
+        result: The LineageFcnResult to extract lineage from
 
     Returns:
         LineageRecord containing the provenance information
     """
-    pt = thunk_output.pipeline_thunk
+    inv = result.invoked
 
     # Classify all inputs using the shared classifier
-    classified = classify_inputs(pt.inputs)
+    classified = classify_inputs(inv.inputs)
 
-    # Separate into inputs (variables/thunks) and constants
+    # Separate into inputs (variables/results) and constants
     inputs = []
     constants = []
 
@@ -98,8 +98,8 @@ def extract_lineage(thunk_output: ThunkOutput) -> LineageRecord:
             inputs.append(c.to_lineage_dict())
 
     return LineageRecord(
-        function_name=pt.thunk.fcn.__name__,
-        function_hash=pt.thunk.hash,
+        function_name=inv.fcn.fcn.__name__,
+        function_hash=inv.fcn.hash,
         inputs=inputs,
         constants=constants,
     )
@@ -107,24 +107,24 @@ def extract_lineage(thunk_output: ThunkOutput) -> LineageRecord:
 
 def get_raw_value(data: Any) -> Any:
     """
-    Unwrap ThunkOutput to get raw value, or return as-is.
+    Unwrap LineageFcnResult to get raw value, or return as-is.
 
     This is used when saving a variable whose data might be wrapped
-    in a ThunkOutput from a thunked computation.
+    in a LineageFcnResult from a lineage-tracked computation.
 
     Args:
-        data: Either a ThunkOutput or a raw value
+        data: Either a LineageFcnResult or a raw value
 
     Returns:
-        The raw data (unwrapped if ThunkOutput, otherwise unchanged)
+        The raw data (unwrapped if LineageFcnResult, otherwise unchanged)
     """
-    if isinstance(data, ThunkOutput):
+    if isinstance(data, LineageFcnResult):
         return data.data
     return data
 
 
 def get_upstream_lineage(
-    thunk_output: ThunkOutput,
+    result: LineageFcnResult,
     max_depth: int = 100,
 ) -> list[dict]:
     """
@@ -134,7 +134,7 @@ def get_upstream_lineage(
     upstream computations.
 
     Args:
-        thunk_output: The ThunkOutput to start from
+        result: The LineageFcnResult to start from
         max_depth: Maximum recursion depth
 
     Returns:
@@ -143,28 +143,28 @@ def get_upstream_lineage(
     lineages = []
     visited = set()
 
-    def traverse(thunk: ThunkOutput, depth: int) -> None:
+    def traverse(node: LineageFcnResult, depth: int) -> None:
         if depth <= 0:
             return
 
-        thunk_id = id(thunk)
-        if thunk_id in visited:
+        node_id = id(node)
+        if node_id in visited:
             return
-        visited.add(thunk_id)
+        visited.add(node_id)
 
-        # Extract lineage for this thunk
-        lineage = extract_lineage(thunk)
+        # Extract lineage for this result
+        lineage = extract_lineage(node)
         lineages.append(lineage.to_dict())
 
-        # Recurse into input ThunkOutputs
-        for name, value in thunk.pipeline_thunk.inputs.items():
-            if isinstance(value, ThunkOutput):
+        # Recurse into input LineageFcnResults
+        for name, value in node.invoked.inputs.items():
+            if isinstance(value, LineageFcnResult):
                 traverse(value, depth - 1)
             elif is_trackable_variable(value):
-                # Check if unsaved variable wraps a ThunkOutput
+                # Check if unsaved variable wraps a LineageFcnResult
                 inner = getattr(value, "data", None)
-                if isinstance(inner, ThunkOutput):
+                if isinstance(inner, LineageFcnResult):
                     traverse(inner, depth - 1)
 
-    traverse(thunk_output, max_depth)
+    traverse(result, max_depth)
     return lineages

@@ -1,19 +1,19 @@
 # Lineage Tracking
 
-SciStack automatically tracks data provenance using the `@thunk` decorator. When you save data produced by a thunked function, the lineage is captured automatically.
+SciStack automatically tracks data provenance using the `@lineage_fcn` decorator. When you save data produced by a thunked function, the lineage is captured automatically.
 
-## The `@thunk` Decorator
+## The `@lineage_fcn` Decorator
 
-Wrap processing functions with `@thunk` to enable lineage tracking:
+Wrap processing functions with `@lineage_fcn` to enable lineage tracking:
 
 ```python
-from scidb import thunk
+from scilineage import lineage_fcn
 
-@thunk
+@lineage_fcn
 def process_signal(signal: np.ndarray, factor: float) -> np.ndarray:
     return signal * factor
 
-# Returns ThunkOutput, not raw array
+# Returns LineageFcnResult, not raw array
 result = process_signal(data, 2.5)
 print(result.data)  # The actual array
 ```
@@ -21,7 +21,7 @@ print(result.data)  # The actual array
 ### Multiple Outputs
 
 ```python
-@thunk(unpack_output=True)
+@lineage_fcn(unpack_output=True)
 def split_data(data: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
     mid = len(data) // 2
     return data[:mid], data[mid:]
@@ -32,16 +32,16 @@ first_half, second_half = split_data(data)
 ## How It Works
 
 1. **Thunk wraps function** - Creates a `Thunk` object with function hash
-2. **Call creates PipelineThunk** - Captures all inputs
-3. **Execution returns ThunkOutput** - Wraps result with lineage reference
+2. **Call creates LineageFcnInvocation** - Captures all inputs
+3. **Execution returns LineageFcnResult** - Wraps result with lineage reference
 4. **Save extracts lineage** - Stores provenance in PipelineDB (SQLite)
 
 ```
-@thunk decorator
+@lineage_fcn decorator
     │
     ▼
 ┌─────────┐      ┌───────────────┐      ┌─────────────┐
-│  Thunk  │──────│ PipelineThunk │──────│ ThunkOutput │
+│  Thunk  │──────│ LineageFcnInvocation │──────│ LineageFcnResult │
 │ (func)  │      │ (inputs)      │      │ (result)    │
 └─────────┘      └───────────────┘      └─────────────┘
     │                   │                      │
@@ -55,10 +55,10 @@ first_half, second_half = split_data(data)
 
 ## Automatic Lineage Capture
 
-When saving a `ThunkOutput`, lineage is captured automatically:
+When saving a `LineageFcnResult`, lineage is captured automatically:
 
 ```python
-@thunk
+@lineage_fcn
 def normalize(arr):
     return (arr - arr.mean()) / arr.std()
 
@@ -192,15 +192,15 @@ if db.has_lineage(record_id):
 Lineage tracks through multiple processing steps:
 
 ```python
-@thunk
+@lineage_fcn
 def step1(data):
     return data * 2
 
-@thunk
+@lineage_fcn
 def step2(data):
     return data + 1
 
-@thunk
+@lineage_fcn
 def step3(data):
     return data ** 2
 
@@ -347,7 +347,7 @@ When pipelines are split across separate files/scripts, lineage is still tracked
 
 ```python
 # step1.py
-@thunk
+@lineage_fcn
 def preprocess(data):
     return data * 2
 
@@ -359,7 +359,7 @@ Intermediate.save(result, subject=1, stage="preprocessed")
 # step2.py (separate execution)
 loaded = Intermediate.load(subject=1, stage="preprocessed")
 
-@thunk
+@lineage_fcn
 def analyze(data):
     # Receives the raw numpy array (unwrapped from loaded)
     return data.mean()
@@ -375,10 +375,10 @@ The key: pass the `BaseVariable` instance, not `loaded.data`. The thunk automati
 
 ## Debugging with `unwrap=False`
 
-By default, thunks unwrap `BaseVariable` and `ThunkOutput` inputs to their raw data. Use `unwrap=False` to receive the wrapper objects for debugging:
+By default, thunks unwrap `BaseVariable` and `LineageFcnResult` inputs to their raw data. Use `unwrap=False` to receive the wrapper objects for debugging:
 
 ```python
-@thunk(unwrap=False)
+@lineage_fcn(unwrap=False)
 def debug_process(var):
     # var is the BaseVariable, not raw data
     print(f"Input record_id: {var.record_id}")
@@ -404,20 +404,20 @@ Don't thunk functions called in loops that accumulate results:
 
 ```python
 # DON'T do this
-@thunk
+@lineage_fcn
 def process_item(item):
     return item * 2
 
 results = []
 for item in items:
-    results.append(process_item(item))  # Returns ThunkOutput
-pd.concat(results)  # Error: can't concat ThunkOutputs
+    results.append(process_item(item))  # Returns LineageFcnResult
+pd.concat(results)  # Error: can't concat LineageFcnResults
 
 # DO this instead
-def process_item(item):  # No @thunk
+def process_item(item):  # No @lineage_fcn
     return item * 2
 
-@thunk
+@lineage_fcn
 def process_all(items):
     return [process_item(item) for item in items]
 ```

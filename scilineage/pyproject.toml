@@ -3,7 +3,7 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [project]
-name = "thunk"
+name = "scilineage"
 version = "0.1.0"
 description = "Lineage tracking for Python data pipelines"
 readme = "README.md"
@@ -13,8 +13,6 @@ authors = [
     { name = "SciStack Contributors" }
 ]
 keywords = [
-    "thunk",
-    "lazy-evaluation",
     "lineage",
     "provenance",
     "pipeline",
@@ -56,9 +54,9 @@ docs = [
 ]
 
 [project.urls]
-Documentation = "https://github.com/example/thunk#readme"
-Repository = "https://github.com/example/thunk"
-Issues = "https://github.com/example/thunk/issues"
+Documentation = "https://github.com/example/scilineage#readme"
+Repository = "https://github.com/example/scilineage"
+Issues = "https://github.com/example/scilineage/issues"
 
 [tool.hatch.build.targets.sdist]
 include = [
@@ -66,7 +64,7 @@ include = [
 ]
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/thunk"]
+packages = ["src/scilineage"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
@@ -97,4 +95,4 @@ ignore = [
 ]
 
 [tool.ruff.lint.isort]
-known-first-party = ["thunk"]
+known-first-party = ["scilineage"]

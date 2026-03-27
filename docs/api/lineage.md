@@ -1,20 +1,20 @@
 # Lineage API — Thunk System
 
-The thunk system provides automatic provenance tracking and computation caching. Wrap any processing function with `@thunk` (Python) or `scidb.Thunk` (MATLAB) and every call is recorded — including what inputs were used and what parameters were set. Re-running the same computation against already-saved results returns the cached result instantly.
+The thunk system provides automatic provenance tracking and computation caching. Wrap any processing function with `@lineage_fcn` (Python) or `scidb.Thunk` (MATLAB) and every call is recorded — including what inputs were used and what parameters were set. Re-running the same computation against already-saved results returns the cached result instantly.
 
 ---
 
-## `@thunk` / `scidb.Thunk`
+## `@lineage_fcn` / `scidb.Thunk`
 
-Wraps a function so that every call produces a `ThunkOutput` instead of raw data. The `ThunkOutput` carries both the result and its lineage — which function was called, with what inputs, and what constant values were used.
+Wraps a function so that every call produces a `LineageFcnResult` instead of raw data. The `LineageFcnResult` carries both the result and its lineage — which function was called, with what inputs, and what constant values were used.
 
 === "Python"
 
     ```python
-    from scidb import thunk, Thunk
+    from scilineage import lineage_fcn, Thunk
 
     # Decorator style
-    @thunk
+    @lineage_fcn
     def bandpass_filter(signal: np.ndarray, low: float, high: float) -> np.ndarray:
         # Your filtering code here
         return filtered
@@ -44,13 +44,13 @@ Wraps a function so that every call produces a `ThunkOutput` instead of raw data
 
 **Key behavior:**
 
-- Inputs that are `BaseVariable` instances or `ThunkOutput`s are automatically **unwrapped** to raw data before calling the function. Your function receives plain arrays — not framework wrapper types.
+- Inputs that are `BaseVariable` instances or `LineageFcnResult`s are automatically **unwrapped** to raw data before calling the function. Your function receives plain arrays — not framework wrapper types.
 - The lineage chain is preserved: if `result` came from another thunk, that dependency is recorded.
 - Lineage is only stored in the database when you call `save()` on the result.
 
 ---
 
-## `@thunk` Options
+## `@lineage_fcn` Options
 
 ### `unpack_output`
 
@@ -59,13 +59,13 @@ When your function returns a tuple/cell array that should be split into separate
 === "Python"
 
     ```python
-    @thunk(unpack_output=True)
+    @lineage_fcn(unpack_output=True)
     def design_filter(order, cutoff, fs):
         b, a = scipy.signal.butter(order, cutoff, fs=fs)
         return b, a  # returned as a tuple
 
     b, a = design_filter(4, 20, 1000)
-    # b and a are separate ThunkOutputs with the same lineage parent
+    # b and a are separate LineageFcnResults with the same lineage parent
     ```
 
 === "MATLAB"
@@ -78,10 +78,10 @@ When your function returns a tuple/cell array that should be split into separate
 
 ### `unwrap=False` (Python only)
 
-By default, thunks unwrap `BaseVariable` / `ThunkOutput` inputs to raw data. Pass `unwrap=False` to receive the wrapper objects inside your function — useful for accessing `record_id` or `metadata` during debugging:
+By default, thunks unwrap `BaseVariable` / `LineageFcnResult` inputs to raw data. Pass `unwrap=False` to receive the wrapper objects inside your function — useful for accessing `record_id` or `metadata` during debugging:
 
 ```python
-@thunk(unwrap=False)
+@lineage_fcn(unwrap=False)
 def debug_process(var):
     # var is a BaseVariable, not raw data
     print(f"Input record_id: {var.record_id}")
@@ -96,7 +96,7 @@ For pipeline steps that produce files (plots, reports, exports) rather than data
 === "Python"
 
     ```python
-    @thunk(generates_file=True)
+    @lineage_fcn(generates_file=True)
     def plot_signal(data, subject, session):
         plt.figure()
         plt.plot(data)
@@ -160,7 +160,7 @@ Use `Thunk(fn)` to add lineage tracking to functions from external libraries:
 
 ---
 
-## `ThunkOutput`
+## `LineageFcnResult`
 
 The return value from any thunk call. You typically pass it directly to `save()` — but you can also inspect it.
 
@@ -170,7 +170,7 @@ The return value from any thunk call. You typically pass it directly to `save()`
     |-----------|------|-------------|
     | `data` | any | The computed result |
     | `hash` | `str` | Lineage hash (used for cache lookup) |
-    | `pipeline_thunk` | `PipelineThunk` | The invocation record with captured inputs |
+    | `pipeline_thunk` | `LineageFcnInvocation` | The invocation record with captured inputs |
     | `is_complete` | `bool` | Whether the computation actually ran (False on cache hit for `generates_file`) |
 
     ```python
@@ -228,7 +228,7 @@ Lineage is preserved when data is saved to the database and then loaded in a sep
 
     ```python
     # step1.py
-    @thunk
+    @lineage_fcn
     def preprocess(data):
         return data * 2
 
@@ -238,7 +238,7 @@ Lineage is preserved when data is saved to the database and then loaded in a sep
     # step2.py — separate execution
     loaded = Intermediate.load(subject=1)
 
-    @thunk
+    @lineage_fcn
     def analyze(data):   # receives the raw array, unwrapped from loaded
         return data.mean()
 
@@ -279,7 +279,7 @@ print(lineage.function_name)   # "bandpass_filter"
 print(lineage.inputs)          # list of input descriptors
 print(lineage.constants)       # [{"name": "low", "value": 20}, ...]
 
-raw_value = get_raw_value(result)  # extracts .data if ThunkOutput, passes through otherwise
+raw_value = get_raw_value(result)  # extracts .data if LineageFcnResult, passes through otherwise
 ```
 
 ---

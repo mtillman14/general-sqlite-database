@@ -11,7 +11,7 @@ Each sub-package is independently publishable to PyPI. Two packages were renamed
 | `pipelinedb-lib/` | `pipelinedb` | `pipelinedb` | |
 | `scirun-lib/` | `scirun` | `scirun` | |
 | `sciduck/` | `sciduckdb` | `sciduckdb` | Renamed from `sciduck` (taken on PyPI) |
-| `thunk-lib/` | `thunk` | `thunk` | |
+| `scilineage/` | `thunk` | `thunk` | |
 | `src/` (root) | `scidb` | `scidb` | |
 | `sci-matlab/` | `scidb-matlab` | `scidb_matlab` | |
 | `scidb-net/` | `scidb-net` | `scidbnet` | |

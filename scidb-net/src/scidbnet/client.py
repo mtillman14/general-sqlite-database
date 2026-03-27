@@ -143,17 +143,16 @@ class RemoteDatabaseManager:
         index: Any = None,
         **metadata,
     ) -> str:
-        """Save data as a variable, handling ThunkOutput extraction client-side."""
-        from scidb.thunk import ThunkOutput
-        from scidb.lineage import extract_lineage, get_raw_value
+        """Save data as a variable, handling LineageFcnResult extraction client-side."""
+        from scilineage import LineageFcnResult, extract_lineage, get_raw_value
 
         lineage = None
         lineage_hash = None
         raw_data = None
 
-        if isinstance(data, ThunkOutput):
+        if isinstance(data, LineageFcnResult):
             lineage = extract_lineage(data)
-            lineage_hash = data.pipeline_thunk.compute_lineage_hash()
+            lineage_hash = data.invoked.compute_lineage_hash()
             raw_data = get_raw_value(data)
         elif isinstance(data, BaseVariable):
             raw_data = data.data
@@ -332,13 +331,13 @@ class RemoteDatabaseManager:
         })
         return result["count"]
 
-    def find_by_lineage(self, pipeline_thunk) -> list | None:
+    def find_by_lineage(self, invocation) -> list | None:
         """Find cached outputs by computation lineage.
 
-        This is called by Thunk.__call__ for cache lookup.
+        This is called by LineageFcn.__call__ for cache lookup.
         The client computes the lineage hash locally and sends just the hash.
         """
-        lineage_hash = pipeline_thunk.compute_lineage_hash()
+        lineage_hash = invocation.compute_lineage_hash()
 
         resp = self._post_binary(
             "find_by_lineage",

@@ -1,12 +1,12 @@
-from thunk import manual, extract_lineage, get_upstream_lineage, thunk                                                                                                              
-                                                        
-# Basic usage                                                                                                                                                                       
-result = manual([1, 2, 3], label="outlier_removal", reason="bad sensor")                                                                                                            
+from scilineage import manual, extract_lineage, get_upstream_lineage, lineage_fcn
+
+# Basic usage
+result = manual([1, 2, 3], label="outlier_removal", reason="bad sensor")
 print("data:", result.data)
 print("function_name:", extract_lineage(result).function_name)
 
 # Downstream chaining
-@thunk
+@lineage_fcn
 def double(x):
     return [v * 2 for v in x]
 

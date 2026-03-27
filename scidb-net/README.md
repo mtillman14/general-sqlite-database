@@ -144,9 +144,9 @@ signal = RawSignal.load(subject=1, session="A")
 print(signal.data.shape)  # (1000,)
 
 # Thunk caching also works remotely
-from scidb import thunk
+from scilineage import lineage_fcn
 
-@thunk
+@lineage_fcn
 def bandpass_filter(raw):
     # ... filtering logic ...
     return filtered

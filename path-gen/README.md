@@ -1,4 +1,4 @@
-# Path Gen
+# SciPathGen
 
 Template-based path generation for data pipelines.
 

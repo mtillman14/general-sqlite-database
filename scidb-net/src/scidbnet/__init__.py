@@ -23,9 +23,9 @@ __all__ = [
 def configure_remote_database(base_url: str, timeout: float = 30.0) -> RemoteDatabaseManager:
     """Configure SciStack to use a remote server.
 
-    Sets ``Thunk.query`` and the thread-local database to a
-    ``RemoteDatabaseManager`` so that all existing user code
-    (``BaseVariable.save()``, ``.load()``, thunk caching) works
+    Registers a ``RemoteDatabaseManager`` as the lineage cache backend and sets
+    the thread-local database, so that all existing user code
+    (``BaseVariable.save()``, ``.load()``, lineage caching) works
     transparently over the network.
 
     Args:
@@ -36,8 +36,8 @@ def configure_remote_database(base_url: str, timeout: float = 30.0) -> RemoteDat
         The ``RemoteDatabaseManager`` instance.
     """
     from scidb.database import _local
-    from scidb.thunk import Thunk
     from scidb.variable import BaseVariable
+    from scilineage import configure_backend
 
     client = RemoteDatabaseManager(base_url, timeout=timeout)
 
@@ -45,6 +45,6 @@ def configure_remote_database(base_url: str, timeout: float = 30.0) -> RemoteDat
     for cls in BaseVariable._all_subclasses.values():
         client.register(cls)
 
-    Thunk.query = client
+    configure_backend(client)
     _local.database = client
     return client

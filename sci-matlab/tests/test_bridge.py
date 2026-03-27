@@ -1,7 +1,7 @@
 """Tests for the MATLAB-SciStack Python bridge.
 
 These tests verify that the proxy classes satisfy the duck-typing
-contracts of thunk-lib without requiring MATLAB.
+contracts of scilineage without requiring MATLAB.
 """
 
 import sys
@@ -11,7 +11,7 @@ from pathlib import Path
 # Add source paths for the monorepo packages
 _root = Path(__file__).parent.parent.parent
 sys.path.insert(0, str(_root / "src"))
-sys.path.insert(0, str(_root / "thunk-lib" / "src"))
+sys.path.insert(0, str(_root / "scilineage" / "src"))
 sys.path.insert(0, str(_root / "canonical-hash" / "src"))
 sys.path.insert(0, str(_root / "sciduck" / "src"))
 sys.path.insert(0, str(_root / "pipelinedb-lib" / "src"))
@@ -23,58 +23,58 @@ import numpy as np
 import pytest
 
 from sci_matlab.bridge import (
-    MatlabThunk,
-    MatlabPipelineThunk,
+    MatlabLineageFcn,
+    MatlabLineageFcnInvocation,
     check_cache,
-    make_thunk_output,
+    make_lineage_fcn_result,
     register_matlab_variable,
     get_surrogate_class,
 )
-from thunk.core import ThunkOutput, Thunk, PipelineThunk
-from thunk.inputs import classify_inputs, classify_input, InputKind
-from thunk.lineage import extract_lineage, LineageRecord
+from scilineage.core import LineageFcnResult, LineageFcn, LineageFcnInvocation
+from scilineage.inputs import classify_inputs, classify_input, InputKind
+from scilineage.lineage import extract_lineage, LineageRecord
 from scidb.variable import BaseVariable
 
 
 # ---------------------------------------------------------------------------
-# MatlabThunk proxy tests
+# MatlabLineageFcn proxy tests
 # ---------------------------------------------------------------------------
 
-class TestMatlabThunk:
-    """Verify MatlabThunk satisfies the Thunk duck-typing contract."""
+class TestMatlabLineageFcn:
+    """Verify MatlabLineageFcn satisfies the LineageFcn duck-typing contract."""
 
     def test_has_required_attributes(self):
-        t = MatlabThunk("abc123", "my_function")
+        t = MatlabLineageFcn("abc123", "my_function")
         assert hasattr(t, "hash")
         assert hasattr(t, "fcn")
         assert hasattr(t, "unpack_output")
         assert hasattr(t, "unwrap")
-        assert hasattr(t, "pipeline_thunks")
+        assert hasattr(t, "invocations")
         assert t.fcn.__name__ == "my_function"
         assert t.unpack_output is False
         assert t.unwrap is True
 
     def test_hash_is_deterministic(self):
-        t1 = MatlabThunk("abc123", "f")
-        t2 = MatlabThunk("abc123", "f")
+        t1 = MatlabLineageFcn("abc123", "f")
+        t2 = MatlabLineageFcn("abc123", "f")
         assert t1.hash == t2.hash
         assert len(t1.hash) == 64  # Full SHA-256 hex
 
     def test_hash_changes_with_source(self):
-        t1 = MatlabThunk("abc123", "f")
-        t2 = MatlabThunk("def456", "f")
+        t1 = MatlabLineageFcn("abc123", "f")
+        t2 = MatlabLineageFcn("def456", "f")
         assert t1.hash != t2.hash
 
     def test_hash_changes_with_unpack_output(self):
-        t1 = MatlabThunk("abc123", "f", unpack_output=False)
-        t2 = MatlabThunk("abc123", "f", unpack_output=True)
+        t1 = MatlabLineageFcn("abc123", "f", unpack_output=False)
+        t2 = MatlabLineageFcn("abc123", "f", unpack_output=True)
         assert t1.hash != t2.hash
 
-    def test_hash_algorithm_matches_thunk(self):
-        """Verify the hash algorithm matches Thunk.__init__ for the same
+    def test_hash_algorithm_matches_lineage_fcn(self):
+        """Verify the hash algorithm matches LineageFcn.__init__ for the same
         source_hash and unpack_output, so the structure is the same."""
         source_hash = sha256(b"test_source").hexdigest()
-        t = MatlabThunk(source_hash, "f", unpack_output=False)
+        t = MatlabLineageFcn(source_hash, "f", unpack_output=False)
 
         # Same algorithm: sha256(f"{source_hash}-{unpack_output}")
         expected = sha256(f"{source_hash}-False".encode()).hexdigest()
@@ -82,128 +82,128 @@ class TestMatlabThunk:
 
 
 # ---------------------------------------------------------------------------
-# MatlabPipelineThunk proxy tests
+# MatlabLineageFcnInvocation proxy tests
 # ---------------------------------------------------------------------------
 
-class TestMatlabPipelineThunk:
-    """Verify MatlabPipelineThunk satisfies PipelineThunk duck-typing."""
+class TestMatlabLineageFcnInvocation:
+    """Verify MatlabLineageFcnInvocation satisfies LineageFcnInvocation duck-typing."""
 
     def test_has_required_attributes(self):
-        mt = MatlabThunk("abc", "f")
-        pt = MatlabPipelineThunk(mt, {"arg_0": 42})
-        assert hasattr(pt, "thunk")
-        assert hasattr(pt, "inputs")
-        assert hasattr(pt, "outputs")
-        assert hasattr(pt, "unwrap")
-        assert hasattr(pt, "hash")
-        assert hasattr(pt, "compute_lineage_hash")
+        mt = MatlabLineageFcn("abc", "f")
+        inv = MatlabLineageFcnInvocation(mt, {"arg_0": 42})
+        assert hasattr(inv, "fcn")
+        assert hasattr(inv, "inputs")
+        assert hasattr(inv, "outputs")
+        assert hasattr(inv, "unwrap")
+        assert hasattr(inv, "hash")
+        assert hasattr(inv, "compute_lineage_hash")
 
     def test_lineage_hash_is_deterministic(self):
-        mt = MatlabThunk("abc", "f")
-        pt1 = MatlabPipelineThunk(mt, {"arg_0": 42})
-        pt2 = MatlabPipelineThunk(mt, {"arg_0": 42})
-        assert pt1.hash == pt2.hash
+        mt = MatlabLineageFcn("abc", "f")
+        inv1 = MatlabLineageFcnInvocation(mt, {"arg_0": 42})
+        inv2 = MatlabLineageFcnInvocation(mt, {"arg_0": 42})
+        assert inv1.hash == inv2.hash
 
     def test_lineage_hash_changes_with_inputs(self):
-        mt = MatlabThunk("abc", "f")
-        pt1 = MatlabPipelineThunk(mt, {"arg_0": 42})
-        pt2 = MatlabPipelineThunk(mt, {"arg_0": 99})
-        assert pt1.hash != pt2.hash
+        mt = MatlabLineageFcn("abc", "f")
+        inv1 = MatlabLineageFcnInvocation(mt, {"arg_0": 42})
+        inv2 = MatlabLineageFcnInvocation(mt, {"arg_0": 99})
+        assert inv1.hash != inv2.hash
 
     def test_lineage_hash_changes_with_function(self):
-        mt1 = MatlabThunk("abc", "f")
-        mt2 = MatlabThunk("def", "g")
-        pt1 = MatlabPipelineThunk(mt1, {"arg_0": 42})
-        pt2 = MatlabPipelineThunk(mt2, {"arg_0": 42})
-        assert pt1.hash != pt2.hash
+        mt1 = MatlabLineageFcn("abc", "f")
+        mt2 = MatlabLineageFcn("def", "g")
+        inv1 = MatlabLineageFcnInvocation(mt1, {"arg_0": 42})
+        inv2 = MatlabLineageFcnInvocation(mt2, {"arg_0": 42})
+        assert inv1.hash != inv2.hash
 
     def test_classify_inputs_works_with_constant(self):
-        """classify_inputs from thunk-lib works on our proxy's inputs."""
-        mt = MatlabThunk("abc", "f")
-        pt = MatlabPipelineThunk(mt, {"arg_0": 42, "arg_1": "hello"})
-        classified = classify_inputs(pt.inputs)
+        """classify_inputs from scilineage works on our proxy's inputs."""
+        mt = MatlabLineageFcn("abc", "f")
+        inv = MatlabLineageFcnInvocation(mt, {"arg_0": 42, "arg_1": "hello"})
+        classified = classify_inputs(inv.inputs)
         assert len(classified) == 2
         assert all(c.kind == InputKind.CONSTANT for c in classified)
 
     def test_classify_inputs_works_with_base_variable(self):
-        """A real BaseVariable is classified correctly as a thunk input."""
+        """A real BaseVariable is classified correctly as a lineage result input."""
         var = BaseVariable(np.array([1.0, 2.0, 3.0]))
         var.record_id = "abc123def456abcd"
         var.metadata = {"subject": 1}
         var.content_hash = "1234567890abcdef"
 
-        mt = MatlabThunk("abc", "f")
-        pt = MatlabPipelineThunk(mt, {"arg_0": var})
-        classified = classify_inputs(pt.inputs)
+        mt = MatlabLineageFcn("abc", "f")
+        inv = MatlabLineageFcnInvocation(mt, {"arg_0": var})
+        classified = classify_inputs(inv.inputs)
         assert len(classified) == 1
         assert classified[0].kind == InputKind.SAVED_VARIABLE
 
-    def test_classify_inputs_works_with_thunk_output(self):
-        """A real ThunkOutput (from make_thunk_output) is classified
-        correctly when used as input to another thunk."""
-        mt1 = MatlabThunk("abc", "step1")
-        pt1 = MatlabPipelineThunk(mt1, {"arg_0": 42})
-        to1 = make_thunk_output(pt1, 0, np.array([1.0]))
+    def test_classify_inputs_works_with_lineage_fcn_result(self):
+        """A real LineageFcnResult (from make_lineage_fcn_result) is classified
+        correctly when used as input to another invocation."""
+        mt1 = MatlabLineageFcn("abc", "step1")
+        inv1 = MatlabLineageFcnInvocation(mt1, {"arg_0": 42})
+        result1 = make_lineage_fcn_result(inv1, 0, np.array([1.0]))
 
-        mt2 = MatlabThunk("def", "step2")
-        pt2 = MatlabPipelineThunk(mt2, {"arg_0": to1})
-        classified = classify_inputs(pt2.inputs)
+        mt2 = MatlabLineageFcn("def", "step2")
+        inv2 = MatlabLineageFcnInvocation(mt2, {"arg_0": result1})
+        classified = classify_inputs(inv2.inputs)
         assert len(classified) == 1
-        assert classified[0].kind == InputKind.THUNK_OUTPUT
+        assert classified[0].kind == InputKind.LINEAGE_RESULT
 
-    def test_saved_variable_with_lineage_hash_classified_as_thunk_output(self):
-        """A BaseVariable with _lineage_hash is reclassified as THUNK_OUTPUT,
-        matching the behaviour for Python-saved thunk results."""
+    def test_saved_variable_with_lineage_hash_classified_as_lineage_result(self):
+        """A BaseVariable with lineage_hash is reclassified as LINEAGE_RESULT,
+        matching the behaviour for Python-saved lineage-tracked results."""
         var = BaseVariable(np.array([1.0]))
         var.record_id = "abc123def456abcd"
         var.lineage_hash = "a" * 64
         var.content_hash = "1234567890abcdef"
 
-        mt = MatlabThunk("abc", "f")
-        pt = MatlabPipelineThunk(mt, {"arg_0": var})
-        classified = classify_inputs(pt.inputs)
+        mt = MatlabLineageFcn("abc", "f")
+        inv = MatlabLineageFcnInvocation(mt, {"arg_0": var})
+        classified = classify_inputs(inv.inputs)
         assert len(classified) == 1
-        # Reclassified as THUNK_OUTPUT because _lineage_hash is set
-        assert classified[0].kind == InputKind.THUNK_OUTPUT
+        # Reclassified as LINEAGE_RESULT because lineage_hash is set
+        assert classified[0].kind == InputKind.LINEAGE_RESULT
         assert classified[0].hash == "a" * 64
 
 
 # ---------------------------------------------------------------------------
-# make_thunk_output tests
+# make_lineage_fcn_result tests
 # ---------------------------------------------------------------------------
 
-class TestMakeThunkOutput:
-    """Verify make_thunk_output creates real ThunkOutput instances."""
+class TestMakeLineageFcnResult:
+    """Verify make_lineage_fcn_result creates real LineageFcnResult instances."""
 
-    def test_returns_real_thunk_output(self):
-        mt = MatlabThunk("abc", "f")
-        pt = MatlabPipelineThunk(mt, {"arg_0": 42})
-        to = make_thunk_output(pt, 0, np.array([1.0, 2.0]))
-        assert isinstance(to, ThunkOutput)
+    def test_returns_real_lineage_fcn_result(self):
+        mt = MatlabLineageFcn("abc", "f")
+        inv = MatlabLineageFcnInvocation(mt, {"arg_0": 42})
+        result = make_lineage_fcn_result(inv, 0, np.array([1.0, 2.0]))
+        assert isinstance(result, LineageFcnResult)
 
-    def test_thunk_output_attributes(self):
-        mt = MatlabThunk("abc", "f")
-        pt = MatlabPipelineThunk(mt, {"arg_0": 42})
+    def test_lineage_fcn_result_attributes(self):
+        mt = MatlabLineageFcn("abc", "f")
+        inv = MatlabLineageFcnInvocation(mt, {"arg_0": 42})
         data = np.array([1.0, 2.0])
-        to = make_thunk_output(pt, 0, data)
-        assert to.is_complete is True
-        assert to.output_num == 0
-        assert np.array_equal(to.data, data)
-        assert to.pipeline_thunk is pt
+        result = make_lineage_fcn_result(inv, 0, data)
+        assert result.is_complete is True
+        assert result.output_num == 0
+        assert np.array_equal(result.data, data)
+        assert result.invoked is inv
 
-    def test_thunk_output_hash_deterministic(self):
-        mt = MatlabThunk("abc", "f")
-        pt = MatlabPipelineThunk(mt, {"arg_0": 42})
-        to1 = make_thunk_output(pt, 0, np.array([1.0]))
-        to2 = make_thunk_output(pt, 0, np.array([1.0]))
-        assert to1.hash == to2.hash
+    def test_lineage_fcn_result_hash_deterministic(self):
+        mt = MatlabLineageFcn("abc", "f")
+        inv = MatlabLineageFcnInvocation(mt, {"arg_0": 42})
+        r1 = make_lineage_fcn_result(inv, 0, np.array([1.0]))
+        r2 = make_lineage_fcn_result(inv, 0, np.array([1.0]))
+        assert r1.hash == r2.hash
 
     def test_different_output_nums_different_hashes(self):
-        mt = MatlabThunk("abc", "f")
-        pt = MatlabPipelineThunk(mt, {"arg_0": 42})
-        to0 = make_thunk_output(pt, 0, np.array([1.0]))
-        to1 = make_thunk_output(pt, 1, np.array([2.0]))
-        assert to0.hash != to1.hash
+        mt = MatlabLineageFcn("abc", "f")
+        inv = MatlabLineageFcnInvocation(mt, {"arg_0": 42})
+        r0 = make_lineage_fcn_result(inv, 0, np.array([1.0]))
+        r1 = make_lineage_fcn_result(inv, 1, np.array([2.0]))
+        assert r0.hash != r1.hash
 
 
 # ---------------------------------------------------------------------------
@@ -211,14 +211,14 @@ class TestMakeThunkOutput:
 # ---------------------------------------------------------------------------
 
 class TestExtractLineage:
-    """Verify that thunk-lib's extract_lineage works on our proxy objects."""
+    """Verify that scilineage's extract_lineage works on our proxy objects."""
 
-    def test_extract_lineage_from_matlab_thunk_output(self):
-        mt = MatlabThunk("abc", "my_matlab_func")
-        pt = MatlabPipelineThunk(mt, {"arg_0": 42, "arg_1": "hello"})
-        to = make_thunk_output(pt, 0, np.array([1.0]))
+    def test_extract_lineage_from_matlab_lineage_fcn_result(self):
+        mt = MatlabLineageFcn("abc", "my_matlab_func")
+        inv = MatlabLineageFcnInvocation(mt, {"arg_0": 42, "arg_1": "hello"})
+        result = make_lineage_fcn_result(inv, 0, np.array([1.0]))
 
-        lineage = extract_lineage(to)
+        lineage = extract_lineage(result)
         assert isinstance(lineage, LineageRecord)
         assert lineage.function_name == "my_matlab_func"
         assert lineage.function_hash == mt.hash
@@ -231,26 +231,26 @@ class TestExtractLineage:
         var.metadata = {"subject": 1}
         var.content_hash = "1234567890abcdef"
 
-        mt = MatlabThunk("abc", "process")
-        pt = MatlabPipelineThunk(mt, {"arg_0": var, "arg_1": 2.5})
-        to = make_thunk_output(pt, 0, np.array([2.0, 4.0]))
+        mt = MatlabLineageFcn("abc", "process")
+        inv = MatlabLineageFcnInvocation(mt, {"arg_0": var, "arg_1": 2.5})
+        result = make_lineage_fcn_result(inv, 0, np.array([2.0, 4.0]))
 
-        lineage = extract_lineage(to)
+        lineage = extract_lineage(result)
         assert lineage.function_name == "process"
         assert len(lineage.inputs) == 1      # The BaseVariable
         assert len(lineage.constants) == 1   # 2.5
 
-    def test_extract_lineage_chained_thunks(self):
-        """Two MATLAB thunks chained: step1 -> step2."""
-        mt1 = MatlabThunk("abc", "step1")
-        pt1 = MatlabPipelineThunk(mt1, {"arg_0": 42})
-        to1 = make_thunk_output(pt1, 0, np.array([84.0]))
+    def test_extract_lineage_chained(self):
+        """Two MATLAB functions chained: step1 -> step2."""
+        mt1 = MatlabLineageFcn("abc", "step1")
+        inv1 = MatlabLineageFcnInvocation(mt1, {"arg_0": 42})
+        result1 = make_lineage_fcn_result(inv1, 0, np.array([84.0]))
 
-        mt2 = MatlabThunk("def", "step2")
-        pt2 = MatlabPipelineThunk(mt2, {"arg_0": to1})
-        to2 = make_thunk_output(pt2, 0, np.array([80.0]))
+        mt2 = MatlabLineageFcn("def", "step2")
+        inv2 = MatlabLineageFcnInvocation(mt2, {"arg_0": result1})
+        result2 = make_lineage_fcn_result(inv2, 0, np.array([80.0]))
 
-        lineage = extract_lineage(to2)
+        lineage = extract_lineage(result2)
         assert lineage.function_name == "step2"
         assert len(lineage.inputs) == 1
         assert lineage.inputs[0]["source_type"] == "thunk"
@@ -300,8 +300,8 @@ class TestVariableRegistration:
 class TestSaveVariableCompatibility:
     """Verify the proxy objects work with DatabaseManager.save_variable."""
 
-    def test_save_variable_with_matlab_thunk_output(self, tmp_path):
-        """End-to-end: create MATLAB proxies, make ThunkOutput, save it."""
+    def test_save_variable_with_matlab_lineage_fcn_result(self, tmp_path):
+        """End-to-end: create MATLAB proxies, make LineageFcnResult, save it."""
         from scidb.database import configure_database
 
         db = configure_database(
@@ -312,15 +312,15 @@ class TestSaveVariableCompatibility:
         try:
             register_matlab_variable("MatlabResult")
 
-            # Simulate a MATLAB thunk execution
-            mt = MatlabThunk("source_hash_abc", "matlab_filter")
-            pt = MatlabPipelineThunk(mt, {"arg_0": 42, "arg_1": 3.14})
+            # Simulate a MATLAB lineage-tracked execution
+            mt = MatlabLineageFcn("source_hash_abc", "matlab_filter")
+            inv = MatlabLineageFcnInvocation(mt, {"arg_0": 42, "arg_1": 3.14})
             result_data = np.array([1.0, 2.0, 3.0])
-            to = make_thunk_output(pt, 0, result_data)
+            result = make_lineage_fcn_result(inv, 0, result_data)
 
-            # save_variable should work with our ThunkOutput
+            # save_variable should work with our LineageFcnResult
             var_class = get_surrogate_class("MatlabResult")
-            record_id = db.save_variable(var_class, to, subject=1)
+            record_id = db.save_variable(var_class, result, subject=1)
             assert record_id is not None
             assert len(record_id) == 16
 
@@ -337,8 +337,7 @@ class TestSaveVariableCompatibility:
         finally:
             db.close()
 
-    # @pytest.mark.skip(reason="lineage_hash/pipeline_lineage_hash ambiguity not yet resolved")
-    def test_cache_hit_with_matlab_thunk(self, tmp_path):
+    def test_cache_hit_with_matlab_lineage_fcn(self, tmp_path):
         """After saving, find_by_lineage should return the cached data."""
         from scidb.database import configure_database
 
@@ -350,17 +349,17 @@ class TestSaveVariableCompatibility:
         try:
             register_matlab_variable("MatlabCached")
 
-            mt = MatlabThunk("source_hash_xyz", "matlab_process")
-            pt = MatlabPipelineThunk(mt, {"arg_0": 100})
+            mt = MatlabLineageFcn("source_hash_xyz", "matlab_process")
+            inv = MatlabLineageFcnInvocation(mt, {"arg_0": 100})
             result_data = np.array([10.0, 20.0])
-            to = make_thunk_output(pt, 0, result_data)
+            result = make_lineage_fcn_result(inv, 0, result_data)
 
             var_class = get_surrogate_class("MatlabCached")
-            db.save_variable(var_class, to, subject=1)
+            db.save_variable(var_class, result, subject=1)
 
             # Now check cache with the same computation
-            pt2 = MatlabPipelineThunk(mt, {"arg_0": 100})
-            cached = db.find_by_lineage(pt2)
+            inv2 = MatlabLineageFcnInvocation(mt, {"arg_0": 100})
+            cached = db.find_by_lineage(inv2)
             assert cached is not None
             assert len(cached) == 1
             assert np.array_equal(cached[0], result_data)

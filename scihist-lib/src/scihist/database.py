@@ -1,4 +1,4 @@
-"""SciHist database configuration — wraps scidb.configure_database with Thunk.query management."""
+"""SciHist database configuration — wraps scidb.configure_database with cache backend registration."""
 
 from typing import Any
 
@@ -8,11 +8,12 @@ def configure_database(
     schema_keys: list[str] | None = None,
     **kwargs,
 ) -> Any:
-    """Configure the active database and register it with Thunk.query.
+    """Configure the active database and register it as the lineage cache backend.
 
     This is the scihist wrapper around scidb.configure_database(). In addition
-    to opening the DuckDB-backed database, it sets Thunk.query so that
-    Thunk-based computations can look up previously computed results.
+    to opening the DuckDB-backed database, it registers the database as the
+    cache backend so that lineage-tracked computations can look up previously
+    computed results.
 
     Args:
         db_path: Path to the DuckDB database file.
@@ -23,21 +24,22 @@ def configure_database(
         The configured DatabaseManager instance.
     """
     from scidb import configure_database as _scidb_configure
-    from thunk import Thunk
+    from scilineage import configure_backend
 
     db = _scidb_configure(db_path, schema_keys, **kwargs)
-    Thunk.query = db
+    configure_backend(db)
     return db
 
 
-def find_by_lineage(pipeline_thunk) -> list | None:
+def find_by_lineage(invocation) -> list | None:
     """Find output values by computation lineage.
 
-    Given a PipelineThunk (function + inputs), finds any previously computed
-    outputs that match by querying the _lineage table via the active database.
+    Given a LineageFcnInvocation (function + inputs), finds any previously
+    computed outputs that match by querying the _lineage table via the active
+    database.
 
     Args:
-        pipeline_thunk: The PipelineThunk computation to look up.
+        invocation: The LineageFcnInvocation computation to look up.
 
     Returns:
         List of output values if found, None otherwise.
@@ -45,5 +47,5 @@ def find_by_lineage(pipeline_thunk) -> list | None:
     from scidb.database import get_database
 
     db = get_database()
-    lineage_hash = pipeline_thunk.compute_lineage_hash()
+    lineage_hash = invocation.compute_lineage_hash()
     return db.find_by_lineage_hash(lineage_hash)

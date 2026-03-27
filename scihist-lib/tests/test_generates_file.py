@@ -1,11 +1,11 @@
-"""Tests for @thunk(generates_file=True) — side-effect function tracking."""
+"""Tests for @lineage_fcn(generates_file=True) — side-effect function tracking."""
 
 import numpy as np
 import pytest
 
 from scidb import BaseVariable, configure_database as scidb_configure
 from scidb.database import _local, DatabaseManager
-from thunk import thunk
+from scilineage import lineage_fcn
 from scihist import configure_database, for_each, save
 
 from conftest import DEFAULT_TEST_SCHEMA_KEYS
@@ -34,16 +34,16 @@ class TestDecoratorFlag:
     """Tests that generates_file flag is set correctly and does not affect hash."""
 
     def test_generates_file_flag_set(self):
-        """@thunk(generates_file=True) sets the flag on the Thunk."""
-        @thunk(generates_file=True)
+        """@lineage_fcn(generates_file=True) sets the flag on the LineageFcn."""
+        @lineage_fcn(generates_file=True)
         def make_plot(data):
             pass
 
         assert make_plot.generates_file is True
 
     def test_generates_file_default_false(self):
-        """@thunk without generates_file defaults to False."""
-        @thunk
+        """@lineage_fcn without generates_file defaults to False."""
+        @lineage_fcn
         def process(data):
             return data * 2
 
@@ -54,14 +54,15 @@ class TestDecoratorFlag:
         def my_func(x):
             return x * 2
 
-        t_normal = thunk(my_func)
-        t_gf = thunk(my_func, generates_file=True)
+        from scilineage import LineageFcn
+        t_normal = LineageFcn(my_func)
+        t_gf = LineageFcn(my_func, generates_file=True)
 
         assert t_normal.hash == t_gf.hash
 
     def test_generates_file_with_other_options(self):
         """generates_file works alongside unpack_output and unwrap."""
-        @thunk(generates_file=True, unwrap=False)
+        @lineage_fcn(generates_file=True, unwrap=False)
         def make_plot(data):
             pass
 
@@ -79,7 +80,7 @@ class TestSaveBehavior:
         RawSignal.save(np.array([1, 2, 3]), subject=1)
         loaded = RawSignal.load(subject=1)
 
-        @thunk(generates_file=True)
+        @lineage_fcn(generates_file=True)
         def make_plot(data):
             return None  # side-effect function
 
@@ -93,7 +94,7 @@ class TestSaveBehavior:
         RawSignal.save(np.array([1, 2, 3]), subject=1)
         loaded = RawSignal.load(subject=1)
 
-        @thunk(generates_file=True)
+        @lineage_fcn(generates_file=True)
         def make_plot(data):
             return None
 
@@ -110,7 +111,7 @@ class TestSaveBehavior:
         RawSignal.save(np.array([1, 2, 3]), subject=1)
         loaded = RawSignal.load(subject=1)
 
-        @thunk(generates_file=True)
+        @lineage_fcn(generates_file=True)
         def make_plot(data):
             return None
 
@@ -130,7 +131,7 @@ class TestSaveBehavior:
         RawSignal.save(np.array([1, 2, 3]), subject=1, session="A")
         loaded = RawSignal.load(subject=1, session="A")
 
-        @thunk(generates_file=True)
+        @lineage_fcn(generates_file=True)
         def make_plot(data):
             return None
 
@@ -138,7 +139,7 @@ class TestSaveBehavior:
         record_id = save(Figure, result, subject=1, session="A")
 
         # Verify lineage is stored by querying _record_metadata via find_by_lineage
-        lineage_hash = result.pipeline_thunk.compute_lineage_hash()
+        lineage_hash = result.invoked.compute_lineage_hash()
         rows = db._duck._fetchall(
             "SELECT record_id FROM _record_metadata WHERE lineage_hash = ?",
             [lineage_hash],
@@ -159,7 +160,7 @@ class TestCacheHit:
 
         call_count = 0
 
-        @thunk(generates_file=True)
+        @lineage_fcn(generates_file=True)
         def make_plot(data):
             nonlocal call_count
             call_count += 1
@@ -182,7 +183,7 @@ class TestCacheHit:
         """Cache hit result should have data=None."""
         RawSignal.save(np.array([1, 2, 3]), subject=1)
 
-        @thunk(generates_file=True)
+        @lineage_fcn(generates_file=True)
         def make_plot(data):
             return None
 
@@ -200,7 +201,7 @@ class TestCacheHit:
         """Saving a cache-hit result should be a no-op (PipelineDB upsert)."""
         RawSignal.save(np.array([1, 2, 3]), subject=1)
 
-        @thunk(generates_file=True)
+        @lineage_fcn(generates_file=True)
         def make_plot(data):
             return None
 
@@ -229,7 +230,7 @@ class TestDistinctComputations:
 
         call_count = 0
 
-        @thunk(generates_file=True)
+        @lineage_fcn(generates_file=True)
         def make_plot(data):
             nonlocal call_count
             call_count += 1
@@ -253,13 +254,13 @@ class TestDistinctComputations:
         call_count_a = 0
         call_count_b = 0
 
-        @thunk(generates_file=True)
+        @lineage_fcn(generates_file=True)
         def make_plot_a(data):
             nonlocal call_count_a
             call_count_a += 1
             return None
 
-        @thunk(generates_file=True)
+        @lineage_fcn(generates_file=True)
         def make_plot_b(data):
             nonlocal call_count_b
             call_count_b += 1
@@ -287,7 +288,7 @@ class TestPersistence:
 
         call_count = 0
 
-        @thunk(generates_file=True)
+        @lineage_fcn(generates_file=True)
         def make_plot(data):
             nonlocal call_count
             call_count += 1
@@ -301,8 +302,8 @@ class TestPersistence:
         save(Figure, result, subject=1)
         assert call_count == 1
         db1.close()
-        from thunk import Thunk
-        Thunk.query = None
+        from scilineage import _clear_backend
+        _clear_backend()
 
         # Second connection — cache hit should still work
         db2 = configure_database(db_path, DEFAULT_TEST_SCHEMA_KEYS)
@@ -312,7 +313,7 @@ class TestPersistence:
         assert cached.data is None
         assert cached.is_complete is True
         db2.close()
-        Thunk.query = None
+        _clear_backend()
 
 
 # --- for_each integration tests ---
@@ -326,7 +327,7 @@ class TestForEachIntegration:
 
         received_kwargs = {}
 
-        @thunk(generates_file=True)
+        @lineage_fcn(generates_file=True)
         def make_plot(data, subject, session):
             nonlocal received_kwargs
             received_kwargs = {"subject": subject, "session": session}
@@ -349,7 +350,7 @@ class TestForEachIntegration:
 
         call_count = 0
 
-        @thunk(generates_file=True)
+        @lineage_fcn(generates_file=True)
         def make_plot(data, subject, session):
             nonlocal call_count
             call_count += 1
@@ -379,7 +380,7 @@ class TestForEachIntegration:
         """outputs=[Figure] should work with generates_file function."""
         RawSignal.save(np.array([1, 2, 3]), subject=1, session="A")
 
-        @thunk(generates_file=True)
+        @lineage_fcn(generates_file=True)
         def make_plot(data, subject, session):
             return None
 
@@ -398,7 +399,7 @@ class TestForEachIntegration:
 
         call_args = {}
 
-        @thunk
+        @lineage_fcn
         def process(data):
             nonlocal call_args
             call_args = {"called": True}

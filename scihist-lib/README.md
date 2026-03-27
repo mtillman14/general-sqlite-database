@@ -1,4 +1,4 @@
-# SciRun
+# SciHist
 
 Batch execution utilities for data pipelines.
 

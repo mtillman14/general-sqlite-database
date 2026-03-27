@@ -1,37 +1,37 @@
-"""Tests for thunk core functionality."""
+"""Tests for scilineage core functionality."""
 
 import pytest
 
-from thunk import (
-    ThunkOutput,
-    PipelineThunk,
-    Thunk,
-    thunk,
+from scilineage import (
+    LineageFcnResult,
+    LineageFcnInvocation,
+    LineageFcn,
+    lineage_fcn,
     manual,
 )
 
 
-class TestThunkDecorator:
-    """Test the @thunk decorator."""
+class TestLineageFcnDecorator:
+    """Test the @lineage_fcn decorator."""
 
-    def test_basic_thunk(self):
-        @thunk
+    def test_basic_lineage_fcn(self):
+        @lineage_fcn
         def double(x):
             return x * 2
 
         result = double(5)
-        assert isinstance(result, ThunkOutput)
+        assert isinstance(result, LineageFcnResult)
         assert result.data == 10
 
-    def test_thunk_preserves_name(self):
-        @thunk
+    def test_lineage_fcn_preserves_name(self):
+        @lineage_fcn
         def my_function(x):
             return x
 
         assert my_function.__name__ == "my_function"
 
     def test_multi_output(self):
-        @thunk(unpack_output=True)
+        @lineage_fcn(unpack_output=True)
         def split(x):
             return x, x * 2
 
@@ -42,7 +42,7 @@ class TestThunkDecorator:
         assert b.output_num == 1
 
     def test_non_tuple_with_unpack_raises(self):
-        @thunk(unpack_output=True)
+        @lineage_fcn(unpack_output=True)
         def wrong():
             return 42
 
@@ -50,11 +50,11 @@ class TestThunkDecorator:
             wrong()
 
 
-class TestThunkOutput:
-    """Test ThunkOutput behavior."""
+class TestLineageFcnResult:
+    """Test LineageFcnResult behavior."""
 
     def test_hash_deterministic(self):
-        @thunk
+        @lineage_fcn
         def process(x):
             return x * 2
 
@@ -63,7 +63,7 @@ class TestThunkOutput:
         assert r1.hash == r2.hash
 
     def test_hash_different_for_different_inputs(self):
-        @thunk
+        @lineage_fcn
         def process(x):
             return x * 2
 
@@ -72,7 +72,7 @@ class TestThunkOutput:
         assert r1.hash != r2.hash
 
     def test_str_shows_data(self):
-        @thunk
+        @lineage_fcn
         def process(x):
             return x * 2
 
@@ -80,7 +80,7 @@ class TestThunkOutput:
         assert str(result) == "10"
 
     def test_equality_with_same_hash(self):
-        @thunk
+        @lineage_fcn
         def process(x):
             return x * 2
 
@@ -89,7 +89,7 @@ class TestThunkOutput:
         assert r1 == r2
 
     def test_equality_with_raw_data(self):
-        @thunk
+        @lineage_fcn
         def process(x):
             return x * 2
 
@@ -97,53 +97,53 @@ class TestThunkOutput:
         assert result == 10
 
 
-class TestPipelineThunk:
-    """Test PipelineThunk behavior."""
+class TestLineageFcnInvocation:
+    """Test LineageFcnInvocation behavior."""
 
     def test_captures_inputs(self):
-        @thunk
+        @lineage_fcn
         def process(x, y):
             return x + y
 
         result = process(5, 10)
-        pt = result.pipeline_thunk
-        assert pt.inputs == {"arg_0": 5, "arg_1": 10}
+        inv = result.invoked
+        assert inv.inputs == {"arg_0": 5, "arg_1": 10}
 
     def test_captures_kwargs(self):
-        @thunk
+        @lineage_fcn
         def process(x, factor=2):
             return x * factor
 
         result = process(5, factor=3)
-        pt = result.pipeline_thunk
-        assert "factor" in pt.inputs
-        assert pt.inputs["factor"] == 3
+        inv = result.invoked
+        assert "factor" in inv.inputs
+        assert inv.inputs["factor"] == 3
 
     def test_lineage_hash_deterministic(self):
-        @thunk
+        @lineage_fcn
         def process(x):
             return x * 2
 
         r1 = process(5)
         r2 = process(5)
-        key1 = r1.pipeline_thunk.compute_lineage_hash()
-        key2 = r2.pipeline_thunk.compute_lineage_hash()
+        key1 = r1.invoked.compute_lineage_hash()
+        key2 = r2.invoked.compute_lineage_hash()
         assert key1 == key2
 
     def test_lineage_hash_different_for_different_inputs(self):
-        @thunk
+        @lineage_fcn
         def process(x):
             return x * 2
 
         r1 = process(5)
         r2 = process(6)
-        key1 = r1.pipeline_thunk.compute_lineage_hash()
-        key2 = r2.pipeline_thunk.compute_lineage_hash()
+        key1 = r1.invoked.compute_lineage_hash()
+        key2 = r2.invoked.compute_lineage_hash()
         assert key1 != key2
 
 
 class TestSavedVariableClassification:
-    """Test that saved variables with lineage are classified like ThunkOutputs."""
+    """Test that saved variables with lineage are classified like LineageFcnResults."""
 
     def _make_saved_variable(self, lineage_hash=None):
         """Create a mock saved variable (duck-typed to match BaseVariable)."""
@@ -164,38 +164,38 @@ class TestSavedVariableClassification:
 
         return FakeVariable(42, "rec_abc", lineage_hash)
 
-    def test_saved_variable_with_lineage_matches_thunk_output(self):
+    def test_saved_variable_with_lineage_matches_lineage_fcn_result(self):
         """A saved variable with lineage_hash should produce the same
-        cache tuple as the ThunkOutput it was saved from."""
-        from thunk.inputs import classify_input
+        cache tuple as the LineageFcnResult it was saved from."""
+        from scilineage.inputs import classify_input
 
-        @thunk
+        @lineage_fcn
         def process(x):
             return x * 2
 
         result = process(5)
 
-        # Classify the live ThunkOutput
-        thunk_classified = classify_input("arg_0", result)
+        # Classify the live LineageFcnResult
+        result_classified = classify_input("arg_0", result)
 
-        # Create a saved variable with the ThunkOutput's hash
+        # Create a saved variable with the LineageFcnResult's hash
         saved_var = self._make_saved_variable(lineage_hash=result.hash)
         saved_classified = classify_input("arg_0", saved_var)
 
-        assert thunk_classified.to_cache_tuple() == saved_classified.to_cache_tuple()
+        assert result_classified.to_cache_tuple() == saved_classified.to_cache_tuple()
 
-    def test_saved_variable_with_lineage_classified_as_thunk_output(self):
-        """A saved variable with lineage_hash should be classified as THUNK_OUTPUT."""
-        from thunk.inputs import classify_input, InputKind
+    def test_saved_variable_with_lineage_classified_as_lineage_result(self):
+        """A saved variable with lineage_hash should be classified as LINEAGE_RESULT."""
+        from scilineage.inputs import classify_input, InputKind
 
         saved_var = self._make_saved_variable(lineage_hash="somehash")
         classified = classify_input("x", saved_var)
 
-        assert classified.kind == InputKind.THUNK_OUTPUT
+        assert classified.kind == InputKind.LINEAGE_RESULT
 
     def test_saved_variable_without_lineage_classified_as_saved(self):
         """A saved variable without lineage_hash should still be SAVED_VARIABLE."""
-        from thunk.inputs import classify_input, InputKind
+        from scilineage.inputs import classify_input, InputKind
 
         saved_var = self._make_saved_variable(lineage_hash=None)
         classified = classify_input("x", saved_var)
@@ -203,27 +203,27 @@ class TestSavedVariableClassification:
         assert classified.kind == InputKind.SAVED_VARIABLE
 
     def test_downstream_lineage_hash_matches(self):
-        """A downstream thunk should compute the same lineage hash whether
-        its input is a live ThunkOutput or a saved-and-reloaded variable."""
-        from thunk.inputs import classify_inputs
+        """A downstream lineage_fcn should compute the same lineage hash whether
+        its input is a live LineageFcnResult or a saved-and-reloaded variable."""
+        from scilineage.inputs import classify_inputs
 
-        @thunk
+        @lineage_fcn
         def step1(x):
             return x + 1
 
-        @thunk
+        @lineage_fcn
         def step2(x):
             return x * 2
 
-        # Path A: chain ThunkOutputs directly
+        # Path A: chain LineageFcnResults directly
         out1 = step1(5)
         out2_live = step2(out1)
-        hash_live = out2_live.pipeline_thunk.compute_lineage_hash()
+        hash_live = out2_live.invoked.compute_lineage_hash()
 
         # Path B: simulate save/reload of out1 then feed to step2
         saved_var = self._make_saved_variable(lineage_hash=out1.hash)
         out2_reloaded = step2(saved_var)
-        hash_reloaded = out2_reloaded.pipeline_thunk.compute_lineage_hash()
+        hash_reloaded = out2_reloaded.invoked.compute_lineage_hash()
 
         assert hash_live == hash_reloaded
 
@@ -231,9 +231,9 @@ class TestSavedVariableClassification:
 class TestManual:
     """Test manual() intervention function."""
 
-    def test_returns_thunk_output(self):
+    def test_returns_lineage_fcn_result(self):
         result = manual([1, 2, 3], label="test_edit")
-        assert isinstance(result, ThunkOutput)
+        assert isinstance(result, LineageFcnResult)
 
     def test_data_is_preserved(self):
         data = [1, 2, 3]
@@ -241,20 +241,20 @@ class TestManual:
         assert result.data == data
 
     def test_function_name_is_manual(self):
-        from thunk import extract_lineage
+        from scilineage import extract_lineage
         result = manual([1, 2, 3], label="test_edit")
         lineage = extract_lineage(result)
         assert lineage.function_name == "manual"
 
     def test_label_in_lineage_constants(self):
-        from thunk import extract_lineage
+        from scilineage import extract_lineage
         result = manual([1, 2, 3], label="outlier_removal", reason="bad sensor")
         lineage = extract_lineage(result)
         constant_reprs = [c["value_repr"] for c in lineage.constants]
         assert any("outlier_removal" in r for r in constant_reprs)
 
     def test_reason_in_lineage_constants(self):
-        from thunk import extract_lineage
+        from scilineage import extract_lineage
         result = manual([1, 2, 3], label="test_edit", reason="bad sensor")
         lineage = extract_lineage(result)
         constant_reprs = [c["value_repr"] for c in lineage.constants]
@@ -277,8 +277,8 @@ class TestManual:
         r2 = manual(data, label="edit_b")
         assert r1.hash != r2.hash
 
-    def test_usable_as_input_to_downstream_thunk(self):
-        @thunk
+    def test_usable_as_input_to_downstream_lineage_fcn(self):
+        @lineage_fcn
         def double(x):
             return [v * 2 for v in x]
 
@@ -287,9 +287,9 @@ class TestManual:
         assert result.data == [2, 4, 6]
 
     def test_downstream_lineage_includes_manual_step(self):
-        from thunk import get_upstream_lineage
+        from scilineage import get_upstream_lineage
 
-        @thunk
+        @lineage_fcn
         def double(x):
             return [v * 2 for v in x]
 
@@ -302,19 +302,19 @@ class TestManual:
 
     def test_reason_defaults_to_empty_string(self):
         result = manual([1, 2, 3], label="edit")
-        assert isinstance(result, ThunkOutput)
+        assert isinstance(result, LineageFcnResult)
         assert result.data == [1, 2, 3]
 
 
 class TestChaining:
-    """Test chained thunk computations."""
+    """Test chained lineage_fcn computations."""
 
     def test_basic_chain(self):
-        @thunk
+        @lineage_fcn
         def add_one(x):
             return x + 1
 
-        @thunk
+        @lineage_fcn
         def double(x):
             return x * 2
 
@@ -322,30 +322,30 @@ class TestChaining:
         assert result.data == 12  # (5 + 1) * 2
 
     def test_chain_captures_lineage(self):
-        @thunk
+        @lineage_fcn
         def step1(x):
             return x + 1
 
-        @thunk
+        @lineage_fcn
         def step2(x):
             return x * 2
 
         result = step2(step1(5))
-        pt = result.pipeline_thunk
+        inv = result.invoked
 
-        # Input should be an ThunkOutput
-        input_val = pt.inputs["arg_0"]
-        assert isinstance(input_val, ThunkOutput)
+        # Input should be a LineageFcnResult
+        input_val = inv.inputs["arg_0"]
+        assert isinstance(input_val, LineageFcnResult)
         assert input_val.data == 6
 
     def test_unwrap_true_by_default(self):
-        @thunk
+        @lineage_fcn
         def check_type(x):
             # With unwrap=True, x should be raw data
-            assert not isinstance(x, ThunkOutput)
+            assert not isinstance(x, LineageFcnResult)
             return x * 2
 
-        @thunk
+        @lineage_fcn
         def produce(x):
             return x + 1
 
@@ -353,14 +353,14 @@ class TestChaining:
         assert result.data == 12
 
     def test_unwrap_false(self):
-        @thunk
+        @lineage_fcn
         def produce(x):
             return x + 1
 
-        @thunk(unwrap=False)
+        @lineage_fcn(unwrap=False)
         def check_type(x):
-            # With unwrap=False, x should be ThunkOutput
-            assert isinstance(x, ThunkOutput)
+            # With unwrap=False, x should be LineageFcnResult
+            assert isinstance(x, LineageFcnResult)
             return x.data * 2
 
         result = check_type(produce(5))

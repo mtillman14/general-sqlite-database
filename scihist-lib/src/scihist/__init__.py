@@ -1,16 +1,16 @@
 """SciHist: Lineage-tracked batch execution for scientific data pipelines.
 
-This package adds Thunk-based lineage tracking on top of scidb.
-It provides the same for_each() interface as scidb, but automatically
-wraps functions in Thunk for provenance recording.
+This package adds lineage tracking on top of scidb. It provides the same
+for_each() interface as scidb, but automatically wraps functions in
+LineageFcn for provenance recording.
 
 Example:
     from scihist import for_each, Fixed, configure_database
-    from thunk import thunk
+    from scilineage import lineage_fcn
 
     configure_database("experiment.duckdb", ["subject", "session"])
 
-    @thunk
+    @lineage_fcn
     def process_data(raw, calibration):
         return raw * calibration
 
@@ -32,8 +32,8 @@ from scidb import Fixed, Merge, ColumnSelection, ForEachConfig
 # Re-export scifor helpers
 from scifor import Col, set_schema, get_schema, PathInput
 
-# Re-export thunk system
-from thunk import thunk, Thunk, ThunkOutput, PipelineThunk
+# Re-export scilineage system
+from scilineage import lineage_fcn, LineageFcn, LineageFcnResult, LineageFcnInvocation
 
 __version__ = "0.1.0"
 
@@ -55,9 +55,9 @@ __all__ = [
     "Col",
     "set_schema",
     "get_schema",
-    # Thunk system
-    "thunk",
-    "Thunk",
-    "ThunkOutput",
-    "PipelineThunk",
+    # Lineage system
+    "lineage_fcn",
+    "LineageFcn",
+    "LineageFcnResult",
+    "LineageFcnInvocation",
 ]

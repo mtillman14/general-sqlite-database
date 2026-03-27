@@ -78,17 +78,17 @@ print(loaded.metadata)   # {"subject": 1, "trial": 1, "condition": "control"}
 
 ## 5. Track Processing Lineage
 
-Use `@thunk` to automatically track what processing produced each result:
+Use `@lineage_fcn` to automatically track what processing produced each result:
 
 ```python
-from scidb import thunk
+from scilineage import lineage_fcn
 
-@thunk
+@lineage_fcn
 def bandpass_filter(signal: np.ndarray, low: float, high: float) -> np.ndarray:
     # Your filtering logic here
     return filtered_signal
 
-@thunk
+@lineage_fcn
 def compute_power(signal: np.ndarray) -> float:
     return np.mean(signal ** 2)
 
@@ -118,7 +118,7 @@ from scidb import Thunk
 from scipy.signal import butter, filtfilt
 
 # Wrap external functions
-# unpack_output=True splits the returned tuple into separate ThunkOutputs
+# unpack_output=True splits the returned tuple into separate LineageFcnResults
 thunked_butter = Thunk(butter, unpack_output=True)
 thunked_filtfilt = Thunk(filtfilt)
 

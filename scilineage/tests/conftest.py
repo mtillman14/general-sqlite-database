@@ -1,4 +1,4 @@
-"""Pytest configuration for thunk tests."""
+"""Pytest configuration for scilineage tests."""
 
 import sys
 from pathlib import Path
@@ -9,12 +9,12 @@ sys.path.insert(0, str(Path(__file__).parent.parent.parent / "canonical-hash" / 
 
 import pytest
 
-from thunk import Thunk
+from scilineage import _clear_backend
 
 
 @pytest.fixture(autouse=True)
 def clear_cache():
     """Clear the global cache before and after each test."""
-    Thunk.query = None
+    _clear_backend()
     yield
-    Thunk.query = None
+    _clear_backend()

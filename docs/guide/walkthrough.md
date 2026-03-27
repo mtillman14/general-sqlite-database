@@ -75,14 +75,14 @@ You're guaranteed to get heart rate data, not time data that happens to share th
 ## Step 2: Define Processing Functions
 
 ```python
-from scidb import thunk
+from scilineage import lineage_fcn
 
-@thunk
+@lineage_fcn
 def load_csv(path: str) -> np.ndarray:
     df = pd.read_csv(path)
     return df.iloc[:, 0].values
 
-@thunk
+@lineage_fcn
 def combine_signals(time, hr, vo2) -> pd.DataFrame:
     return pd.DataFrame({
         "time_sec": time,
@@ -90,7 +90,7 @@ def combine_signals(time, hr, vo2) -> pd.DataFrame:
         "vo2_ml_min": vo2,
     })
 
-@thunk
+@lineage_fcn
 def compute_rolling_vo2(combined, window_seconds=30, sample_interval=5):
     window_size = window_seconds // sample_interval
     rolling_avg = (
@@ -100,29 +100,29 @@ def compute_rolling_vo2(combined, window_seconds=30, sample_interval=5):
     )
     return rolling_avg.values
 
-@thunk
+@lineage_fcn
 def compute_max_hr(combined: pd.DataFrame) -> float:
     return float(combined["heart_rate_bpm"].max())
 
-@thunk
+@lineage_fcn
 def compute_max_vo2(rolling_vo2: np.ndarray) -> float:
     sorted_vals = np.sort(rolling_vo2)[::-1]
     return float(np.mean(sorted_vals[:2]))
 ```
 
-### Why `@thunk` and not a custom decorator?
+### Why `@lineage_fcn` and not a custom decorator?
 
-The `@thunk` decorator does three things that would be tedious to implement per-function:
+The `@lineage_fcn` decorator does three things that would be tedious to implement per-function:
 
 1. **Hashes the function's bytecode** — so if you change the function body, the framework knows it's a different computation
-2. **Classifies inputs** — each argument is recorded as either a ThunkOutput (from another `@thunk` call), a saved BaseVariable, or a raw constant
-3. **Returns a ThunkOutput** instead of raw data — this wrapper carries the lineage information forward
+2. **Classifies inputs** — each argument is recorded as either a LineageFcnResult (from another `@lineage_fcn` call), a saved BaseVariable, or a raw constant
+3. **Returns a LineageFcnResult** instead of raw data — this wrapper carries the lineage information forward
 
-The key insight: your function code stays clean. `combine_signals` receives plain numpy arrays, not framework wrapper types. The `@thunk` decorator handles all the bookkeeping at the boundary.
+The key insight: your function code stays clean. `combine_signals` receives plain numpy arrays, not framework wrapper types. The `@lineage_fcn` decorator handles all the bookkeeping at the boundary.
 
-### Why does `@thunk` auto-unwrap inputs?
+### Why does `@lineage_fcn` auto-unwrap inputs?
 
-When you call `combine_signals(time_data, hr_data, vo2_data)` where each argument is a ThunkOutput from `load_csv()`, the decorator automatically extracts the `.data` from each before calling your function. This means:
+When you call `combine_signals(time_data, hr_data, vo2_data)` where each argument is a LineageFcnResult from `load_csv()`, the decorator automatically extracts the `.data` from each before calling your function. This means:
 
 - Your function signature uses normal types (`np.ndarray`, `pd.DataFrame`)
 - You can test functions outside SciStack with plain data
@@ -165,7 +165,7 @@ Behind the scenes, this single call:
 2. **Auto-registers** every `BaseVariable` subclass defined so far (creates their tables)
 3. Sets `Thunk.query` to the `DatabaseManager` — this is what enables caching
 
-The last point is subtle but important: `Thunk.query` is a **class variable** on `Thunk`. Every `@thunk`-decorated function checks this before executing. If it's set, the function looks up its lineage hash in the database before running.
+The last point is subtle but important: `Thunk.query` is a **class variable** on `Thunk`. Every `@lineage_fcn`-decorated function checks this before executing. If it's set, the function looks up its lineage hash in the database before running.
 
 ## Step 4: Run the Pipeline
 
@@ -181,12 +181,12 @@ RawHeartRate.save(hr_data, subject="S01")
 RawVO2.save(vo2_data, subject="S01")
 ```
 
-Each `load_csv()` call returns a **ThunkOutput**, not a raw array. The ThunkOutput wraps:
+Each `load_csv()` call returns a **LineageFcnResult**, not a raw array. The LineageFcnResult wraps:
 - `.data` — the actual numpy array
 - `.pipeline_thunk` — metadata about the function call and its inputs
 - `.hash` — a lineage-based hash for cache lookups
 
-When you pass a ThunkOutput to `BaseVariable.save()`, the framework:
+When you pass a LineageFcnResult to `BaseVariable.save()`, the framework:
 1. Extracts the raw data from `.data`
 2. Extracts the lineage record (function name, hash, inputs, constants)
 3. Stores the data in DuckDB and the lineage in SQLite
@@ -208,11 +208,11 @@ MaxHeartRate.save(max_hr, subject="S01")
 MaxVO2.save(max_vo2, subject="S01")
 ```
 
-Notice that `compute_rolling_vo2(combined, ...)` receives a ThunkOutput from `combine_signals`. The `@thunk` decorator:
+Notice that `compute_rolling_vo2(combined, ...)` receives a LineageFcnResult from `combine_signals`. The `@lineage_fcn` decorator:
 
 1. Records that the input came from `combine_signals` (by its lineage hash)
 2. Unwraps `combined` to the raw DataFrame before calling the function
-3. Wraps the result in a new ThunkOutput with updated lineage
+3. Wraps the result in a new LineageFcnResult with updated lineage
 
 This builds a **computation graph** automatically:
 
@@ -296,7 +296,7 @@ Content hashing alone can't distinguish between "same output from different comp
 
 ### Why must you save before caching works?
 
-Caching is tied to `save()`, not to function execution. The cache is populated when you save a ThunkOutput — that's when the lineage record is written to SQLite. This is intentional:
+Caching is tied to `save()`, not to function execution. The cache is populated when you save a LineageFcnResult — that's when the lineage record is written to SQLite. This is intentional:
 
 - You choose what to cache by choosing what to save
 - Intermediate results you don't save don't consume database space
@@ -307,7 +307,7 @@ Caching is tied to `save()`, not to function execution. The cache is populated w
 | Principle | Implementation |
 |---|---|
 | **Separation of concerns** | Data in DuckDB, lineage in SQLite, logic in Python |
-| **Transparency** | `@thunk` is invisible to function bodies; data flows as normal Python types |
+| **Transparency** | `@lineage_fcn` is invisible to function bodies; data flows as normal Python types |
 | **Type safety** | Each `BaseVariable` subclass is its own namespace and table |
 | **Content addressing** | Deterministic hashes ensure identical data produces identical record_ids |
 | **Lineage as a side effect** | Provenance tracking requires no explicit graph construction |
@@ -315,4 +315,4 @@ Caching is tied to `save()`, not to function execution. The cache is populated w
 | **Inspectable storage** | DuckDB files are browsable in standard tools (DBeaver, DuckDB CLI) |
 | **Minimal boilerplate** | Native types need no serialization; `schema_version` defaults to 1 |
 
-The overall goal: scientific data pipelines should be **reproducible by default** without requiring researchers to learn a new programming paradigm. Write normal Python functions, decorate with `@thunk`, save with `BaseVariable.save()`, and the framework handles versioning, provenance, and caching.
+The overall goal: scientific data pipelines should be **reproducible by default** without requiring researchers to learn a new programming paradigm. Write normal Python functions, decorate with `@lineage_fcn`, save with `BaseVariable.save()`, and the framework handles versioning, provenance, and caching.

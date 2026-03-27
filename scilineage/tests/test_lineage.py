@@ -1,13 +1,13 @@
-"""Tests for thunk lineage tracking."""
+"""Tests for scilineage lineage tracking."""
 
 import pytest
 
-from thunk import (
+from scilineage import (
     LineageRecord,
     extract_lineage,
     get_upstream_lineage,
     get_raw_value,
-    thunk,
+    lineage_fcn,
 )
 
 
@@ -15,7 +15,7 @@ class TestExtractLineage:
     """Test extract_lineage function."""
 
     def test_basic_lineage(self):
-        @thunk
+        @lineage_fcn
         def process(x):
             return x * 2
 
@@ -27,7 +27,7 @@ class TestExtractLineage:
         assert len(lineage.function_hash) == 64  # SHA-256
 
     def test_constant_inputs_captured(self):
-        @thunk
+        @lineage_fcn
         def process(x, factor):
             return x * factor
 
@@ -40,12 +40,12 @@ class TestExtractLineage:
         assert "arg_0" in names
         assert "arg_1" in names
 
-    def test_thunk_inputs_captured(self):
-        @thunk
+    def test_lineage_fcn_inputs_captured(self):
+        @lineage_fcn
         def step1(x):
             return x + 1
 
-        @thunk
+        @lineage_fcn
         def step2(x):
             return x * 2
 
@@ -62,7 +62,7 @@ class TestGetUpstreamLineage:
     """Test get_upstream_lineage function."""
 
     def test_single_step(self):
-        @thunk
+        @lineage_fcn
         def process(x):
             return x * 2
 
@@ -73,15 +73,15 @@ class TestGetUpstreamLineage:
         assert chain[0]["function_name"] == "process"
 
     def test_multi_step_chain(self):
-        @thunk
+        @lineage_fcn
         def step1(x):
             return x + 1
 
-        @thunk
+        @lineage_fcn
         def step2(x):
             return x * 2
 
-        @thunk
+        @lineage_fcn
         def step3(x):
             return x - 1
 
@@ -93,7 +93,7 @@ class TestGetUpstreamLineage:
         assert names == ["step3", "step2", "step1"]
 
     def test_max_depth_limit(self):
-        @thunk
+        @lineage_fcn
         def step(x):
             return x + 1
 
@@ -110,8 +110,8 @@ class TestGetUpstreamLineage:
 class TestGetRawValue:
     """Test get_raw_value function."""
 
-    def test_unwraps_thunk_output(self):
-        @thunk
+    def test_unwraps_lineage_fcn_result(self):
+        @lineage_fcn
         def process(x):
             return x * 2
 

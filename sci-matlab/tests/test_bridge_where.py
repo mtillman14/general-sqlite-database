@@ -10,7 +10,7 @@ from pathlib import Path
 # Add source paths for the monorepo packages
 _root = Path(__file__).parent.parent.parent
 sys.path.insert(0, str(_root / "src"))
-sys.path.insert(0, str(_root / "thunk-lib" / "src"))
+sys.path.insert(0, str(_root / "scilineage" / "src"))
 sys.path.insert(0, str(_root / "canonical-hash" / "src"))
 sys.path.insert(0, str(_root / "sciduck" / "src"))
 sys.path.insert(0, str(_root / "pipelinedb-lib" / "src"))

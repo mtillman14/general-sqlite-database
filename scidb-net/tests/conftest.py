@@ -12,7 +12,7 @@ _root = Path(__file__).parent.parent.parent
 sys.path.insert(0, str(_root / "scidb-net" / "src"))
 sys.path.insert(0, str(_root / "src"))
 sys.path.insert(0, str(_root / "canonical-hash" / "src"))
-sys.path.insert(0, str(_root / "thunk-lib" / "src"))
+sys.path.insert(0, str(_root / "scilineage" / "src"))
 sys.path.insert(0, str(_root / "path-gen" / "src"))
 sys.path.insert(0, str(_root / "pipelinedb-lib" / "src"))
 sys.path.insert(0, str(_root / "scirun-lib" / "src"))
@@ -21,7 +21,7 @@ sys.path.insert(0, str(_root / "sciduck" / "src"))
 from httpx import ASGITransport
 from scidb.variable import BaseVariable
 from scidb.database import _local
-from scidb.thunk import Thunk
+from scilineage import _clear_backend
 from scidbnet.server import create_app
 from scidbnet.client import RemoteDatabaseManager
 
@@ -73,11 +73,11 @@ def _clear_global_state():
     """Reset global singletons between tests."""
     if hasattr(_local, "database"):
         delattr(_local, "database")
-    Thunk.query = None
+    _clear_backend()
     yield
     if hasattr(_local, "database"):
         delattr(_local, "database")
-    Thunk.query = None
+    _clear_backend()
 
 
 @pytest.fixture

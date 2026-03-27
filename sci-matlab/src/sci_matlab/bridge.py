@@ -1,36 +1,36 @@
 """Python bridge for MATLAB-SciStack integration.
 
 Provides proxy classes that satisfy the duck-typing contracts of
-thunk-lib's Thunk, PipelineThunk, and ThunkOutput classes.  This allows
-MATLAB functions to participate fully in the lineage / caching system
-without any changes to existing Python packages.
+scilineage's LineageFcn, LineageFcnInvocation, and LineageFcnResult classes.
+This allows MATLAB functions to participate fully in the lineage / caching
+system without any changes to existing Python packages.
 
 The key insight is that every Python function that touches these objects
-uses duck-typing (attribute access), not isinstance checks on Thunk or
-PipelineThunk.  ThunkOutput *is* instantiated directly from thunk-lib,
-so isinstance checks in save_variable() pass naturally.
+uses duck-typing (attribute access), not isinstance checks on LineageFcn or
+LineageFcnInvocation.  LineageFcnResult *is* instantiated directly from
+scilineage, so isinstance checks in save_variable() pass naturally.
 
 Duck-typing contracts satisfied
 -------------------------------
-MatlabThunk provides:
-    .hash            str   (64-char hex, same algorithm as Thunk.__init__)
+MatlabLineageFcn provides:
+    .hash            str   (64-char hex, same algorithm as LineageFcn.__init__)
     .fcn.__name__    str   (used by extract_lineage)
     .unpack_output   bool
     .unwrap          bool
-    .pipeline_thunks tuple
+    .invocations     tuple
 
-MatlabPipelineThunk provides:
-    .thunk           MatlabThunk
+MatlabLineageFcnInvocation provides:
+    .fcn             MatlabLineageFcn
     .inputs          dict[str, Any]
     .outputs         tuple
     .unwrap          bool
     .hash            property -> compute_lineage_hash()
-    .compute_lineage_hash()  str  (reuses classify_inputs from thunk-lib)
+    .compute_lineage_hash()  str  (reuses classify_inputs from scilineage)
 """
 
 from hashlib import sha256
 
-from thunk.inputs import classify_inputs
+from scilineage.inputs import classify_inputs
 
 STRING_REPR_DELIMITER = "-"
 
@@ -41,17 +41,17 @@ STRING_REPR_DELIMITER = "-"
 
 
 class _FunctionProxy:
-    """Minimal proxy so that ``pt.thunk.fcn.__name__`` works in extract_lineage."""
+    """Minimal proxy so that ``inv.fcn.fcn.__name__`` works in extract_lineage."""
 
     def __init__(self, name: str):
         self.__name__ = name
 
 
-class MatlabThunk:
-    """Proxy for a MATLAB function in the thunk lineage system.
+class MatlabLineageFcn:
+    """Proxy for a MATLAB function in the scilineage system.
 
-    Satisfies the same duck-typing contract as ``thunk.core.Thunk`` for
-    every consumer that reads ``.hash``, ``.fcn.__name__``, etc.
+    Satisfies the same duck-typing contract as ``scilineage.core.LineageFcn``
+    for every consumer that reads ``.hash``, ``.fcn.__name__``, etc.
 
     Parameters
     ----------
@@ -72,42 +72,43 @@ class MatlabThunk:
         self.fcn = _FunctionProxy(function_name)
         self.unpack_output = unpack_output
         self.unwrap = True
-        self.pipeline_thunks: tuple = ()
+        self.invocations: tuple = ()
 
-        # Same algorithm as Thunk.__init__ (core.py lines 78-81)
+        # Same algorithm as LineageFcn.__init__
         string_repr = f"{source_hash}{STRING_REPR_DELIMITER}{unpack_output}"
         self.hash: str = sha256(string_repr.encode()).hexdigest()
         self.generates_file = False
 
 
-class MatlabPipelineThunk:
+class MatlabLineageFcnInvocation:
     """Proxy for a specific MATLAB function invocation.
 
-    Satisfies the same duck-typing contract as ``thunk.core.PipelineThunk``.
-    Reuses ``classify_inputs`` and the lineage-hash algorithm from thunk-lib
-    so that cache lookups and lineage extraction work unchanged.
+    Satisfies the same duck-typing contract as
+    ``scilineage.core.LineageFcnInvocation``. Reuses ``classify_inputs``
+    and the lineage-hash algorithm from scilineage so that cache lookups
+    and lineage extraction work unchanged.
 
     Parameters
     ----------
-    matlab_thunk : MatlabThunk
-        The parent thunk (function identity).
+    matlab_lineage_fcn : MatlabLineageFcn
+        The parent lineage function (function identity).
     inputs : dict
         Mapping of argument names (``"arg_0"``, ``"arg_1"``, ...) to
-        Python-side values (BaseVariable instances, ThunkOutputs, or
+        Python-side values (BaseVariable instances, LineageFcnResults, or
         plain scalars/arrays).
     """
 
-    def __init__(self, matlab_thunk: MatlabThunk, inputs: dict):
-        self.thunk = matlab_thunk
+    def __init__(self, matlab_lineage_fcn: MatlabLineageFcn, inputs: dict):
+        self.fcn = matlab_lineage_fcn
         self.inputs: dict = dict(inputs)
         self.outputs: tuple = ()
         self.unwrap = True
 
     def compute_lineage_hash(self) -> str:
-        """Compute lineage hash — identical algorithm to PipelineThunk."""
+        """Compute lineage hash — identical algorithm to LineageFcnInvocation."""
         classified = classify_inputs(self.inputs)
         input_tuples = [c.to_cache_tuple() for c in classified]
-        hash_input = f"{self.thunk.hash}{STRING_REPR_DELIMITER}{input_tuples}"
+        hash_input = f"{self.fcn.hash}{STRING_REPR_DELIMITER}{input_tuples}"
         return sha256(hash_input.encode()).hexdigest()
 
     @property
@@ -120,7 +121,7 @@ class MatlabPipelineThunk:
 # ---------------------------------------------------------------------------
 
 
-def check_cache(pipeline_thunk: MatlabPipelineThunk):
+def check_cache(invocation: MatlabLineageFcnInvocation):
     """Check if a computation is already cached.
 
     Returns
@@ -128,25 +129,26 @@ def check_cache(pipeline_thunk: MatlabPipelineThunk):
     list or None
         List of cached output values (raw data), or None on miss.
     """
-    from thunk.core import Thunk
+    from scilineage.backend import _get_backend
 
-    if Thunk.query is not None:
+    _backend = _get_backend()
+    if _backend is not None:
         try:
-            return Thunk.query.find_by_lineage(pipeline_thunk)
+            return _backend.find_by_lineage(invocation)
         except Exception:
             pass
     return None
 
 
-def make_thunk_output(pipeline_thunk: MatlabPipelineThunk, output_num: int, data):
-    """Create a real ThunkOutput backed by a MatlabPipelineThunk.
+def make_lineage_fcn_result(invocation: MatlabLineageFcnInvocation, output_num: int, data):
+    """Create a real LineageFcnResult backed by a MatlabLineageFcnInvocation.
 
-    The returned object is a genuine ``thunk.core.ThunkOutput`` instance,
-    so ``isinstance`` checks in ``save_variable`` pass.
+    The returned object is a genuine ``scilineage.core.LineageFcnResult``
+    instance, so ``isinstance`` checks in ``save_variable`` pass.
     """
-    from thunk.core import ThunkOutput
+    from scilineage.core import LineageFcnResult
 
-    return ThunkOutput(pipeline_thunk, output_num, True, data)
+    return LineageFcnResult(invocation, output_num, True, data)
 
 
 def register_matlab_variable(type_name: str, schema_version: int = 1):

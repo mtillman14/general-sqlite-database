@@ -1,8 +1,8 @@
-"""Tests for thunk hashing utilities."""
+"""Tests for scilineage hashing utilities."""
 
 import pytest
 
-from thunk import canonical_hash
+from scilineage import canonical_hash
 
 
 class TestCanonicalHash:

@@ -2,7 +2,7 @@
 
 MATLAB wrapper for the SciStack scientific data versioning framework.
 
-Provides `scidb.BaseVariable` and `scidb.Thunk` for MATLAB, with full lineage tracking and caching. All hashing, lineage computation, and database operations are delegated to Python via MATLAB's `py.` interface — the MATLAB layer is a thin wrapper.
+Provides `scidb.BaseVariable` and `scidb.LineageFcn` for MATLAB, with full lineage tracking and caching. All hashing, lineage computation, and database operations are delegated to Python via MATLAB's `py.` interface — the MATLAB layer is a thin wrapper.
 
 ## Requirements
 
@@ -39,8 +39,8 @@ raw = RawSignal().load(subject=1, session="A");
 disp(raw.data);       % 100x3 double
 disp(raw.record_id);  % "a3f8c2e1b9d04710"
 
-%% Thunked computation with lineage tracking
-filter_fn = scidb.Thunk(@bandpass_filter);
+%% Lineage-tracked computation
+filter_fn = scidb.LineageFcn(@bandpass_filter);
 result = filter_fn(raw, 10, 200);
 
 %% Save result (lineage is stored automatically)
@@ -61,17 +61,17 @@ fprintf("Computed by: %s\n", p.function_name);
 MATLAB (user code)
    │
    ├── scidb.BaseVariable   ← instance methods: save, load, load_all, list_versions, provenance
-   ├── scidb.Thunk           ← wraps function handle, orchestrates cache check / execute
+   ├── scidb.LineageFcn      ← wraps function handle, orchestrates cache check / execute
    │
    └── py. interface ──────────────────────────────┐
                                                     │
 Python (in-process)                                 │
    ├── sci_matlab.bridge                          │
-   │     ├── MatlabThunk          ← proxy for Thunk duck-typing contract
-   │     ├── MatlabPipelineThunk  ← reuses classify_inputs() from thunk-lib
-   │     └── make_thunk_output    ← creates real ThunkOutput instances
+   │     ├── MatlabLineageFcn           ← proxy for LineageFcn duck-typing contract
+   │     ├── MatlabLineageFcnInvocation ← reuses classify_inputs() from scilineage
+   │     └── make_lineage_fcn_result    ← creates real LineageFcnResult instances
    │                                                │
-   ├── thunk-lib (unchanged)                        │
+   ├── scilineage (unchanged)                       │
    │     ├── classify_inputs()                      │
    │     ├── compute_lineage_hash()                 │
    │     └── extract_lineage()                      │
@@ -85,7 +85,7 @@ Python (in-process)                                 │
                  (data)            (lineage)
 ```
 
-The key insight: Python proxy classes satisfy the duck-typing contracts of thunk-lib, so all existing Python code (lineage hashing, input classification, cache lookup, lineage extraction) works unchanged. No existing Python packages are modified.
+The key insight: Python proxy classes satisfy the duck-typing contracts of scilineage, so all existing Python code (lineage hashing, input classification, cache lookup, lineage extraction) works unchanged. No existing Python packages are modified.
 
 ## Defining Variable Types
 
@@ -124,20 +124,20 @@ All methods are called on instances of BaseVariable subclasses:
 | `Type().list_versions(name=val, ...)` | List all versions |
 | `Type().provenance(name=val, ...)` | Get lineage information |
 
-### Thunk System
+### Lineage System
 
 | Class/Function | Description |
 |---|---|
-| `scidb.Thunk(@func)` | Wrap a named function for lineage + caching |
-| `t(args...)` | Call thunk: check cache, execute on miss, return ThunkOutput |
+| `scidb.LineageFcn(@func)` | Wrap a named function for lineage + caching |
+| `t(args...)` | Call: check cache, execute on miss, return LineageFcnResult |
 
 ### Return Types
 
 - `Type().load(...)` returns `scidb.BaseVariable` with `.data`, `.record_id`, `.metadata`
-- Thunk calls return `scidb.ThunkOutput` with `.data` (pass to `Type().save(...)`)
+- LineageFcn calls return `scidb.LineageFcnResult` with `.data` (pass to `Type().save(...)`)
 
 ## Cross-Language Interop
 
-Data saved from Python can be loaded in MATLAB and vice versa. Lineage chains are continuous across languages — a MATLAB thunk can consume a Python-produced variable, and the provenance graph records the full history.
+Data saved from Python can be loaded in MATLAB and vice versa. Lineage chains are continuous across languages — a MATLAB LineageFcn can consume a Python-produced variable, and the provenance graph records the full history.
 
-MATLAB thunks cache against other MATLAB thunks (not Python thunks), since function identity is computed differently (source file hash vs bytecode hash).
+MATLAB lineage functions cache against other MATLAB functions (not Python functions), since function identity is computed differently (source file hash vs bytecode hash).

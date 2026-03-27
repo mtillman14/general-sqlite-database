@@ -1,10 +1,10 @@
-"""Tests that reloaded variables produce Thunk cache hits."""
+"""Tests that reloaded variables produce lineage cache hits."""
 
 import numpy as np
 import pytest
 
 from scidb import BaseVariable
-from thunk import thunk
+from scilineage import lineage_fcn
 from scihist import save
 
 from conftest import DEFAULT_TEST_SCHEMA_KEYS
@@ -22,11 +22,11 @@ class TestCacheHitAfterReload:
     """Test that reloaded variables produce cache hits."""
 
     def test_reload_and_rerun_hits_cache(self, db):
-        """Saving a thunk result, reloading it, and re-running the same
-        thunk with the reloaded input should hit the cache."""
+        """Saving a lineage_fcn result, reloading it, and re-running the same
+        function with the reloaded input should hit the cache."""
         call_count = 0
 
-        @thunk
+        @lineage_fcn
         def double(x):
             nonlocal call_count
             call_count += 1
@@ -36,12 +36,12 @@ class TestCacheHitAfterReload:
         ArrayValue.save(np.array([1, 2, 3]), subject=1)
         loaded = ArrayValue.load(subject=1)
 
-        # Run the thunk and save the result
+        # Run the function and save the result
         result1 = double(loaded)
         save(ScalarValue, result1, subject=1, trial=1)
         assert call_count == 1
 
-        # Reload the input and re-run the same thunk
+        # Reload the input and re-run the same function
         reloaded = ArrayValue.load(subject=1)
         result2 = double(reloaded)
 
@@ -53,11 +53,11 @@ class TestCacheHitAfterReload:
         """Multi-step pipeline: save intermediates, reload, re-run → cache hits."""
         sum_call_count = 0
 
-        @thunk
+        @lineage_fcn
         def add_one(x):
             return x + 1
 
-        @thunk
+        @lineage_fcn
         def sum_all(x):
             nonlocal sum_call_count
             sum_call_count += 1

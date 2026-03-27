@@ -39,7 +39,7 @@ def for_each(
     7. Saves results from the returned table
 
     Args:
-        fn: The function to execute, or a Thunk.
+        fn: The function to execute, or a LineageFcn.
         inputs: Dict mapping parameter names to variable types, Fixed wrappers,
                 Merge wrappers, ColumnSelection wrappers, PathInput, or constants.
         outputs: List of output types/objects with ``.save()``.
@@ -125,8 +125,8 @@ def for_each(
     # Load all inputs into DataFrames and convert wrappers
     scifor_inputs = _convert_inputs(inputs, db, where)
 
-    # Wrap Thunk if needed
-    fn_wrapped = _wrap_thunk(fn) if _is_thunk(fn) else fn
+    # Wrap LineageFcn if needed
+    fn_wrapped = _wrap_lineage_fcn(fn) if _is_lineage_fcn(fn) else fn
 
     # Delegate core loop to scifor
     result_tbl = _scifor_for_each(
@@ -410,20 +410,20 @@ def _is_loadable(var_spec: Any) -> bool:
     return isinstance(var_spec, (type, Fixed, ColumnSelection, Merge, PathInput)) or hasattr(var_spec, 'load')
 
 
-def _is_thunk(fn: Any) -> bool:
-    """Check if fn is a thunk-lib Thunk (without hard dependency)."""
+def _is_lineage_fcn(fn: Any) -> bool:
+    """Check if fn is a scilineage LineageFcn (without hard dependency)."""
     try:
-        from thunk.core import Thunk
-        return isinstance(fn, Thunk)
+        from scilineage.core import LineageFcn
+        return isinstance(fn, LineageFcn)
     except ImportError:
         return False
 
 
-def _wrap_thunk(fn: Any) -> Callable:
-    """Wrap a Thunk in a plain function for scifor.for_each."""
+def _wrap_lineage_fcn(fn: Any) -> Callable:
+    """Wrap a LineageFcn in a plain function for scifor.for_each."""
     def wrapped(**kwargs):
         return fn(**kwargs)
-    wrapped.__name__ = getattr(fn, "__name__", "thunk")
+    wrapped.__name__ = getattr(fn, "__name__", "lineage_fcn")
     return wrapped
 
 
