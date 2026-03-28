@@ -146,6 +146,7 @@ class BaseVariable(metaclass=VariableMeta):
         self.metadata: dict | None = None
         self.content_hash: str | None = None
         self.lineage_hash: str | None = None
+        self.branch_params: dict = {}
 
     def to_db(self) -> pd.DataFrame:
         """
@@ -343,10 +344,19 @@ class BaseVariable(metaclass=VariableMeta):
         if version != "latest" and version is not None:
             return _db.load(cls, metadata, version=version, loc=loc, iloc=iloc)
 
-        # Query all matching records (latest version per parameter set)
-        from .exceptions import NotFoundError
+        # Separate schema metadata from branch_params_filter
+        schema_keys_set = set(_db.dataset_schema_keys)
+        schema_metadata = {k: v for k, v in metadata.items() if k in schema_keys_set}
+        branch_params_filter = {k: v for k, v in metadata.items()
+                                 if k not in schema_keys_set} or None
 
-        results = list(_db.load_all(cls, metadata, version_id="latest", where=where))
+        # Query all matching records (latest version per parameter set)
+        from .exceptions import AmbiguousVersionError, NotFoundError
+
+        results = list(_db.load_all(
+            cls, schema_metadata, version_id="latest", where=where,
+            branch_params_filter=branch_params_filter,
+        ))
 
         if not results:
             raise NotFoundError(
@@ -355,13 +365,35 @@ class BaseVariable(metaclass=VariableMeta):
         elif len(results) == 1:
             # Single match → return variable directly (with loc/iloc support)
             if loc is not None or iloc is not None:
-                return _db.load(cls, metadata, version=version, loc=loc, iloc=iloc, where=where)
+                return _db.load(cls, {}, version=results[0].record_id,
+                                loc=loc, iloc=iloc)
             return results[0]
         else:
-            # Multiple matches
-            if as_table:
-                return cls._results_to_dataframe(results)
-            return results
+            # Multiple results: check if at the same schema location
+            first_schema = {k: v for k, v in (results[0].metadata or {}).items()
+                            if k in schema_keys_set}
+            same_schema = all(
+                {k: v for k, v in (r.metadata or {}).items() if k in schema_keys_set}
+                == first_schema
+                for r in results[1:]
+            )
+            if same_schema:
+                loc_str = ", ".join(f"{k}={v!r}" for k, v in first_schema.items())
+                lines = [
+                    f"{len(results)} variants exist for {cls.__name__} at {loc_str}.",
+                    "Specify branch parameters to select one:",
+                ]
+                for r in results:
+                    bp = getattr(r, 'branch_params', {}) or {}
+                    bp_str = ", ".join(f"{k}={v!r}" for k, v in bp.items())
+                    lines.append(f"  {bp_str or '(no branch params)'}  "
+                                 f"(record_id: {r.record_id!r})")
+                raise AmbiguousVersionError("\n".join(lines))
+            else:
+                # Different schema locations → return list (existing behavior)
+                if as_table:
+                    return cls._results_to_dataframe(results)
+                return results
 
     @classmethod
     def _results_to_dataframe(cls, results: list["BaseVariable"]) -> pd.DataFrame:

@@ -31,3 +31,15 @@ class ReservedMetadataKeyError(SciStackError):
     pass
 
 
+class AmbiguousVersionError(SciStackError):
+    """Raised when load() matches multiple variants and no branch filter narrows to one."""
+
+    pass
+
+
+class AmbiguousParamError(SciStackError):
+    """Raised when a bare param name matches multiple namespaced keys in branch_params."""
+
+    pass
+
+

@@ -39,6 +39,9 @@ class ForEachConfig:
         inputs_key = self._serialize_inputs()
         if inputs_key != "{}":
             keys["__inputs"] = inputs_key
+        direct = self._get_direct_constants()
+        if direct:
+            keys["__constants"] = json.dumps(direct, sort_keys=True)
         if self.where is not None:
             keys["__where"] = self.where.to_key()
         if self.distribute:
@@ -49,6 +52,11 @@ class ForEachConfig:
             elif self.as_table is True:
                 keys["__as_table"] = True
         return keys
+
+    def _get_direct_constants(self) -> dict:
+        """Return scalar constant inputs (non-loadable values)."""
+        from .foreach import _is_loadable
+        return {k: v for k, v in self.inputs.items() if not _is_loadable(v)}
 
     def _serialize_inputs(self) -> str:
         """Serialize loadable inputs to a canonical JSON string.

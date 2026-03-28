@@ -14,6 +14,8 @@ import numpy as np
 import pandas as pd
 
 from .exceptions import (
+    AmbiguousParamError,
+    AmbiguousVersionError,
     DatabaseNotConfiguredError,
     NotFoundError,
     NotRegisteredError,
@@ -59,6 +61,28 @@ from sciduckdb import (
     _infer_data_columns, _value_to_storage_row, _dataframe_to_storage_rows,
     _flatten_dict, _unflatten_dict,
 )
+
+
+def _match_branch_param(branch_params_dict: dict, key: str, value: Any) -> bool:
+    """Match a single branch_params filter key/value against a branch_params dict.
+
+    1. Exact match (covers bare dynamic names and namespaced constant names).
+    2. Suffix match for bare constant names (e.g. "low_hz" → "bandpass_filter.low_hz").
+    Raises AmbiguousParamError if the bare name matches multiple namespaced keys.
+    """
+    # Exact match
+    if key in branch_params_dict:
+        return branch_params_dict[key] == value
+    # Suffix match
+    suffix = f".{key}"
+    hits = [(k, v) for k, v in branch_params_dict.items() if k.endswith(suffix)]
+    if len(hits) == 1:
+        return hits[0][1] == value
+    if len(hits) > 1:
+        raise AmbiguousParamError(
+            f"'{key}' matches multiple branch params: {[h[0] for h in hits]}"
+        )
+    return False
 
 
 # Global database instance (thread-local for safety)
@@ -470,6 +494,8 @@ class DatabaseManager:
                 lineage_hash VARCHAR,
                 schema_version INTEGER,
                 user_id VARCHAR,
+                branch_params VARCHAR DEFAULT '{}',
+                excluded BOOLEAN DEFAULT FALSE,
                 PRIMARY KEY (record_id, timestamp)
             )
         """)
@@ -497,7 +523,7 @@ class DatabaseManager:
         self._duck._execute(f"""
             CREATE OR REPLACE VIEW "{view_name}" AS
             WITH latest_meta AS (
-                SELECT record_id, schema_id, version_keys,
+                SELECT record_id, schema_id, version_keys, branch_params, excluded,
                        ROW_NUMBER() OVER (PARTITION BY record_id ORDER BY timestamp DESC) AS rn
                 FROM _record_metadata
                 WHERE variable_name = '{view_name}'
@@ -505,7 +531,7 @@ class DatabaseManager:
             SELECT
                 t.*,
                 s.schema_level, {schema_cols},
-                lm.version_keys
+                lm.version_keys, lm.branch_params, lm.excluded
             FROM "{table_name}" t
             LEFT JOIN latest_meta lm ON t.record_id = lm.record_id AND lm.rn = 1
             LEFT JOIN _schema s ON lm.schema_id = s.schema_id
@@ -555,20 +581,24 @@ class DatabaseManager:
         lineage_hash: str | None,
         schema_version: int,
         user_id: str | None,
+        branch_params: dict | None = None,
     ) -> None:
         """Insert a new audit row into _record_metadata. Always inserts (audit trail)."""
         vk_json = json.dumps(version_keys or {}, sort_keys=True)
+        bp_json = json.dumps(branch_params or {}, sort_keys=True)
         self._duck._execute(
             """
             INSERT INTO _record_metadata (
                 record_id, timestamp, variable_name, schema_id,
-                version_keys, content_hash, lineage_hash, schema_version, user_id
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                version_keys, content_hash, lineage_hash, schema_version, user_id,
+                branch_params
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT (record_id, timestamp) DO NOTHING
             """,
             [
                 record_id, timestamp, variable_name, schema_id,
                 vk_json, content_hash, lineage_hash, schema_version, user_id,
+                bp_json,
             ],
         )
 
@@ -989,6 +1019,8 @@ class DatabaseManager:
         record_id: str | None = None,
         nested_metadata: dict | None = None,
         version_id: str = "all",
+        branch_params_filter: dict | None = None,
+        include_excluded: bool = False,
     ) -> pd.DataFrame:
         """
         Query _record_metadata to find matching records.
@@ -1002,6 +1034,9 @@ class DatabaseManager:
         - "all" (default): no version filtering (return every version)
         - "latest": only the latest row per (variable_name, schema_id, version_keys)
 
+        branch_params_filter: optional dict of branch_params key/value filters
+        include_excluded: if False (default), skip records with excluded=TRUE
+
         Schema key values and version key values may be lists, interpreted as
         "match any" (SQL IN / Python in).
 
@@ -1012,12 +1047,14 @@ class DatabaseManager:
             f's."{col}"' for col in self.dataset_schema_keys
         )
 
+        excluded_clause = "" if include_excluded else " AND COALESCE(rm.excluded, FALSE) = FALSE"
+
         if record_id is not None:
             sql = (
                 f"SELECT rm.*, {schema_col_select} "
                 f"FROM _record_metadata rm "
                 f"LEFT JOIN _schema s ON rm.schema_id = s.schema_id "
-                f"WHERE rm.record_id = ? AND rm.variable_name = ?"
+                f"WHERE rm.record_id = ? AND rm.variable_name = ?{excluded_clause}"
             )
             return self._duck._fetchdf(sql, [record_id, type_name])
 
@@ -1027,6 +1064,10 @@ class DatabaseManager:
 
         conditions = ["rm.variable_name = ?"]
         params: list[Any] = [type_name]
+
+        # Exclude excluded variants by default
+        if not include_excluded:
+            conditions.append("COALESCE(rm.excluded, FALSE) = FALSE")
 
         # Filter schema keys via _schema columns in SQL (lists → IN)
         for key, value in schema_keys.items():
@@ -1078,6 +1119,15 @@ class DatabaseManager:
                         if vk is not None and isinstance(vk, str) else False
                     )
                 df = df[mask]
+
+        # Filter by branch_params via Python-side matching
+        if branch_params_filter and len(df) > 0:
+            for key, value in branch_params_filter.items():
+                df = df[df["branch_params"].apply(
+                    lambda bp, k=key, v=value: _match_branch_param(
+                        json.loads(bp or "{}") if isinstance(bp, str) else {}, k, v
+                    )
+                )]
 
         return df
 
@@ -1254,6 +1304,11 @@ class DatabaseManager:
         instance.metadata = flat_metadata
         instance.content_hash = content_hash
         instance.lineage_hash = lineage_hash
+        try:
+            bp_raw = row["branch_params"] if "branch_params" in row.index else None
+            instance.branch_params = json.loads(bp_raw or "{}") if isinstance(bp_raw, str) else {}
+        except Exception:
+            instance.branch_params = {}
 
         return instance
 
@@ -1391,6 +1446,16 @@ class DatabaseManager:
         type_name = variable.__class__.__name__
         user_id = get_user_id()
 
+        # Extract __branch_params before splitting metadata (it gets its own column)
+        branch_params = None
+        if isinstance(metadata, dict) and "__branch_params" in metadata:
+            bp_raw = metadata["__branch_params"]
+            try:
+                branch_params = json.loads(bp_raw) if isinstance(bp_raw, str) else (bp_raw or {})
+            except (json.JSONDecodeError, TypeError):
+                branch_params = {}
+            metadata = {k: v for k, v in metadata.items() if k != "__branch_params"}
+
         # Split metadata
         nested_metadata = self._split_metadata(metadata)
 
@@ -1469,6 +1534,7 @@ class DatabaseManager:
                 lineage_hash=lineage_hash,
                 schema_version=variable.schema_version,
                 user_id=user_id,
+                branch_params=branch_params,
             )
 
             # Save lineage if provided
@@ -1604,8 +1670,10 @@ class DatabaseManager:
 
         try:
             if version != "latest" and version is not None:
-                # Load by specific record_id
-                records = self._find_record(variable_class.__name__, record_id=version)
+                # Load by specific record_id — always include excluded for direct lookup
+                records = self._find_record(
+                    variable_class.__name__, record_id=version, include_excluded=True,
+                )
                 if len(records) == 0:
                     raise NotFoundError(f"No data found with record_id '{version}'")
             elif where is not None:
@@ -1641,6 +1709,7 @@ class DatabaseManager:
         metadata: dict,
         version_id: str = "all",
         where=None,
+        branch_params_filter: dict | None = None,
     ):
         """
         Load all variables matching the given metadata as a generator.
@@ -1654,6 +1723,7 @@ class DatabaseManager:
             where: Optional Filter for restricting which records are loaded.
                 First tries version_keys filtering (__where), then falls back
                 to schema-level filtering for backward compatibility.
+            branch_params_filter: Optional dict of branch_params key/value filters.
 
         Yields:
             BaseVariable instances matching the metadata
@@ -1673,7 +1743,9 @@ class DatabaseManager:
             nested_metadata = self._split_metadata(metadata)
             try:
                 records = self._find_record(
-                    variable_class.__name__, nested_metadata=nested_metadata, version_id=version_id
+                    variable_class.__name__, nested_metadata=nested_metadata,
+                    version_id=version_id,
+                    branch_params_filter=branch_params_filter,
                 )
             except NotFoundError:
                 return  # No data
@@ -1798,12 +1870,15 @@ class DatabaseManager:
             instance.metadata = flat_metadata
             instance.content_hash = content_hash
             instance.lineage_hash = lineage_hash
+            bp_raw = getattr(row, "branch_params", None)
+            instance.branch_params = json.loads(bp_raw or "{}") if isinstance(bp_raw, str) else {}
 
             yield instance
 
     def list_versions(
         self,
         variable_class: Type[BaseVariable],
+        include_excluded: bool = False,
         **metadata,
     ) -> list[dict]:
         """
@@ -1811,32 +1886,127 @@ class DatabaseManager:
 
         Args:
             variable_class: The type to query
-            **metadata: Schema metadata to match
+            include_excluded: If True, include excluded variants in results.
+            **metadata: Schema metadata to match; non-schema keys are treated
+                as branch_params filters.
 
         Returns:
-            List of dicts with record_id, schema, version, created_at
+            List of dicts with record_id, schema, branch_params, timestamp
+            (plus "excluded" bool when include_excluded=True).
         """
-        table_name = self._ensure_registered(variable_class, auto_register=True)
-        nested_metadata = self._split_metadata(metadata)
+        self._ensure_registered(variable_class, auto_register=True)
+
+        schema_keys_set = set(self.dataset_schema_keys)
+        schema_metadata = {k: v for k, v in metadata.items() if k in schema_keys_set}
+        branch_params_filter = {k: v for k, v in metadata.items() if k not in schema_keys_set} or None
+
+        nested_metadata = self._split_metadata(schema_metadata)
 
         try:
-            records = self._find_record(variable_class.__name__, nested_metadata=nested_metadata, version_id="all")
+            records = self._find_record(
+                variable_class.__name__,
+                nested_metadata=nested_metadata,
+                version_id="all",
+                branch_params_filter=branch_params_filter,
+                include_excluded=include_excluded,
+            )
         except Exception:
             return []
 
         results = []
         for _, row in records.iterrows():
             _, nested = self._reconstruct_metadata_from_row(row)
-            results.append({
+            bp_raw = row.get("branch_params") if hasattr(row, 'get') else row["branch_params"]
+            bp = json.loads(bp_raw or "{}") if isinstance(bp_raw, str) else {}
+            entry = {
                 "record_id": row["record_id"],
                 "schema": nested.get("schema", {}),
-                "version": nested.get("version", {}),
+                "branch_params": bp,
                 "timestamp": row["timestamp"],
-            })
+            }
+            if include_excluded:
+                exc = row.get("excluded") if hasattr(row, 'get') else row["excluded"]
+                entry["excluded"] = bool(exc) if exc is not None else False
+            results.append(entry)
 
         # Sort by timestamp descending
         results.sort(key=lambda x: x["timestamp"], reverse=True)
         return results
+
+    def _resolve_record_id(
+        self,
+        record_id_or_type: "str | Type[BaseVariable]",
+        **kwargs,
+    ) -> str:
+        """Resolve a record_id string or (variable_class, **kwargs) to a single record_id.
+
+        Raises AmbiguousVersionError if multiple records match, NotFoundError if none.
+        Always searches including excluded records.
+        """
+        if isinstance(record_id_or_type, str):
+            return record_id_or_type
+
+        variable_class = record_id_or_type
+        schema_keys_set = set(self.dataset_schema_keys)
+        schema_metadata = {k: v for k, v in kwargs.items() if k in schema_keys_set}
+        branch_params_filter = {k: v for k, v in kwargs.items() if k not in schema_keys_set} or None
+
+        nested_metadata = self._split_metadata(schema_metadata)
+        records = self._find_record(
+            variable_class.__name__,
+            nested_metadata=nested_metadata,
+            version_id="all",
+            branch_params_filter=branch_params_filter,
+            include_excluded=True,
+        )
+
+        if len(records) == 0:
+            raise NotFoundError(
+                f"No {variable_class.__name__} found matching: {kwargs}"
+            )
+        if len(records) > 1:
+            ids = records["record_id"].tolist()
+            raise AmbiguousVersionError(
+                f"{len(records)} records match for {variable_class.__name__} "
+                f"with {kwargs}. "
+                f"Pass a record_id directly or narrow with more branch parameters. "
+                f"Matching record_ids: {ids}"
+            )
+        return records.iloc[0]["record_id"]
+
+    def exclude_variant(
+        self,
+        record_id_or_type: "str | Type[BaseVariable]",
+        **kwargs,
+    ) -> None:
+        """Mark a variant as excluded from automatic inclusion in for_each and load().
+
+        Usage:
+            db.exclude_variant("abc123")                                  # by record_id
+            db.exclude_variant(DetectedSpikes, subject="S01", low_hz=20)  # by params
+        """
+        record_id = self._resolve_record_id(record_id_or_type, **kwargs)
+        self._duck._execute(
+            "UPDATE _record_metadata SET excluded = TRUE WHERE record_id = ?",
+            [record_id],
+        )
+
+    def include_variant(
+        self,
+        record_id_or_type: "str | Type[BaseVariable]",
+        **kwargs,
+    ) -> None:
+        """Re-include a previously excluded variant.
+
+        Usage:
+            db.include_variant("abc123")
+            db.include_variant(DetectedSpikes, subject="S01", low_hz=20)
+        """
+        record_id = self._resolve_record_id(record_id_or_type, **kwargs)
+        self._duck._execute(
+            "UPDATE _record_metadata SET excluded = FALSE WHERE record_id = ?",
+            [record_id],
+        )
 
     def get_provenance(
         self,
@@ -1944,6 +2114,73 @@ class DatabaseManager:
                     "output_type": target,
                     "input_types": list(input_types),
                 })
+        return results
+
+    def list_pipeline_variants(
+        self,
+        output_type: str | None = None,
+    ) -> list[dict]:
+        """
+        List all distinct pipeline step variants recorded in the database.
+
+        Each entry represents a unique (function, constants, output_type)
+        combination — a "branch" of the pipeline. Two for_each runs on the
+        same function with different constants produce two separate entries.
+
+        Uses version_keys metadata stored by for_each; does not require the
+        scilineage tracking system.
+
+        Args:
+            output_type: Optional variable type name to filter results
+                         (e.g. "Filtered"). If None, all types are returned.
+
+        Returns:
+            List of dicts with keys:
+                function_name (str),
+                output_type   (str),
+                input_types   (dict: param_name → type_name),
+                constants     (dict: param_name → value),
+                record_count  (int: distinct records for this variant)
+        """
+        if output_type is not None:
+            rows = self._duck._fetchall(
+                "SELECT variable_name, version_keys, COUNT(DISTINCT record_id) "
+                "FROM _record_metadata "
+                "WHERE variable_name = ? "
+                "GROUP BY variable_name, version_keys",
+                [output_type],
+            )
+        else:
+            rows = self._duck._fetchall(
+                "SELECT variable_name, version_keys, COUNT(DISTINCT record_id) "
+                "FROM _record_metadata "
+                "GROUP BY variable_name, version_keys"
+            )
+
+        results = []
+        for variable_name, version_keys_json, count in rows:
+            vk = json.loads(version_keys_json or "{}") if version_keys_json else {}
+            fn_name = vk.get("__fn")
+            if not fn_name:
+                continue  # Raw .save() record — no function, skip
+
+            inputs_raw = vk.get("__inputs", "{}")
+            constants_raw = vk.get("__constants", "{}")
+            input_types = (
+                json.loads(inputs_raw) if isinstance(inputs_raw, str) else (inputs_raw or {})
+            )
+            constants = (
+                json.loads(constants_raw) if isinstance(constants_raw, str) else (constants_raw or {})
+            )
+
+            results.append({
+                "function_name": fn_name,
+                "output_type": variable_name,
+                "input_types": input_types,
+                "constants": constants,
+                "record_count": count,
+            })
+
         return results
 
     def has_lineage(self, record_id: str) -> bool:
@@ -2064,6 +2301,17 @@ class DatabaseManager:
             List of tuples of distinct non-null value combinations (strings)
         """
         return self._duck.distinct_schema_combinations(keys)
+
+    def list_variables(self) -> "pd.DataFrame":
+        """Return all variable types stored in this database.
+
+        Queries the ``_variables`` table and returns a DataFrame with columns:
+        ``variable_name``, ``schema_level``, ``created_at``, ``description``.
+
+        Useful for discovering what variable types exist in a database file
+        without needing the original Python class definitions.
+        """
+        return self._duck.list_variables()
 
     # -------------------------------------------------------------------------
     # Variable Groups

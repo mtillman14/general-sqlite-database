@@ -24,6 +24,8 @@ Example:
 
 from .database import configure_database, get_database, get_user_id
 from .exceptions import (
+    AmbiguousParamError,
+    AmbiguousVersionError,
     DatabaseNotConfiguredError,
     NotFoundError,
     NotRegisteredError,
@@ -76,4 +78,6 @@ __all__ = [
     "NotFoundError",
     "DatabaseNotConfiguredError",
     "ReservedMetadataKeyError",
+    "AmbiguousVersionError",
+    "AmbiguousParamError",
 ]
