@@ -700,7 +700,7 @@ class DatabaseManager:
             "INSERT INTO _variables (variable_name, schema_level, dtype, description) "
             "VALUES (?, ?, ?, ?) "
             "ON CONFLICT (variable_name) DO UPDATE SET dtype = excluded.dtype",
-            [table_name, effective_level, dtype_json, ""],
+            [variable_class.__name__, effective_level, dtype_json, ""],
         )
 
         return schema_id
@@ -784,7 +784,7 @@ class DatabaseManager:
             "INSERT INTO _variables (variable_name, schema_level, dtype, description) "
             "VALUES (?, ?, ?, ?) "
             "ON CONFLICT (variable_name) DO UPDATE SET dtype = excluded.dtype",
-            [table_name, effective_level, json.dumps(dtype_meta), ""],
+            [variable_class.__name__, effective_level, json.dumps(dtype_meta), ""],
         )
 
         return schema_id
@@ -985,7 +985,7 @@ class DatabaseManager:
                 "INSERT INTO _variables (variable_name, schema_level, dtype, description) "
                 "VALUES (?, ?, ?, ?) "
                 "ON CONFLICT (variable_name) DO UPDATE SET dtype = excluded.dtype",
-                [table_name, effective_level, json.dumps(dtype_meta), ""],
+                [type_name, effective_level, json.dumps(dtype_meta), ""],
             )
 
             self._duck._commit()
@@ -1127,10 +1127,20 @@ class DatabaseManager:
         if branch_params_filter and len(df) > 0:
             for key, value in branch_params_filter.items():
                 def _match_row(row, k=key, v=value):
+                    bp = json.loads(row["branch_params"] or "{}") if row.get("branch_params") else {}
+                    # Check branch_params ambiguity BEFORE version_keys shortcut:
+                    # if the bare key is ambiguous across multiple pipeline steps,
+                    # raise AmbiguousParamError even if the key also appears in version_keys.
+                    if k not in bp:
+                        suffix = f".{k}"
+                        hits = [bk for bk in bp if bk.endswith(suffix)]
+                        if len(hits) > 1:
+                            raise AmbiguousParamError(
+                                f"'{k}' matches multiple branch params: {hits}"
+                            )
                     vk = json.loads(row["version_keys"] or "{}") if row.get("version_keys") else {}
                     if k in vk:
                         return vk[k] == v
-                    bp = json.loads(row["branch_params"] or "{}") if row.get("branch_params") else {}
                     return _match_branch_param(bp, k, v)
                 df = df[df.apply(_match_row, axis=1)]
 
@@ -1235,12 +1245,12 @@ class DatabaseManager:
         # Get dtype from _variables to determine deserialization path
         dtype_rows = self._duck._fetchall(
             "SELECT dtype FROM _variables WHERE variable_name = ?",
-            [table_name],
+            [type_name],
         )
 
         if not dtype_rows:
             raise NotFoundError(
-                f"No dtype found for {table_name} in _variables"
+                f"No dtype found for {type_name} in _variables"
             )
 
         dtype_meta = json.loads(dtype_rows[0][0])
@@ -1776,7 +1786,7 @@ class DatabaseManager:
         # 1. Get dtype from _variables (one row per variable)
         dtype_rows = self._duck._fetchall(
             "SELECT dtype FROM _variables WHERE variable_name = ?",
-            [table_name],
+            [variable_class.__name__],
         )
         if not dtype_rows:
             return

@@ -703,3 +703,268 @@ class TestGetUpstreamProvenance:
         chain = db.get_upstream_provenance(f.record_id)
         assert len(chain) == 2
         assert chain[1]["variable_type"] == "RawSignal"
+
+    def test_invalid_record_id_returns_empty_list(self, db):
+        chain = db.get_upstream_provenance("nonexistent-record-id-xyz")
+        assert chain == []
+
+    def test_multi_input_provenance_both_inputs_linked(self, db):
+        """Function taking two inputs: both appear in the inputs field."""
+        RawSignal.save(np.array([1.0, 2.0, 3.0]), subject="S01", session="1")
+        for_each(bandpass, {"signal": RawSignal, "low_hz": 20}, [Filtered],
+                 subject=["S01"], session=["1"])
+        # Spikes uses Filtered as a sole input
+        for_each(detect_spikes, {"signal": Filtered, "threshold": 0.5}, [Spikes],
+                 subject=["S01"], session=["1"])
+
+        s = Spikes.load(subject="S01", session="1")
+        chain = db.get_upstream_provenance(s.record_id)
+
+        spikes_node = chain[0]
+        assert len(spikes_node["inputs"]) == 1
+        assert spikes_node["inputs"][0]["variable_type"] == "Filtered"
+        assert spikes_node["inputs"][0]["param_name"] == "signal"
+
+
+# ---------------------------------------------------------------------------
+# 8. list_variables
+# ---------------------------------------------------------------------------
+
+class TestListVariables:
+    """db.list_variables() returns a DataFrame of stored variable types."""
+
+    def test_empty_db_returns_empty_dataframe(self, db):
+        result = db.list_variables()
+        assert len(result) == 0
+
+    def test_after_save_type_appears(self, db):
+        RawSignal.save(np.array([1.0]), subject="S01", session="1")
+        result = db.list_variables()
+        names = set(result["variable_name"].tolist())
+        assert "RawSignal" in names
+
+    def test_multiple_types_all_appear(self, db):
+        RawSignal.save(np.array([1.0]), subject="S01", session="1")
+        for_each(bandpass, {"signal": RawSignal, "low_hz": 20}, [Filtered],
+                 subject=["S01"], session=["1"])
+        result = db.list_variables()
+        names = set(result["variable_name"].tolist())
+        assert "RawSignal" in names
+        assert "Filtered" in names
+
+    def test_each_type_appears_once(self, db):
+        """Even with multiple records, each type appears only once."""
+        for subj in ["S01", "S02", "S03"]:
+            RawSignal.save(np.array([1.0]), subject=subj, session="1")
+        result = db.list_variables()
+        raw_rows = result[result["variable_name"] == "RawSignal"]
+        assert len(raw_rows) == 1
+
+    def test_result_has_expected_columns(self, db):
+        RawSignal.save(np.array([1.0]), subject="S01", session="1")
+        result = db.list_variables()
+        assert "variable_name" in result.columns
+
+
+# ---------------------------------------------------------------------------
+# 9. Additional exclusion edge cases
+# ---------------------------------------------------------------------------
+
+class TestVariantExclusionEdgeCases:
+    """Edge cases for exclude_variant / include_variant."""
+
+    @pytest.fixture(autouse=True)
+    def _two_variants_two_subjects(self, db):
+        for subj in ["S01", "S02"]:
+            RawSignal.save(np.array([1.0, 2.0]), subject=subj, session="1")
+        for low_hz in [20, 30]:
+            for_each(bandpass, {"signal": RawSignal, "low_hz": low_hz}, [Filtered],
+                     subject=["S01", "S02"], session=["1"])
+
+    def test_exclude_by_record_id_string(self, db):
+        """exclude_variant accepts a raw record_id string."""
+        versions = db.list_versions(Filtered, subject="S01", session="1")
+        rid = versions[0]["record_id"]
+        db.exclude_variant(rid)
+
+        remaining = db.list_versions(Filtered, subject="S01", session="1")
+        assert all(v["record_id"] != rid for v in remaining)
+
+    def test_include_variant_by_record_id_string(self, db):
+        """include_variant accepts a raw record_id string."""
+        db.exclude_variant(Filtered, subject="S01", session="1", low_hz=20)
+        versions_before = db.list_versions(Filtered, subject="S01", session="1")
+        assert len(versions_before) == 1
+
+        all_versions = db.list_versions(Filtered, subject="S01", session="1",
+                                        include_excluded=True)
+        excluded_rid = next(v["record_id"] for v in all_versions if v.get("excluded"))
+        db.include_variant(excluded_rid)
+
+        versions_after = db.list_versions(Filtered, subject="S01", session="1")
+        assert len(versions_after) == 2
+
+    def test_exclude_at_one_schema_location_does_not_affect_another(self, db):
+        """Excluding a variant for S01 leaves S02's variants intact."""
+        db.exclude_variant(Filtered, subject="S01", session="1", low_hz=20)
+
+        s02_versions = db.list_versions(Filtered, subject="S02", session="1")
+        assert len(s02_versions) == 2
+
+    def test_exclude_idempotent(self, db):
+        """Calling exclude_variant twice on the same record is harmless."""
+        db.exclude_variant(Filtered, subject="S01", session="1", low_hz=20)
+        db.exclude_variant(Filtered, subject="S01", session="1", low_hz=20)
+
+        remaining = db.list_versions(Filtered, subject="S01", session="1")
+        assert len(remaining) == 1
+
+    def test_include_already_included_is_idempotent(self, db):
+        """include_variant on a non-excluded record is a no-op."""
+        db.include_variant(Filtered, subject="S01", session="1", low_hz=20)
+        versions = db.list_versions(Filtered, subject="S01", session="1")
+        assert len(versions) == 2
+
+
+# ---------------------------------------------------------------------------
+# 10. Additional list_versions edge cases
+# ---------------------------------------------------------------------------
+
+class TestListVersionsEdgeCases:
+    """Additional list_versions behaviours not covered in the main suite."""
+
+    def test_list_versions_with_namespaced_key_filter(self, db):
+        """list_versions can filter by fully-namespaced branch_params key."""
+        RawSignal.save(np.array([1.0, 2.0]), subject="S01", session="1")
+        for low_hz in [20, 30]:
+            for_each(bandpass, {"signal": RawSignal, "low_hz": low_hz}, [Filtered],
+                     subject=["S01"], session=["1"])
+
+        results = db.list_versions(Filtered, subject="S01", session="1",
+                                   **{"bandpass.low_hz": 20})
+        assert len(results) == 1
+        assert results[0]["branch_params"]["bandpass.low_hz"] == 20
+
+    def test_list_versions_no_records_returns_empty_list(self, db):
+        result = db.list_versions(Filtered, subject="S99", session="1")
+        assert result == []
+
+    def test_list_versions_entries_have_timestamp(self, db):
+        RawSignal.save(np.array([1.0]), subject="S01", session="1")
+        for_each(bandpass, {"signal": RawSignal, "low_hz": 20}, [Filtered],
+                 subject=["S01"], session=["1"])
+        versions = db.list_versions(Filtered, subject="S01", session="1")
+        assert all("timestamp" in v for v in versions)
+
+    def test_list_versions_include_excluded_shows_excluded_flag(self, db):
+        RawSignal.save(np.array([1.0, 2.0]), subject="S01", session="1")
+        for low_hz in [20, 30]:
+            for_each(bandpass, {"signal": RawSignal, "low_hz": low_hz}, [Filtered],
+                     subject=["S01"], session=["1"])
+        db.exclude_variant(Filtered, subject="S01", session="1", low_hz=20)
+
+        all_v = db.list_versions(Filtered, subject="S01", session="1",
+                                 include_excluded=True)
+        excluded = [v for v in all_v if v.get("excluded")]
+        active = [v for v in all_v if not v.get("excluded")]
+        assert len(excluded) == 1
+        assert len(active) == 1
+
+
+# ---------------------------------------------------------------------------
+# 11. String and boolean constants in branch_params
+# ---------------------------------------------------------------------------
+
+class TestBranchParamsConstantTypes:
+    """branch_params correctly stores and retrieves non-numeric constant types."""
+
+    def test_string_constant_stored_in_branch_params(self, db):
+        """String-valued constants appear in branch_params."""
+        def process(signal, method):
+            return signal
+
+        RawSignal.save(np.array([1.0, 2.0]), subject="S01", session="1")
+        for_each(process, {"signal": RawSignal, "method": "fft"}, [Filtered],
+                 subject=["S01"], session=["1"])
+
+        f = Filtered.load(subject="S01", session="1")
+        assert f.branch_params.get("process.method") == "fft"
+
+    def test_two_string_constants_create_distinct_variants(self, db):
+        """Two different string constants produce two distinct records."""
+        def process(signal, method):
+            return signal
+
+        RawSignal.save(np.array([1.0, 2.0]), subject="S01", session="1")
+        for method in ["fft", "wavelet"]:
+            for_each(process, {"signal": RawSignal, "method": method}, [Filtered],
+                     subject=["S01"], session=["1"])
+
+        versions = db.list_versions(Filtered, subject="S01", session="1")
+        assert len(versions) == 2
+        methods = {v["branch_params"]["process.method"] for v in versions}
+        assert methods == {"fft", "wavelet"}
+
+    def test_integer_constant_type_preserved_in_branch_params(self, db):
+        """Integer branch_params values come back as numbers, not strings."""
+        RawSignal.save(np.array([1.0, 2.0]), subject="S01", session="1")
+        for_each(bandpass, {"signal": RawSignal, "low_hz": 20}, [Filtered],
+                 subject=["S01"], session=["1"])
+
+        f = Filtered.load(subject="S01", session="1")
+        val = f.branch_params["bandpass.low_hz"]
+        assert val == 20
+        assert isinstance(val, (int, float))
+
+
+# ---------------------------------------------------------------------------
+# 12. Dry run does not persist records
+# ---------------------------------------------------------------------------
+
+class TestDryRun:
+    """for_each with dry_run=True displays plans but does not save anything."""
+
+    def test_dry_run_does_not_save_results(self, db):
+        RawSignal.save(np.array([1.0, 2.0, 3.0]), subject="S01", session="1")
+
+        for_each(bandpass, {"signal": RawSignal, "low_hz": 20}, [Filtered],
+                 subject=["S01"], session=["1"], dry_run=True)
+
+        versions = db.list_versions(Filtered, subject="S01", session="1")
+        assert len(versions) == 0
+
+    def test_dry_run_returns_none(self, db):
+        RawSignal.save(np.array([1.0, 2.0]), subject="S01", session="1")
+
+        result = for_each(bandpass, {"signal": RawSignal, "low_hz": 20}, [Filtered],
+                          subject=["S01"], session=["1"], dry_run=True)
+
+        assert result is None
+
+
+# ---------------------------------------------------------------------------
+# 13. Unambiguous load (single variant) does not raise
+# ---------------------------------------------------------------------------
+
+class TestUnambiguousLoad:
+    """load() works normally when exactly one variant exists."""
+
+    def test_load_single_variant_no_branch_params_needed(self, db):
+        RawSignal.save(np.array([1.0, 2.0]), subject="S01", session="1")
+        for_each(bandpass, {"signal": RawSignal, "low_hz": 20}, [Filtered],
+                 subject=["S01"], session=["1"])
+
+        f = Filtered.load(subject="S01", session="1")
+        assert f is not None
+        assert f.branch_params["bandpass.low_hz"] == 20
+
+    def test_load_unambiguous_after_exclusion(self, db):
+        """Excluding one of two variants makes load() unambiguous."""
+        RawSignal.save(np.array([1.0, 2.0]), subject="S01", session="1")
+        for low_hz in [20, 30]:
+            for_each(bandpass, {"signal": RawSignal, "low_hz": low_hz}, [Filtered],
+                     subject=["S01"], session=["1"])
+
+        db.exclude_variant(Filtered, subject="S01", session="1", low_hz=30)
+        f = Filtered.load(subject="S01", session="1")
+        assert f.branch_params["bandpass.low_hz"] == 20
