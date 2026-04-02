@@ -8,6 +8,7 @@ import pytest
 # Add all relevant packages to path
 _here = Path(__file__).parent.parent
 _root = _here.parent
+sys.path.insert(0, str(Path(__file__).parent))  # make conftest importable
 sys.path.insert(0, str(_here / "src"))
 sys.path.insert(0, str(_root / "scidb" / "src"))
 sys.path.insert(0, str(_root / "scilineage" / "src"))

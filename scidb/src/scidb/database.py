@@ -1120,14 +1120,19 @@ class DatabaseManager:
                     )
                 df = df[mask]
 
-        # Filter by branch_params via Python-side matching
+        # Filter by branch_params_filter via Python-side matching.
+        # Keys are checked against version_keys first (direct saves store
+        # non-schema kwargs there), then fall back to branch_params suffix
+        # matching (for_each saves store pipeline params there).
         if branch_params_filter and len(df) > 0:
             for key, value in branch_params_filter.items():
-                df = df[df["branch_params"].apply(
-                    lambda bp, k=key, v=value: _match_branch_param(
-                        json.loads(bp or "{}") if isinstance(bp, str) else {}, k, v
-                    )
-                )]
+                def _match_row(row, k=key, v=value):
+                    vk = json.loads(row["version_keys"] or "{}") if row.get("version_keys") else {}
+                    if k in vk:
+                        return vk[k] == v
+                    bp = json.loads(row["branch_params"] or "{}") if row.get("branch_params") else {}
+                    return _match_branch_param(bp, k, v)
+                df = df[df.apply(_match_row, axis=1)]
 
         return df
 
@@ -1397,6 +1402,19 @@ class DatabaseManager:
             The record_id of the saved data
         """
         lineage_hash = None
+        lineage_dict = None
+
+        try:
+            from scilineage.core import LineageFcnResult
+            from scilineage.lineage import extract_lineage
+            if isinstance(data, LineageFcnResult):
+                # Use the invocation hash (not the result hash) so that
+                # find_by_lineage(invocation) can look it up via compute_lineage_hash()
+                lineage_hash = data.invoked.hash
+                lineage_dict = extract_lineage(data).to_dict()
+                data = data.data
+        except ImportError:
+            pass
 
         if isinstance(data, BaseVariable):
             raw_data = data.data
@@ -1407,7 +1425,7 @@ class DatabaseManager:
         instance = variable_class(raw_data)
 
         record_id = self.save(
-            instance, metadata, lineage_hash=lineage_hash, index=index,
+            instance, metadata, lineage=lineage_dict, lineage_hash=lineage_hash, index=index,
         )
 
         instance.record_id = record_id
@@ -2142,23 +2160,23 @@ class DatabaseManager:
                 constants     (dict: param_name → value),
                 record_count  (int: distinct records for this variant)
         """
+        sql = "SELECT variable_name, version_keys, record_id FROM _record_metadata"
+        params: list = []
         if output_type is not None:
-            rows = self._duck._fetchall(
-                "SELECT variable_name, version_keys, COUNT(DISTINCT record_id) "
-                "FROM _record_metadata "
-                "WHERE variable_name = ? "
-                "GROUP BY variable_name, version_keys",
-                [output_type],
-            )
-        else:
-            rows = self._duck._fetchall(
-                "SELECT variable_name, version_keys, COUNT(DISTINCT record_id) "
-                "FROM _record_metadata "
-                "GROUP BY variable_name, version_keys"
-            )
+            sql += " WHERE variable_name = ?"
+            params = [output_type]
 
-        results = []
-        for variable_name, version_keys_json, count in rows:
+        rows = self._duck._fetchall(sql, params)
+
+        # Group by (variable_name, version_keys_without___upstream) in Python.
+        # __upstream encodes which upstream variant was used (for record_id uniqueness)
+        # but should not split pipeline-level grouping — two for_each calls with the
+        # same (fn, constants) are the same pipeline step regardless of upstream.
+        from collections import defaultdict
+        group_record_ids: dict = defaultdict(set)
+        group_info: dict = {}
+
+        for variable_name, version_keys_json, record_id in rows:
             vk = json.loads(version_keys_json or "{}") if version_keys_json else {}
             fn_name = vk.get("__fn")
             if not fn_name:
@@ -2173,15 +2191,145 @@ class DatabaseManager:
                 json.loads(constants_raw) if isinstance(constants_raw, str) else (constants_raw or {})
             )
 
-            results.append({
-                "function_name": fn_name,
-                "output_type": variable_name,
-                "input_types": input_types,
-                "constants": constants,
-                "record_count": count,
-            })
+            # Strip __upstream for pipeline-level grouping
+            vk_for_group = {k: v for k, v in vk.items() if k != "__upstream"}
+            group_key = (variable_name, json.dumps(vk_for_group, sort_keys=True))
+
+            group_record_ids[group_key].add(record_id)
+            if group_key not in group_info:
+                group_info[group_key] = {
+                    "function_name": fn_name,
+                    "output_type": variable_name,
+                    "input_types": input_types,
+                    "constants": constants,
+                }
+
+        results = []
+        for group_key, record_ids in group_record_ids.items():
+            info = group_info[group_key]
+            results.append({**info, "record_count": len(record_ids)})
 
         return results
+
+    def get_upstream_provenance(
+        self,
+        record_id: str,
+        max_depth: int = 20,
+    ) -> list[dict]:
+        """
+        Traverse the full upstream provenance chain for a record.
+
+        Walks backwards through the pipeline: for each record, inspects its
+        version_keys (__fn, __inputs) to determine what variable types it was
+        derived from, then finds those upstream records at the same schema
+        location using branch_params subset matching (the upstream record's
+        branch_params must be a subset of the current record's branch_params).
+
+        Does not require the scilineage tracking system; uses version_keys
+        and branch_params metadata stored by for_each.
+
+        Args:
+            record_id: The record_id to trace backwards from.
+            max_depth: Maximum number of hops to follow (guards against cycles).
+
+        Returns:
+            Flat list of provenance nodes ordered from the queried record
+            outward (BFS order). Each dict has keys:
+                record_id     (str),
+                variable_type (str),
+                schema        (dict),
+                branch_params (dict),
+                function_name (str | None),
+                constants     (dict),
+                depth         (int, 0 = queried record),
+                inputs        (list of {record_id, param_name, variable_type})
+        """
+        schema_col_select = ", ".join(f's."{col}"' for col in self.dataset_schema_keys)
+
+        visited: set = set()
+        result: list = []
+        queue: list = [(record_id, 0)]
+
+        while queue:
+            current_id, depth = queue.pop(0)
+            if current_id in visited or depth > max_depth:
+                continue
+            visited.add(current_id)
+
+            # Fetch this record's metadata
+            rows = self._duck._fetchdf(
+                f"SELECT rm.record_id, rm.variable_name, rm.version_keys, "
+                f"rm.branch_params, rm.schema_id, {schema_col_select} "
+                f"FROM _record_metadata rm "
+                f"LEFT JOIN _schema s ON rm.schema_id = s.schema_id "
+                f"WHERE rm.record_id = ? "
+                f"ORDER BY rm.timestamp DESC LIMIT 1",
+                [current_id],
+            )
+            if rows.empty:
+                continue
+
+            row = rows.iloc[0]
+            vk = json.loads(row["version_keys"] or "{}") if row.get("version_keys") else {}
+            bp = json.loads(row["branch_params"] or "{}") if row.get("branch_params") else {}
+            fn_name = vk.get("__fn")
+            input_types: dict = json.loads(vk["__inputs"]) if "__inputs" in vk else {}
+            constants: dict = json.loads(vk["__constants"]) if "__constants" in vk else {}
+
+            schema = {}
+            for k in self.dataset_schema_keys:
+                if k in row.index:
+                    val = row[k]
+                    if val is not None and not (isinstance(val, float) and pd.isna(val)):
+                        schema[k] = _from_schema_str(val)
+
+            schema_id = int(row["schema_id"])
+
+            # For each input type, find the upstream record at the same schema
+            # location whose branch_params is a subset of this record's branch_params.
+            input_nodes: list = []
+            for param_name, type_name in input_types.items():
+                candidates = self._duck._fetchdf(
+                    "SELECT DISTINCT rm.record_id, rm.branch_params "
+                    "FROM _record_metadata rm "
+                    "WHERE rm.variable_name = ? AND rm.schema_id = ? "
+                    "AND COALESCE(rm.excluded, FALSE) = FALSE",
+                    [type_name, schema_id],
+                )
+
+                matched_rid = None
+                best_match_size = -1
+                for _, cand in candidates.iterrows():
+                    cand_bp = json.loads(cand["branch_params"] or "{}") if cand["branch_params"] else {}
+                    # cand_bp must be a subset of bp (every key in cand_bp matches bp)
+                    if all(bp.get(k) == v for k, v in cand_bp.items()):
+                        # Prefer the most specific match (most keys)
+                        if len(cand_bp) > best_match_size:
+                            matched_rid = cand["record_id"]
+                            best_match_size = len(cand_bp)
+
+                if matched_rid:
+                    input_nodes.append({
+                        "record_id": matched_rid,
+                        "param_name": param_name,
+                        "variable_type": type_name,
+                    })
+
+            result.append({
+                "record_id": current_id,
+                "variable_type": row["variable_name"],
+                "schema": schema,
+                "branch_params": bp,
+                "function_name": fn_name,
+                "constants": constants,
+                "depth": depth,
+                "inputs": input_nodes,
+            })
+
+            for inp in input_nodes:
+                queue.append((inp["record_id"], depth + 1))
+
+        return result
 
     def has_lineage(self, record_id: str) -> bool:
         """Check if a variable has lineage information."""
@@ -2272,6 +2420,24 @@ class DatabaseManager:
         if has_generated:
             return [None]
         return None
+
+    def find_by_lineage(self, invocation) -> list | None:
+        """
+        Find output values by a lineage invocation object.
+
+        Computes the lineage hash from the invocation and delegates to
+        find_by_lineage_hash. Accepts any invocation with a
+        compute_lineage_hash() method (e.g. LineageFcnInvocation,
+        MatlabLineageFcnInvocation).
+
+        Args:
+            invocation: An invocation object with compute_lineage_hash()
+
+        Returns:
+            List of output values if found, None otherwise
+        """
+        lineage_hash = invocation.compute_lineage_hash()
+        return self.find_by_lineage_hash(lineage_hash)
 
     def _get_variable_class(self, type_name: str):
         """Get a variable class by name (class name, not table name)."""

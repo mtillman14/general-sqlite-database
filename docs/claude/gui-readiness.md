@@ -67,32 +67,32 @@ Additionally, a `branch_params` column in `_record_metadata` accumulates all bra
 
 ---
 
-### 4. No function or pipeline registry
+### 4. Function/pipeline registry — not needed
 
-There is no `Pipeline` class, no `PipelineStep`, and no mechanism to register or discover analysis functions. A pipeline builder GUI would need:
+A registry would only be necessary for a no-code pipeline builder that reconstructs and replays pipelines without executing Python. If the GUI is a visualization and control layer over an existing Python project, this is unnecessary:
 
-- A way to register functions with metadata (name, description, input parameter names and types, output types)
-- A serializable `PipelineStep` class: function reference + input spec + output spec
-- A `Pipeline` class: an ordered sequence of steps, serializable to JSON/YAML
-- A way to reconstruct and replay a pipeline definition without executing Python code
-
----
-
-### 5. No progress/event callbacks in `for_each()`
-
-`for_each()` currently only prints to stdout. A GUI needs structured progress events to display a progress bar or react to intermediate results.
-
-**Needed:** A callback or event hook API — e.g., `on_start`, `on_iteration(n, total, metadata)`, `on_save(variable_type, metadata)`, `on_error(metadata, exc)`.
+- Function definitions already exist in Python modules
+- `get_pipeline_structure()` provides the graph skeleton
+- `list_pipeline_variants()` provides the branch enumeration
+- `for_each(fn, ...)` is already the execution primitive — the pipeline IS the Python code
 
 ---
 
-### 6. No multi-hop DB-side provenance traversal
+### 5. Progress/event callbacks — not needed
 
-`get_provenance()` gives only one hop: what function produced a given record. `scilineage.get_upstream_lineage()` traverses the full chain but only works for in-memory `LineageFcnResult` objects.
+`for_each()` prints to stdout, which covers the logging use case. Outside a GUI, structured callbacks (on_start, on_iteration, on_save, on_error) offer little over the existing print output.
 
-For saved DB records, there is no recursive "full upstream tree" query against the stored `_lineage` table. A lineage graph visualization requires following edges through multiple saved records.
+For a GUI, the cleanest integration is to run `for_each` in a subprocess or thread and poll `list_versions()` periodically — the DB is the progress channel. This avoids coupling the GUI lifecycle to `for_each` internals.
 
-**Needed:** `db.get_upstream_provenance(record_id)` — recursive traversal of `_lineage` using `output_record_id` → `inputs[].record_id` links, returning a DAG of provenance records.
+---
+
+### 6. No multi-hop DB-side provenance traversal ✓ IMPLEMENTED
+
+`db.get_upstream_provenance(record_id, max_depth=20)` — BFS traversal returning a flat list of provenance nodes from the queried record back to its roots.
+
+Does not use `_lineage` (only populated by scilineage, not `for_each`). Instead uses branch_params subset matching: at each hop, `version_keys.__inputs` gives the input variable types, and the upstream record is found by locating the record of that type at the same schema location whose `branch_params` is a subset of the current record's `branch_params`. The most specific match (most keys) wins when multiple candidates pass the subset check.
+
+Each node: `{record_id, variable_type, schema, branch_params, function_name, constants, depth, inputs}`.
 
 ---
 
@@ -121,7 +121,7 @@ Explicit branch names could be offered as an optional UX enhancement (let the us
 | Branch-aware load API | **Ready** | `load(low_hz=20)`, `AmbiguousVersionError`, `list_versions(branch_params)` |
 | Variant exclusion | **Ready** | `db.exclude_variant()`, `db.include_variant()` |
 | Pipeline branch enumeration | **Ready** | `db.list_pipeline_variants()` |
-| Function/pipeline registry | **Missing** | No `Pipeline`, `PipelineStep`, or function registry |
-| Progress/event callbacks | **Missing** | `for_each()` only prints to stdout |
-| Multi-hop DB provenance traversal | **Missing** | Need `db.get_upstream_provenance(record_id)` |
+| Function/pipeline registry | **N/A** | Not needed if GUI is a layer over Python code |
+| Progress/event callbacks | **N/A** | DB polling via `list_versions()` is sufficient for GUI |
+| Multi-hop DB provenance traversal | **Ready** | `db.get_upstream_provenance(record_id)` |
 | Explicit branch naming | **Optional** | Parameters are self-documenting; names are a UX enhancement |

@@ -331,6 +331,9 @@ def _extract_data(
     data_cols = [c for c in df.columns if c not in schema_keys]
     if len(df) == 1 and len(data_cols) == 1:
         return df[data_cols[0]].iloc[0]
+    if len(data_cols) == 1:
+        # Single data column, multiple rows → 2D numpy column vector
+        return df[data_cols].reset_index(drop=True).values
     if data_cols and set(data_cols) != set(df.columns):
         return df[data_cols].reset_index(drop=True)
     return df

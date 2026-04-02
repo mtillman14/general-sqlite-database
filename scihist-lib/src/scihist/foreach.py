@@ -52,7 +52,10 @@ def for_each(
     # Wrap LineageFcn in a plain callable for scidb.for_each
     fn_plain = _make_plain(fn)
 
-    # Delegate to scidb.for_each with save=False (we handle saves ourselves)
+    # Delegate to scidb.for_each with save=False (we handle saves ourselves).
+    # For generates_file functions, inject combo metadata as kwargs so fn receives
+    # schema keys (subject, session, etc.) as named arguments.
+    _inject_meta = getattr(fn, 'generates_file', False)
     result_tbl = _scidb_for_each(
         fn_plain,
         inputs,
@@ -63,6 +66,7 @@ def for_each(
         db=db,
         distribute=distribute,
         where=where,
+        _inject_combo_metadata=_inject_meta,
         **metadata_iterables,
     )
 

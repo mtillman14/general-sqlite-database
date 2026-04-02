@@ -76,4 +76,14 @@ variants = db.list_pipeline_variants()
 for v in variants:
     print(f"  {v['function_name']} → {v['output_type']}: constants={v['constants']}, n={v['record_count']}")
 
+print("\n=== get_upstream_provenance ===")                                                                                                                            
+s = Spikes.load(subject="S01", session="1", low_hz=20, threshold=0.5)
+chain = db.get_upstream_provenance(s.record_id)                                                                                                                       
+for node in chain:                                        
+    indent = "  " * node["depth"]
+    print(f"{indent}{node['variable_type']} (depth={node['depth']})")
+    print(f"{indent}  branch_params={node['branch_params']}")
+    print(f"{indent}  function_name={node['function_name']}, constants={node['constants']}")
+    print(f"{indent}  inputs={node['inputs']}")
+
 print("\n=== All assertions passed! ===")

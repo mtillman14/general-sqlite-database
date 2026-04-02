@@ -78,11 +78,10 @@ def test_per_combo_df_single_value_extracted():
 
 
 def test_per_combo_df_multiple_rows_passed_as_df():
-    """Multiple matching rows -> sub-DataFrame passed."""
+    """Multiple matching rows -> numpy column vector passed."""
     set_schema(["subject"])
     df = pd.DataFrame({
         "subject": [1, 1, 2, 2],
-        "trial": [1, 2, 1, 2],
         "emg": [1.0, 2.0, 3.0, 4.0],
     })
     received_shapes = []
