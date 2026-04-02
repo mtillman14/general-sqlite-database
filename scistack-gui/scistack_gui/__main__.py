@@ -34,6 +34,13 @@ def main():
         help="Port to serve on (default: 8765)",
     )
     parser.add_argument(
+        "--module", "-m",
+        type=Path,
+        default=None,
+        help="Path to your pipeline .py file. Imports it so the GUI can "
+             "access your functions and variable classes for running pipelines.",
+    )
+    parser.add_argument(
         "--no-browser",
         action="store_true",
         help="Don't open the browser automatically",
@@ -44,6 +51,26 @@ def main():
     if not db_path.exists():
         print(f"Error: database file not found: {db_path}", file=sys.stderr)
         sys.exit(1)
+
+    # Import user module first (populates BaseVariable._all_subclasses and
+    # gives us function objects) — must happen before init_db so that
+    # configure_database() can auto-register the user's variable classes.
+    if args.module:
+        module_path = args.module.resolve()
+        if not module_path.exists():
+            print(f"Error: module not found: {module_path}", file=sys.stderr)
+            sys.exit(1)
+        import importlib.util
+        spec = importlib.util.spec_from_file_location("user_pipeline", module_path)
+        user_mod = importlib.util.module_from_spec(spec)
+        try:
+            spec.loader.exec_module(user_mod)
+        except Exception as e:
+            print(f"Error importing module {module_path}: {e}", file=sys.stderr)
+            sys.exit(1)
+        from scistack_gui import registry
+        registry.register_module(user_mod)
+        print(f"Loaded module: {module_path}")
 
     # Initialise the shared DB connection before uvicorn starts.
     # Import here so that the module-level singleton is set before the app

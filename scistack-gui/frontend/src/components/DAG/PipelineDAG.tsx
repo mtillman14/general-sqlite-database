@@ -22,13 +22,13 @@ import {
   MiniMap,
   type Node,
   type Edge,
-  type NodeChange,
 } from '@xyflow/react'
 import '@xyflow/react/dist/style.css'
 
 import VariableNode from './VariableNode'
 import FunctionNode from './FunctionNode'
 import { applyDagreLayout } from '../../layout'
+import { useWebSocket } from '../../hooks/useWebSocket'
 
 // Tell React Flow which React component to render for each node "type" string.
 // These match the "type" field we set in GET /api/pipeline.
@@ -45,10 +45,20 @@ export default function PipelineDAG() {
     const res = await fetch('/api/pipeline')
     const data = await res.json()
 
+    // Initialise all variants as checked (selected for running).
+    const initialised = data.nodes.map((node: Node) => ({
+      ...node,
+      data: {
+        ...node.data,
+        variants: ((node.data as { variants?: unknown[] }).variants ?? []).map(
+          (v: unknown) => ({ ...(v as object), checked: true })
+        ),
+      },
+    }))
+
     // savedPositions will come from the layout endpoint later (Task 6).
-    // For now pass an empty object so all nodes get dagre positions.
     const savedPositions: Record<string, { x: number; y: number }> = {}
-    const laidOut = applyDagreLayout(data.nodes, data.edges, savedPositions)
+    const laidOut = applyDagreLayout(initialised, data.edges, savedPositions)
     setNodes(laidOut)
     setEdges(data.edges)
   }, [setNodes, setEdges])
@@ -56,6 +66,11 @@ export default function PipelineDAG() {
   useEffect(() => {
     fetchPipeline()
   }, [fetchPipeline])
+
+  // Refresh DAG whenever the backend signals that data changed.
+  useWebSocket(useCallback((msg) => {
+    if (msg.type === 'dag_updated') fetchPipeline()
+  }, [fetchPipeline]))
 
   // When the user stops dragging a node, we'll persist the position.
   // For now just log it — Task 6 will wire this to PUT /api/layout/{id}.

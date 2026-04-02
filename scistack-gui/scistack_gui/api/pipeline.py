@@ -19,6 +19,22 @@ from scistack_gui.db import get_db
 router = APIRouter()
 
 
+def _get_record_counts(db: DatabaseManager, var_types: set[str]) -> dict[str, int]:
+    """
+    Query the row count of each variable type's table directly.
+    Used for nodes that have data but no for_each variants (e.g. raw .save() calls).
+    Returns 0 for types whose table doesn't exist yet.
+    """
+    counts: dict[str, int] = {}
+    for vtype in var_types:
+        try:
+            row = db._duck._fetchall(f'SELECT COUNT(*) FROM "{vtype}"')
+            counts[vtype] = int(row[0][0]) if row else 0
+        except Exception:
+            counts[vtype] = 0
+    return counts
+
+
 def _build_graph(db: DatabaseManager) -> dict:
     """
     Build nodes and edges from list_pipeline_variants() and list_variables().
@@ -49,7 +65,8 @@ def _build_graph(db: DatabaseManager) -> dict:
             fn_inputs[fn].add(in_type)
         fn_outputs[fn].add(out)
 
-        # Record this variant on the output variable node
+        # Record this variant on the output variable node (full constants for now;
+        # we'll trim to distinguishing-only keys below)
         var_variants[out].append({"constants": constants, "record_count": count})
 
     # Add any variables in the DB that weren't in any for_each run
@@ -59,6 +76,24 @@ def _build_graph(db: DatabaseManager) -> dict:
             all_var_types.add(row["variable_name"])
     except Exception:
         pass
+
+    # Get raw record counts for nodes that have no for_each variants
+    record_counts = _get_record_counts(db, all_var_types)
+
+    # Trim variant constants to only the keys that differ across variants of
+    # the same variable type. Constants shared by all variants are noise.
+    for vtype, variant_list in var_variants.items():
+        if len(variant_list) <= 1:
+            continue
+        all_keys = set().union(*(v["constants"].keys() for v in variant_list))
+        # A key is distinguishing if its values differ across any two variants
+        distinguishing = {
+            k for k in all_keys
+            if len({str(v["constants"].get(k)) for v in variant_list}) > 1
+        }
+        for v in variant_list:
+            v["constants"] = {k: val for k, val in v["constants"].items()
+                              if k in distinguishing}
 
     # --- Build nodes ---
     nodes = []
@@ -71,6 +106,7 @@ def _build_graph(db: DatabaseManager) -> dict:
             "data": {
                 "label": vtype,
                 "variants": var_variants.get(vtype, []),
+                "total_records": record_counts.get(vtype, 0),
             },
         })
 
