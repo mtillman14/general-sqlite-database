@@ -1,5 +1,7 @@
 NOTE: You do not have access to Python, it is not installed! Please give me Python commands in copy and paste to Terminal format. Multi-line commands should be given in a form that I can use in a tmp.py file
 
+NOTE 2: Whenever an issue is encountered, add logging and/or tests for it as appropriate.
+
 This is a software package to facilitate scientific data processing. You should learn more about it by reading the README.md
 
 There are several submodules in this package. Here are the folders that they are in, and their general purpose within the package:
@@ -10,6 +12,7 @@ There are several submodules in this package. Here are the folders that they are
 - sciduck: DuckDB database layer
 - scidb: The core user-facing abstractions
 - scilineage: Lineage package
+- scihist: Processing history package
 
 Each package's folder has a README.md file. When you go to look for implementation details, please start by reading the relevant README.md. If you have sufficient information after that, then please answer the question without exploring additional unnecessary files.
 

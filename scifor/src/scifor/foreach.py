@@ -149,13 +149,18 @@ def for_each(
         _log_fn("=" * 64)
 
     # Detailed config: inputs
-    print(f"  inputs: {_format_inputs(inputs)}")
+    _inputs_str = _format_inputs(inputs)
+    print(f"  inputs: {_inputs_str}")
+    if _log_fn is not None:
+        _log_fn(f"inputs: {_inputs_str}")
 
     # Detailed config: metadata actual values
     for k in display_keys:
         vals = metadata_iterables[k]
         formatted = ", ".join(repr(v) for v in vals)
         print(f"  {k}=[{formatted}]")
+        if _log_fn is not None:
+            _log_fn(f"{k}=[{formatted}]")
 
     # Detailed config: non-default options
     _opts_parts = []
@@ -168,7 +173,10 @@ def for_each(
     if where is not None:
         _opts_parts.append(f"where={where!r}")
     if _opts_parts:
-        print(f"  options: {', '.join(_opts_parts)}")
+        _opts_str = ", ".join(_opts_parts)
+        print(f"  options: {_opts_str}")
+        if _log_fn is not None:
+            _log_fn(f"options: {_opts_str}")
 
     if dry_run:
         print(f"[dry-run] for_each({fn_name})")

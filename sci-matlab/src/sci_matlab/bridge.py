@@ -35,6 +35,23 @@ from scilineage.inputs import classify_inputs
 STRING_REPR_DELIMITER = "-"
 
 
+def _describe_value(val):
+    """Return a short type/shape string for logging."""
+    import numpy as np
+    import pandas as pd
+
+    t = type(val).__name__
+    if isinstance(val, pd.DataFrame):
+        return f"DataFrame {val.shape[0]}x{val.shape[1]} cols={list(val.columns)}"
+    if isinstance(val, np.ndarray):
+        return f"ndarray shape={val.shape} dtype={val.dtype}"
+    if isinstance(val, (list, tuple)):
+        return f"{t} len={len(val)}"
+    if isinstance(val, (int, float, str, bool)):
+        return f"{t}"
+    return f"{t}"
+
+
 # ---------------------------------------------------------------------------
 # Proxy classes
 # ---------------------------------------------------------------------------
@@ -177,7 +194,7 @@ def register_matlab_variable(type_name: str, schema_version: int = 1):
     return surrogate
 
 
-def for_each_batch_save(type_name, data_list, metadata_list, db=None, profile=False):
+def for_each_batch_save(type_name, data_list, metadata_list, db=None):
     """Batch save for for_each parallel results.
 
     Each element in data_list is a single data value (already converted via
@@ -194,15 +211,14 @@ def for_each_batch_save(type_name, data_list, metadata_list, db=None, profile=Fa
         One metadata dict per result row.
     db : DatabaseManager or None
         Optional database; uses global default when None.
-    profile : bool
-        If True, pass profile=True to save_batch for timing diagnostics.
 
     Returns
     -------
     str
         Newline-joined record IDs.
     """
-    import sys
+    import time as _time
+    from scidb.log import Log
     from scidb.variable import BaseVariable
     from scidb.database import get_database
 
@@ -215,16 +231,26 @@ def for_each_batch_save(type_name, data_list, metadata_list, db=None, profile=Fa
 
     _db = db if db is not None and not isinstance(db, type(None)) else get_database()
 
+    t_start = _time.perf_counter()
+
     data_items = []
     for i in range(len(data_list)):
         data_items.append((data_list[i], dict(metadata_list[i])))
 
+    t_convert = _time.perf_counter()
     n_items = len(data_items)
-    if profile or n_items > 0:
-        total_size = sum(sys.getsizeof(d) for d, _ in data_items)
-        print(f"[bridge] for_each_batch_save: {n_items} items, ~{total_size} bytes (shallow)")
+    Log.debug(f"for_each_batch_save({type_name}): {n_items} items, "
+              f"data_items construction {t_convert - t_start:.3f}s")
 
-    return "\n".join(_db.save_batch(cls, data_items, profile=bool(profile)))
+    if n_items > 0:
+        Log.info(f"for_each_batch_save({type_name}): {n_items} items, "
+                 f"Python data: {_describe_value(data_items[0][0])}")
+
+    result = "\n".join(_db.save_batch(cls, data_items))
+
+    Log.info(f"for_each_batch_save({type_name}): {n_items} items, "
+             f"total {_time.perf_counter() - t_start:.3f}s")
+    return result
 
 
 def save_batch_bridge(type_name, data_values, metadata_keys, metadata_columns, common_metadata=None, db=None):
@@ -254,6 +280,8 @@ def save_batch_bridge(type_name, data_values, metadata_keys, metadata_columns, c
     list of str
         Record IDs for each saved row.
     """
+    import time as _time
+    from scidb.log import Log
     from scidb.variable import BaseVariable
     from scidb.database import get_database
 
@@ -263,6 +291,8 @@ def save_batch_bridge(type_name, data_values, metadata_keys, metadata_columns, c
             f"Variable type '{type_name}' is not registered. "
             f"Call scidb.register_variable('{type_name}') first."
         )
+
+    t_start = _time.perf_counter()
 
     _db = db if db is not None and not isinstance(db, type(None)) else get_database()
     common = dict(common_metadata) if common_metadata else {}
@@ -294,7 +324,15 @@ def save_batch_bridge(type_name, data_values, metadata_keys, metadata_columns, c
             meta[key] = meta_lists[j][i]
         data_items.append((data_list[i], meta))
 
-    return "\n".join(_db.save_batch(cls, data_items))
+    t_convert = _time.perf_counter()
+    Log.debug(f"save_batch_bridge({type_name}): {n} items, "
+              f"data_items construction {t_convert - t_start:.3f}s")
+
+    result = "\n".join(_db.save_batch(cls, data_items))
+
+    Log.info(f"save_batch_bridge({type_name}): {n} items, "
+             f"total {_time.perf_counter() - t_start:.3f}s")
+    return result
 
 
 # ---------------------------------------------------------------------------

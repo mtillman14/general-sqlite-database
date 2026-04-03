@@ -258,22 +258,37 @@ function varargout = for_each(fn, inputs, varargin)
     else
         meta_summary = strjoin(meta_parts_banner, ', ');
     end
-    fprintf('\n%s\n', repmat('=', 1, 64));
     if total == 1
-        fprintf('  for_each(%s) — 1 iteration\n', fn_name);
+        iter_str = sprintf('for_each(%s) — 1 iteration', fn_name);
     else
-        fprintf('  for_each(%s) — %d iterations\n', fn_name, total);
+        iter_str = sprintf('for_each(%s) — %d iterations', fn_name, total);
     end
+    fprintf('\n%s\n', repmat('=', 1, 64));
+    fprintf('  %s\n', iter_str);
     fprintf('  %s\n', meta_summary);
     fprintf('%s\n', repmat('=', 1, 64));
+    if ~isempty(opts.log_fn)
+        opts.log_fn(repmat('=', 1, 64));
+        opts.log_fn(iter_str);
+        opts.log_fn(meta_summary);
+        opts.log_fn(repmat('=', 1, 64));
+    end
 
     % --- Detailed config: inputs ---
-    fprintf('  inputs: %s\n', format_inputs(inputs, input_names, data_idx));
+    inputs_str = format_inputs(inputs, input_names, data_idx);
+    fprintf('  inputs: %s\n', inputs_str);
+    if ~isempty(opts.log_fn)
+        opts.log_fn(sprintf('inputs: %s', inputs_str));
+    end
 
     % --- Detailed config: metadata actual values ---
     for mk2 = 1:numel(meta_keys)
         if ~startsWith(meta_keys(mk2), "__")
-            fprintf('  %s=%s\n', meta_keys(mk2), format_meta_values(meta_values{mk2}));
+            vals_str = format_meta_values(meta_values{mk2});
+            fprintf('  %s=%s\n', meta_keys(mk2), vals_str);
+            if ~isempty(opts.log_fn)
+                opts.log_fn(sprintf('%s=%s', meta_keys(mk2), vals_str));
+            end
         end
     end
 
@@ -296,7 +311,11 @@ function varargout = for_each(fn, inputs, varargin)
         opt_parts{end+1} = sprintf('where=%s', class(where_filter));
     end
     if ~isempty(opt_parts)
-        fprintf('  options: %s\n', strjoin(opt_parts, ', '));
+        opts_str = strjoin(opt_parts, ', ');
+        fprintf('  options: %s\n', opts_str);
+        if ~isempty(opts.log_fn)
+            opts.log_fn(sprintf('options: %s', opts_str));
+        end
     end
 
     % --- Dry-run header ---
@@ -539,6 +558,11 @@ function varargout = for_each(fn, inputs, varargin)
     if dry_run
         fprintf('  [dry-run] would process %d iterations\n', total);
         fprintf('%s\n\n', repmat('=', 1, 64));
+        if ~isempty(opts.log_fn)
+            opts.log_fn(repmat('-', 1, 64));
+            opts.log_fn(sprintf('[dry-run] would process %d iterations', total));
+            opts.log_fn(repmat('=', 1, 64));
+        end
         for o = 1:nargout
             varargout{o} = [];
         end
@@ -546,9 +570,16 @@ function varargout = for_each(fn, inputs, varargin)
             varargout{1} = [];
         end
     else
+        done_msg = sprintf('for_each(%s) done: completed=%d, skipped=%d, total=%d', ...
+            fn_name, completed, skipped, total);
         fprintf('  done: completed=%d, skipped=%d, total=%d\n', ...
             completed, skipped, total);
         fprintf('%s\n\n', repmat('=', 1, 64));
+        if ~isempty(opts.log_fn)
+            opts.log_fn(repmat('-', 1, 64));
+            opts.log_fn(done_msg);
+            opts.log_fn(repmat('=', 1, 64));
+        end
         if n_outputs == 0
             % Zero-output function: nothing to collect
             if nargout > 0

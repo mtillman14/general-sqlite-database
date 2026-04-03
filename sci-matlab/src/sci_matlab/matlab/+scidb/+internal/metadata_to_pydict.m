@@ -42,6 +42,11 @@ function py_dict = metadata_to_pydict(varargin)
             end
         elseif ischar(val)
             py_dict{key} = py.str(val);
+        elseif isstruct(val)
+            % Structs may contain arrays that aren't JSON-serializable on
+            % the Python side.  Encode the whole struct as a JSON string so
+            % it travels safely through json.dumps in save_batch.
+            py_dict{key} = jsonencode(val);
         else
             try
                 py_dict{key} = val;

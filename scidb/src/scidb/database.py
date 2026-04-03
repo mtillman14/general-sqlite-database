@@ -21,7 +21,21 @@ from .exceptions import (
     NotRegisteredError,
 )
 from .hashing import generate_record_id, canonical_hash
+from .log import Log
 from .variable import BaseVariable
+
+
+def _describe_data(val):
+    """Return a short type/shape string for logging data values."""
+    if isinstance(val, pd.DataFrame):
+        return f"DataFrame {val.shape[0]}x{val.shape[1]} cols={list(val.columns)}"
+    if isinstance(val, np.ndarray):
+        return f"ndarray shape={val.shape} dtype={val.dtype}"
+    if isinstance(val, (list, tuple)):
+        return f"{type(val).__name__} len={len(val)}"
+    if isinstance(val, dict):
+        return f"dict keys={list(val.keys())}"
+    return type(val).__name__
 
 
 def _schema_str(value):
@@ -837,6 +851,11 @@ class DatabaseManager:
 
         data_col_types, dtype_meta = _infer_data_columns(first_data)
         is_dataframe = dtype_meta.get("mode") == "dataframe"
+        col_types_str = ", ".join(f"{c}: {t}" for c, t in data_col_types.items())
+        Log.info(f"save_batch({type_name}): {len(data_items)} items, "
+                 f"mode={dtype_meta.get('mode', 'single_column')}, "
+                 f"data: {_describe_data(first_data)}, "
+                 f"DuckDB columns: [{col_types_str}]")
 
         if not self._duck._table_exists(table_name):
             data_cols_sql = ", ".join(f'"{col}" {dtype}' for col, dtype in data_col_types.items())
@@ -853,6 +872,23 @@ class DatabaseManager:
             self._create_variable_view(variable_class)
 
         timings["1_setup"] = time.perf_counter() - t0
+
+        # --- Detect PyArrow fast path for batch insert ---
+        _use_arrow = False
+        pa = None
+        if not is_dataframe:
+            try:
+                import pyarrow as pa
+                col_metas = dtype_meta.get("columns", {})
+                _use_arrow = all(
+                    m.get("python_type") == "ndarray" and m.get("ndim", 1) == 1
+                    for m in col_metas.values()
+                )
+            except ImportError:
+                pass
+        if _use_arrow:
+            _arrow_col_arrays: dict[str, list] = {col: [] for col in data_col_types}
+            _arrow_record_ids: list[str] = []
 
         # --- Batch schema_id resolution ---
         t1 = time.perf_counter()
@@ -889,6 +925,11 @@ class DatabaseManager:
         data_table_rows = []   # (record_id, ...data_cols)
         metadata_rows = []     # tuples for _record_metadata
 
+        t4_hash = 0.0
+        t4_record_id = 0.0
+        t4_storage = 0.0
+        t4_meta = 0.0
+
         for i, (data_val, flat_meta) in enumerate(data_items):
             nested = all_nested[i]
             schema_keys = nested.get("schema", {})
@@ -904,7 +945,11 @@ class DatabaseManager:
             else:
                 schema_id = 0
 
+            _t = time.perf_counter()
             content_hash = canonical_hash(data_val)
+            t4_hash += time.perf_counter() - _t
+
+            _t = time.perf_counter()
             record_id = generate_record_id(
                 class_name=type_name,
                 schema_version=schema_version,
@@ -912,26 +957,42 @@ class DatabaseManager:
                 metadata=nested,
             )
             record_ids.append(record_id)
+            t4_record_id += time.perf_counter() - _t
 
             # DataFrames expand to one DuckDB row per table row.
-            if is_dataframe:
+            _t = time.perf_counter()
+            if _use_arrow:
+                _arrow_record_ids.append(record_id)
+                for col in data_col_types:
+                    _arrow_col_arrays[col].append(data_val[col])
+            elif is_dataframe:
                 for storage_row in _dataframe_to_storage_rows(data_val, dtype_meta):
                     data_table_rows.append((record_id,) + tuple(storage_row))
             else:
                 storage_values = _value_to_storage_row(data_val, dtype_meta)
                 data_table_rows.append((record_id,) + tuple(storage_values))
+            t4_storage += time.perf_counter() - _t
 
+            _t = time.perf_counter()
             vk_json = json.dumps(version_keys or {}, sort_keys=True)
             metadata_rows.append((
                 record_id, timestamp, type_name, schema_id,
                 vk_json, content_hash, None, schema_version, user_id,
             ))
+            t4_meta += time.perf_counter() - _t
 
         timings["4_per_row_hashing"] = time.perf_counter() - t4
+        timings["4a_canonical_hash"] = t4_hash
+        timings["4b_record_id"] = t4_record_id
+        timings["4c_storage_row"] = t4_storage
+        timings["4d_meta_row"] = t4_meta
 
         # --- Find which data rows are new (dedup check) ---
         t5 = time.perf_counter()
-        if is_dataframe:
+        if _use_arrow:
+            # Arrow path: ON CONFLICT DO NOTHING handles dedup in the INSERT.
+            new_data_rows = _arrow_record_ids  # for count only
+        elif is_dataframe:
             # No PRIMARY KEY: filter out rows whose record_id already exists.
             all_new_rids = list({row[0] for row in data_table_rows})
             if all_new_rids:
@@ -954,10 +1015,41 @@ class DatabaseManager:
         t6 = time.perf_counter()
         self._duck._begin()
         try:
-            if new_data_rows:
+            t6a = time.perf_counter()
+            if _use_arrow and _arrow_record_ids:
+                # PyArrow fast path: numpy arrays → Arrow buffers → DuckDB (no Python list conversion)
+                _NUMPY_TO_ARROW = {
+                    'float64': pa.float64(), 'float32': pa.float32(),
+                    'int64': pa.int64(), 'int32': pa.int32(),
+                    'int16': pa.int16(), 'int8': pa.int8(),
+                    'uint64': pa.uint64(), 'uint32': pa.uint32(),
+                    'uint16': pa.uint16(), 'uint8': pa.uint8(),
+                    'bool': pa.bool_(),
+                }
+                arrow_data = {'record_id': pa.array(_arrow_record_ids, type=pa.string())}
+                for col_name, np_list in _arrow_col_arrays.items():
+                    col_meta = dtype_meta["columns"][col_name]
+                    numpy_dtype = col_meta.get("numpy_dtype", "float64")
+                    arrow_inner = _NUMPY_TO_ARROW.get(numpy_dtype, pa.float64())
+                    arrow_data[col_name] = pa.array(np_list, type=pa.list_(arrow_inner))
+                arrow_table = pa.table(arrow_data)
+                all_columns = list(arrow_data.keys())
+                col_str = ", ".join(f'"{c}"' for c in all_columns)
+                timings["6a_data_df_create"] = time.perf_counter() - t6a
+
+                t6b = time.perf_counter()
+                self._duck.con.execute(
+                    f'INSERT INTO "{table_name}" ({col_str}) SELECT * FROM arrow_table '
+                    f'ON CONFLICT (record_id) DO NOTHING'
+                )
+                timings["6b_data_insert"] = time.perf_counter() - t6b
+            elif new_data_rows:
                 all_columns = ["record_id"] + list(data_col_types.keys())
                 data_df = pd.DataFrame(new_data_rows, columns=all_columns)
                 col_str = ", ".join(f'"{c}"' for c in all_columns)
+                timings["6a_data_df_create"] = time.perf_counter() - t6a
+
+                t6b = time.perf_counter()
                 if is_dataframe:
                     self._duck.con.execute(
                         f'INSERT INTO "{table_name}" ({col_str}) SELECT * FROM data_df'
@@ -967,8 +1059,13 @@ class DatabaseManager:
                         f'INSERT INTO "{table_name}" ({col_str}) SELECT * FROM data_df '
                         f'ON CONFLICT (record_id) DO NOTHING'
                     )
+                timings["6b_data_insert"] = time.perf_counter() - t6b
+            else:
+                timings["6a_data_df_create"] = time.perf_counter() - t6a
+                timings["6b_data_insert"] = 0.0
 
             # Always insert metadata rows (audit trail — every execution logged)
+            t6c = time.perf_counter()
             meta_df = pd.DataFrame(
                 metadata_rows,
                 columns=[
@@ -984,8 +1081,10 @@ class DatabaseManager:
                 ") SELECT * FROM meta_df "
                 "ON CONFLICT (record_id, timestamp) DO NOTHING"
             )
+            timings["6c_meta_insert"] = time.perf_counter() - t6c
 
             # Upsert _variables (one row per variable)
+            t6d = time.perf_counter()
             effective_level = (
                 self._infer_schema_level(all_nested[0].get("schema", {}))
                 or self.dataset_schema_keys[-1]
@@ -996,8 +1095,11 @@ class DatabaseManager:
                 "ON CONFLICT (variable_name) DO UPDATE SET dtype = excluded.dtype",
                 [type_name, effective_level, json.dumps(dtype_meta), ""],
             )
+            timings["6d_variables_upsert"] = time.perf_counter() - t6d
 
+            t6e = time.perf_counter()
             self._duck._commit()
+            timings["6e_commit"] = time.perf_counter() - t6e
         except Exception:
             try:
                 self._duck._execute("ROLLBACK")
@@ -1008,8 +1110,19 @@ class DatabaseManager:
         timings["6_batch_inserts"] = time.perf_counter() - t6
         timings["total"] = time.perf_counter() - t0
 
+        n = len(data_items)
+        n_new = len(new_data_rows)
+        n_total_rows = len(_arrow_record_ids) if _use_arrow else len(data_table_rows)
+        Log.info(
+            f"save_batch({type_name}): {n} items ({n_new} new rows, "
+            f"{n_total_rows} total storage rows), "
+            f"{len(unique_schema_combos)} schemas, {timings['total']:.3f}s"
+        )
+        for phase, elapsed in timings.items():
+            Log.debug(f"  save_batch {phase:30s} {elapsed:.3f}s")
+
         if profile:
-            print(f"\n--- save_batch() profile ({len(data_items)} items, "
+            print(f"\n--- save_batch() profile ({n} items, "
                   f"{len(unique_schema_combos)} unique schemas) ---")
             for phase, elapsed in timings.items():
                 print(f"  {phase:30s} {elapsed:8.3f}s")

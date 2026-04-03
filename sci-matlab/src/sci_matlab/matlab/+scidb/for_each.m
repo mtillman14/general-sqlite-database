@@ -296,7 +296,7 @@ function result_tbl = for_each(fn, inputs, outputs, varargin)
         end
     end
 
-    % --- Log start banner ---
+    % --- Build log summary for parallel banner ---
     meta_parts_log = cell(1, numel(meta_keys));
     for mk = 1:numel(meta_keys)
         meta_parts_log{mk} = sprintf('%s=[%d values]', meta_keys(mk), numel(meta_values{mk}));
@@ -306,12 +306,13 @@ function result_tbl = for_each(fn, inputs, outputs, varargin)
     else
         meta_summary_log = strjoin(meta_parts_log, ', ');
     end
-    scidb.Log.info('%s', repmat('=', 1, 64));
-    scidb.Log.info('for_each(%s) — %s', fn_name, meta_summary_log);
-    scidb.Log.info('%s', repmat('=', 1, 64));
 
     % --- Parallel branch ---
     if opts.parallel && ~dry_run
+        % Log banner for parallel (scifor won't run, so log it here)
+        scidb.Log.info('%s', repmat('=', 1, 64));
+        scidb.Log.info('for_each(%s) — %s', fn_name, meta_summary_log);
+        scidb.Log.info('%s', repmat('=', 1, 64));
         % Parallel stays self-contained — does NOT delegate to scifor
         [completed, skipped, total] = run_parallel(fn, inputs, outputs, ...
             meta_keys, meta_values, input_names, loadable_idx, ...
@@ -420,6 +421,10 @@ function result_tbl = for_each(fn, inputs, outputs, varargin)
         scifor_opts{end+1} = true;
     end
 
+    % Pass log function so scifor logs banner, config, and iteration details
+    scifor_opts{end+1} = '_log_fn';
+    scifor_opts{end+1} = @(msg) scidb.Log.info('%s', msg);
+
     % Note: scidb.Filter (where) is applied during loading, NOT passed to scifor.
     % scifor's where= is for scifor.ColFilter on tables.
 
@@ -450,9 +455,7 @@ function result_tbl = for_each(fn, inputs, outputs, varargin)
     end
 
     if isempty(result_tbl) || dry_run
-        scidb.Log.info('%s', repmat('-', 1, 64));
-        scidb.Log.info('for_each(%s) done', fn_name);
-        scidb.Log.info('%s', repmat('=', 1, 64));
+        % scifor already logged the summary via _log_fn
         return;
     end
 
@@ -465,11 +468,6 @@ function result_tbl = for_each(fn, inputs, outputs, varargin)
             end
         end
     end
-
-    % --- Log end banner ---
-    scidb.Log.info('%s', repmat('-', 1, 64));
-    scidb.Log.info('for_each(%s) done', fn_name);
-    scidb.Log.info('%s', repmat('=', 1, 64));
 
     % --- Flatten nested table outputs for return ---
     % _nest_table_outputs was forced for saving; un-nest for caller
@@ -786,12 +784,20 @@ function save_results(result_tbl, outputs, output_names, config_nv, constant_nv,
         if batch_accum{o}.count > 0
             type_name = class(outputs{o});
             scidb.internal.ensure_registered(type_name);
-            scidb.Log.debug('save_results: flushing %s — %d items to for_each_batch_save', ...
-                type_name, batch_accum{o}.count);
+
+            % Log data shape/type from first item (MATLAB side, before Python conversion)
+            if batch_accum{o}.count > 0 && height(result_tbl) > 0
+                first_val = result_tbl.(output_names{o});
+                if iscell(first_val)
+                    first_val = first_val{1};
+                end
+                scidb.Log.info('[save] %s: %d items, MATLAB data: %s %s', ...
+                    type_name, batch_accum{o}.count, class(first_val), format_size(first_val));
+            end
+
             py.sci_matlab.bridge.for_each_batch_save( ...
                 type_name, batch_accum{o}.py_data, ...
                 batch_accum{o}.py_metas, py_db);
-            scidb.Log.info('[save] %s: %d items (batch)', type_name, batch_accum{o}.count);
         end
     end
 end
