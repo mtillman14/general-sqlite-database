@@ -11,6 +11,7 @@ Positions are set to (0, 0) here; the layout endpoint overwrites them with
 saved positions, and the frontend assigns dagre positions for new nodes.
 """
 
+import json
 import inspect
 from collections import defaultdict
 from fastapi import APIRouter, Depends
@@ -50,6 +51,135 @@ def _get_record_counts(db: DatabaseManager, var_types: set[str]) -> dict[str, in
         except Exception:
             counts[vtype] = 0
     return counts
+
+
+_STATE_ORDER = {"red": 0, "grey": 1, "green": 2}
+
+
+def _own_state_for_function(
+    db: DatabaseManager,
+    fn_name: str,
+    fn_out_types: set[str],
+) -> str:
+    """
+    Return the own run state ("green"/"grey"/"red") for a single function by
+    calling scihist.check_node_state when the function and its output classes
+    are available in the registry.
+
+    Falls back to "red" for unregistered functions (never executed or not
+    importable in this session).
+    """
+    from scihist.state import check_node_state
+    from scidb import BaseVariable
+
+    from scihist.state import check_node_state
+    from scidb import BaseVariable
+
+    fn_obj = registry._functions.get(fn_name)
+    if fn_obj is None:
+        # Function not registered in this session — can't run state check.
+        return "red"
+
+    output_classes = [
+        BaseVariable._all_subclasses[t]
+        for t in fn_out_types
+        if t in BaseVariable._all_subclasses
+    ]
+    if not output_classes:
+        return "red"
+
+    try:
+        result = check_node_state(fn_obj, output_classes, db=db)
+        return result["state"]
+    except Exception:
+        import logging
+        logging.getLogger(__name__).exception(
+            "check_node_state failed for %s — falling back to red", fn_name
+        )
+        return "red"
+
+
+def _compute_run_states(
+    db: DatabaseManager,
+    fn_input_params: dict[str, dict],
+    fn_outputs: dict[str, set],
+) -> dict[str, str]:
+    """
+    Compute run_state for every function and variable node.
+
+    Pass 1 — own state per function:
+      Calls scihist.check_node_state for each function that is registered in
+      this session.  Uses lineage records + function hash when available,
+      falling back to __fn_hash + timestamps for scidb.for_each outputs.
+      Unregistered functions default to "red".
+
+    Pass 2 — propagate staleness through the DAG (topological order):
+      effective_state(fn) = min(own_state, state of each input variable)
+      variable state      = upstream function's effective state
+
+    Returns {node_id: "green"|"grey"|"red"} for fn__ and var__ nodes.
+    """
+    # --- Pass 1: own state per function ---
+    fn_own_state: dict[str, str] = {}
+    for fn_name in fn_input_params:
+        fn_own_state[fn_name] = _own_state_for_function(
+            db, fn_name, fn_outputs.get(fn_name, set())
+        )
+
+    # --- Pass 2: DAG propagation ---
+    var_producer: dict[str, str] = {}
+    for fn_name, out_types in fn_outputs.items():
+        for ot in out_types:
+            var_producer[ot] = fn_name
+
+    fn_effective_state: dict[str, str] = {}
+    var_state: dict[str, str] = {}
+
+    fn_input_types: dict[str, set] = {
+        fn: set(params.values()) for fn, params in fn_input_params.items()
+    }
+
+    remaining = set(fn_own_state.keys())
+    for _ in range(len(remaining) + 1):
+        if not remaining:
+            break
+        progress = False
+        for fn_name in list(remaining):
+            input_var_states: list[str] = []
+            all_resolved = True
+            for vtype in fn_input_types.get(fn_name, set()):
+                if vtype in var_state:
+                    input_var_states.append(var_state[vtype])
+                elif vtype not in var_producer:
+                    # Root variable — no upstream producer, treat as green.
+                    input_var_states.append("green")
+                else:
+                    all_resolved = False
+                    break
+            if not all_resolved:
+                continue
+
+            all_states = [fn_own_state[fn_name]] + input_var_states
+            fn_effective_state[fn_name] = min(all_states, key=lambda s: _STATE_ORDER[s])
+            for vtype in fn_outputs.get(fn_name, set()):
+                var_state[vtype] = fn_effective_state[fn_name]
+            remaining.remove(fn_name)
+            progress = True
+
+        if not progress:
+            # Cycle or unresolvable — mark remaining as red.
+            for fn_name in remaining:
+                fn_effective_state[fn_name] = "red"
+                for vtype in fn_outputs.get(fn_name, set()):
+                    var_state[vtype] = "red"
+            break
+
+    result: dict[str, str] = {}
+    for fn_name, state in fn_effective_state.items():
+        result[f"fn__{fn_name}"] = state
+    for vtype, state in var_state.items():
+        result[f"var__{vtype}"] = state
+    return result
 
 
 def _build_graph(db: DatabaseManager) -> dict:
@@ -101,18 +231,25 @@ def _build_graph(db: DatabaseManager) -> dict:
     # Get raw record counts for each variable type
     record_counts = _get_record_counts(db, all_var_types)
 
+    # Compute run states for all function and variable nodes
+    run_states = _compute_run_states(db, fn_input_params, fn_outputs)
+
     # --- Build nodes ---
     nodes = []
 
     for vtype in sorted(all_var_types):
+        data: dict = {
+            "label": vtype,
+            "total_records": record_counts.get(vtype, 0),
+        }
+        state = run_states.get(f"var__{vtype}")
+        if state:
+            data["run_state"] = state
         nodes.append({
             "id": f"var__{vtype}",
             "type": "variableNode",
             "position": {"x": 0, "y": 0},   # overwritten by layout endpoint
-            "data": {
-                "label": vtype,
-                "total_records": record_counts.get(vtype, 0),
-            },
+            "data": data,
         })
 
     for const_name in sorted(const_counts.keys()):
@@ -145,17 +282,21 @@ def _build_graph(db: DatabaseManager) -> dict:
         for name in _fn_params_from_registry(fn):
             if name not in known:
                 input_params[name] = ""
+        fn_data: dict = {
+            "label": fn,
+            "variants": fn_variants.get(fn, []),
+            "input_params": input_params,
+            "output_types": sorted(fn_outputs[fn]),
+            "constant_params": constant_params,
+        }
+        state = run_states.get(f"fn__{fn}")
+        if state:
+            fn_data["run_state"] = state
         nodes.append({
             "id": f"fn__{fn}",
             "type": "functionNode",
             "position": {"x": 0, "y": 0},
-            "data": {
-                "label": fn,
-                "variants": fn_variants.get(fn, []),
-                "input_params": input_params,
-                "output_types": sorted(fn_outputs[fn]),
-                "constant_params": constant_params,
-            },
+            "data": fn_data,
         })
 
     # --- Build edges (deduplicated) ---

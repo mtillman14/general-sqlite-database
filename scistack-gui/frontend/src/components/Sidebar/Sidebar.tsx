@@ -16,6 +16,7 @@ import RunsTab from './RunsTab'
 import EditTab from './EditTab'
 import FunctionSettingsPanel from './FunctionSettingsPanel'
 import ConstantSettingsPanel from './ConstantSettingsPanel'
+import VariableSettingsPanel from './VariableSettingsPanel'
 import { useSelectedNode } from '../../context/SelectedNodeContext'
 import type { Node } from '@xyflow/react'
 import type { ConstantValue } from '../DAG/ConstantNode'
@@ -41,6 +42,10 @@ function isConstantNode(node: Node | null): node is Node & { data: ConstantNodeD
   return node?.type === 'constantNode'
 }
 
+function isVariableNode(node: Node | null): node is Node & { data: { label: string } } {
+  return node?.type === 'variableNode'
+}
+
 /** Compute the Cartesian product of value arrays. */
 function cartesian(arrays: string[][]): string[][] {
   if (arrays.length === 0) return []
@@ -58,16 +63,16 @@ export default function Sidebar() {
   const nodes = useStore(s => s.nodes)
   const edges = useStore(s => s.edges)
 
-  // Auto-switch to Node tab when a function or constant node is selected; revert when deselected.
+  // Auto-switch to Node tab when a function, constant, or variable node is selected; revert when deselected.
   useEffect(() => {
-    if (isFunctionNode(selectedNode) || isConstantNode(selectedNode)) {
+    if (isFunctionNode(selectedNode) || isConstantNode(selectedNode) || isVariableNode(selectedNode)) {
       setActiveTab('Node')
     } else if (activeTab === 'Node') {
       setActiveTab('Runs')
     }
   }, [selectedNode])  // eslint-disable-line react-hooks/exhaustive-deps
 
-  const hasNodeTab = isFunctionNode(selectedNode) || isConstantNode(selectedNode)
+  const hasNodeTab = isFunctionNode(selectedNode) || isConstantNode(selectedNode) || isVariableNode(selectedNode)
   const tabs: Tab[] = hasNodeTab ? ['Runs', 'Edit', 'Node'] : ['Runs', 'Edit']
 
   // Compute variant combinations from constant nodes connected to the selected function node.
@@ -138,6 +143,11 @@ export default function Sidebar() {
             id={selectedNode.id}
             label={(selectedNode.data as ConstantNodeData).label}
             values={(selectedNode.data as ConstantNodeData).values}
+          />
+        )}
+        {activeTab === 'Node' && isVariableNode(selectedNode) && (
+          <VariableSettingsPanel
+            label={(selectedNode.data as { label: string }).label}
           />
         )}
       </div>

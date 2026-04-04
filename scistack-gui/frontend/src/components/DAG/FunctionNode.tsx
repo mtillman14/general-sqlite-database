@@ -19,6 +19,13 @@ interface FunctionNodeData {
   input_params?: Record<string, string>  // param_name → type_name
   output_types?: string[]
   constant_params?: string[]
+  run_state?: 'green' | 'grey' | 'red'
+}
+
+const STATE_STYLES: Record<string, { border: string; background: string }> = {
+  green: { border: '#16a34a', background: '#f0fdf4' },
+  grey:  { border: '#6b7280', background: '#f3f4f6' },
+  red:   { border: '#dc2626', background: '#fef2f2' },
 }
 
 interface Props {
@@ -83,6 +90,8 @@ export default function FunctionNode({ id, data }: Props) {
     })
   }, [id, data.label, getNodes, getEdges, startRun])
 
+  const stateStyle = data.run_state ? STATE_STYLES[data.run_state] : null
+
   const inputParams = data.input_params ?? {}
   const outTypes = data.output_types ?? []
   const constParams = data.constant_params ?? []
@@ -102,7 +111,10 @@ export default function FunctionNode({ id, data }: Props) {
   })
 
   return (
-    <div style={styles.container}>
+    <div style={{
+      ...styles.container,
+      ...(stateStyle ? { border: `2px solid ${stateStyle.border}`, background: stateStyle.background } : {}),
+    }}>
       {leftHandles.length > 0
         ? leftHandles.map((h, i) => (
             <Handle

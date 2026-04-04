@@ -11,15 +11,27 @@ import { Handle, Position } from '@xyflow/react'
 export interface VariableNodeData {
   label: string
   total_records: number
+  run_state?: 'green' | 'grey' | 'red'
 }
 
 interface Props {
   data: VariableNodeData
 }
 
+const STATE_STYLES: Record<string, { border: string; background: string }> = {
+  green: { border: '#16a34a', background: '#f0fdf4' },
+  grey:  { border: '#6b7280', background: '#f3f4f6' },
+  red:   { border: '#dc2626', background: '#fef2f2' },
+}
+
 export default function VariableNode({ data }: Props) {
+  const stateStyle = data.run_state ? STATE_STYLES[data.run_state] : null
+
   return (
-    <div style={styles.container}>
+    <div style={{
+      ...styles.container,
+      ...(stateStyle ? { border: `2px solid ${stateStyle.border}`, background: stateStyle.background } : {}),
+    }}>
       <Handle type="target" position={Position.Left} />
 
       <div style={styles.label}>{data.label}</div>

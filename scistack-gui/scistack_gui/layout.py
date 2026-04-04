@@ -1,25 +1,24 @@
 """
-Node position persistence.
+Node position and pipeline structure persistence.
 
-Positions are stored in a JSON file alongside the .duckdb file:
+Positions (x/y) are stored in a JSON file alongside the .duckdb file:
   experiment.duckdb  →  experiment.layout.json
 
-Format:
+Manual pipeline nodes and edges are stored in the DuckDB database via
+pipeline_store.  The JSON file retains only positions and the migration
+sentinel; all structural pipeline data lives in DuckDB.
+
+JSON format (post-migration):
 {
   "positions": { "node_id": { "x": float, "y": float }, ... },
-  "manual_nodes": {
-    "node_id": { "type": "functionNode"|"variableNode", "label": str },
-    ...
-  }
+  "pipeline_db_migrated": true
 }
-
-The legacy flat format (just positions at the top level) is read and migrated
-automatically on first access.
 """
 
 import json
 from pathlib import Path
-from scistack_gui.db import get_db_path
+from scistack_gui.db import get_db_path, get_db
+from scistack_gui import pipeline_store
 
 
 def _layout_path() -> Path:
@@ -27,19 +26,17 @@ def _layout_path() -> Path:
 
 
 def _load() -> dict:
-    """Load and normalise the layout file to the current format."""
+    """Load and normalise the layout file (positions only, post-migration)."""
     p = _layout_path()
     if not p.exists():
-        return {"positions": {}, "manual_nodes": {}, "constants": [], "manual_edges": []}
+        return {"positions": {}, "constants": []}
     with p.open() as f:
         raw = json.load(f)
     # Migrate legacy flat format: { "node_id": {"x":..,"y":..}, ... }
     if raw and "positions" not in raw:
-        return {"positions": raw, "manual_nodes": {}, "constants": [], "manual_edges": []}
+        return {"positions": raw, "constants": []}
     raw.setdefault("positions", {})
-    raw.setdefault("manual_nodes", {})
     raw.setdefault("constants", [])
-    raw.setdefault("manual_edges", [])
     return raw
 
 
@@ -50,8 +47,14 @@ def _save(data: dict) -> None:
 
 
 def read_layout() -> dict:
-    """Return the full layout dict (positions + manual_nodes)."""
-    return _load()
+    """Return the full layout dict (positions + manual nodes/edges from DB)."""
+    data = _load()
+    db = get_db()
+    return {
+        "positions": data["positions"],
+        "manual_nodes": pipeline_store.get_manual_nodes(db),
+        "manual_edges": pipeline_store.get_manual_edges(db),
+    }
 
 
 def write_node_position(node_id: str, x: float, y: float) -> None:
@@ -62,22 +65,23 @@ def write_node_position(node_id: str, x: float, y: float) -> None:
 
 def write_manual_node(node_id: str, x: float, y: float,
                       node_type: str, label: str) -> None:
+    # Position goes to JSON; structural info goes to DB.
     data = _load()
     data["positions"][node_id] = {"x": x, "y": y}
-    data["manual_nodes"][node_id] = {"type": node_type, "label": label}
     _save(data)
+    pipeline_store.write_manual_node(get_db(), node_id, node_type, label)
 
 
 def get_manual_nodes() -> dict[str, dict]:
-    return _load()["manual_nodes"]
+    return pipeline_store.get_manual_nodes(get_db())
 
 
 def delete_node(node_id: str) -> None:
-    """Remove a node's position and manual-node entry (if any) from the layout file."""
+    """Remove a node's position (JSON) and manual-node entry (DB)."""
     data = _load()
     data["positions"].pop(node_id, None)
-    data["manual_nodes"].pop(node_id, None)
     _save(data)
+    pipeline_store.delete_node(get_db(), node_id)
 
 
 def read_constants() -> list[str]:
@@ -89,20 +93,19 @@ def read_all_constant_names() -> list[str]:
 
     Sources (unioned):
     - ``constants[]``: palette items created via the "+" button.
-    - ``manual_nodes`` with type ``constantNode``: constants dragged to canvas
-      (they get random-suffix IDs like ``const__name__abc123``).
-    - ``positions`` keys with canonical constant IDs (``const__name``, no
-      random suffix — these are DB-derived nodes placed by the pipeline API).
+    - manual constant nodes in DB (type ``constantNode``).
+    - Canonical DB-derived constant IDs in positions (``const__name``).
     """
     data = _load()
     names: set[str] = set(data["constants"])
+    manual_nodes = pipeline_store.get_manual_nodes(get_db())
     # Manually dragged constant nodes — label is the true constant name.
-    for meta in data["manual_nodes"].values():
+    for meta in manual_nodes.values():
         if meta.get("type") == "constantNode":
             names.add(meta["label"])
     # Canonical DB-derived constant nodes not already covered by manual_nodes.
     for node_id in data["positions"]:
-        if node_id.startswith("const__") and node_id not in data["manual_nodes"]:
+        if node_id.startswith("const__") and node_id not in manual_nodes:
             names.add(node_id[len("const__"):])
     return sorted(names)
 
@@ -121,21 +124,15 @@ def delete_constant(name: str) -> None:
 
 
 def read_manual_edges() -> list[dict]:
-    return _load()["manual_edges"]
+    return pipeline_store.get_manual_edges(get_db())
 
 
 def write_manual_edge(edge: dict) -> None:
-    data = _load()
-    # Replace existing entry with same id, or append.
-    data["manual_edges"] = [e for e in data["manual_edges"] if e["id"] != edge["id"]]
-    data["manual_edges"].append(edge)
-    _save(data)
+    pipeline_store.write_manual_edge(get_db(), edge)
 
 
 def delete_manual_edge(edge_id: str) -> None:
-    data = _load()
-    data["manual_edges"] = [e for e in data["manual_edges"] if e["id"] != edge_id]
-    _save(data)
+    pipeline_store.delete_manual_edge(get_db(), edge_id)
 
 
 def graduate_manual_node(old_id: str, new_id: str) -> None:
@@ -145,5 +142,5 @@ def graduate_manual_node(old_id: str, new_id: str) -> None:
     if old_pos and new_id not in data["positions"]:
         data["positions"][new_id] = old_pos
     data["positions"].pop(old_id, None)
-    data["manual_nodes"].pop(old_id, None)
     _save(data)
+    pipeline_store.graduate_manual_node(get_db(), old_id, new_id)

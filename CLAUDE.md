@@ -2,6 +2,8 @@ NOTE: You do not have access to Python, it is not installed! Please give me Pyth
 
 NOTE 2: Whenever an issue is encountered, add logging and/or tests for it as appropriate.
 
+NOTE 3: As much as possible and as appropriate, solutions to problems should live in the corresponding scistack layer. Only GUI-related issues should live in the GUI layer.
+
 This is a software package to facilitate scientific data processing. You should learn more about it by reading the README.md
 
 There are several submodules in this package. Here are the folders that they are in, and their general purpose within the package:

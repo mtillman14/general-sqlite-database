@@ -1,6 +1,9 @@
 """SciHist for_each — auto-wraps function in LineageFcn and records lineage."""
 
+import logging
 from typing import Any, Callable
+
+logger = logging.getLogger(__name__)
 
 
 def for_each(
@@ -117,12 +120,15 @@ def _build_skip_hook(fn: "LineageFcn", outputs: list, db) -> Callable[[dict], bo
         # Strip __rid_* and other internal keys — only schema keys for DB lookups.
         schema_combo = {k: v for k, v in combo.items()
                         if k in schema_keys}
+        combo_str = _combo_str(schema_combo)
 
         # Step 1: all outputs must exist.
         output_record_id = None
         for OutputCls in outputs:
             rid = db.find_record_id(OutputCls, schema_combo)
             if rid is None:
+                logger.debug("missing: %s — no output record for %s",
+                             combo_str, OutputCls.__name__)
                 return False  # output missing → compute
             output_record_id = rid  # use the last output's record for provenance
 
@@ -130,6 +136,7 @@ def _build_skip_hook(fn: "LineageFcn", outputs: list, db) -> Callable[[dict], bo
         try:
             nodes = db.get_upstream_provenance(output_record_id)
         except Exception:
+            logger.debug("recompute: %s — provenance lookup failed", combo_str)
             return False  # provenance lookup failed → compute to be safe
 
         for node in nodes:
@@ -143,9 +150,11 @@ def _build_skip_hook(fn: "LineageFcn", outputs: list, db) -> Callable[[dict], bo
                 if stored_hash is None:
                     # No lineage record: output was not saved via scihist.
                     # Cannot verify provenance → recompute.
+                    logger.debug("recompute: %s — no lineage record (not saved via scihist)",
+                                 combo_str)
                     return False
                 if stored_hash != fn.hash:
-                    print(f"[recompute] {_combo_str(schema_combo)} — function changed")
+                    logger.debug("recompute: %s — function hash changed", combo_str)
                     return False
 
             # b. Input record_id check via _lineage.inputs.
@@ -159,11 +168,11 @@ def _build_skip_hook(fn: "LineageFcn", outputs: list, db) -> Callable[[dict], bo
                 current_rid = db.get_latest_record_id_for_variant(used_rid)
                 if current_rid != used_rid:
                     var_type = inp.get("type", "unknown")
-                    print(f"[recompute] {_combo_str(schema_combo)} — "
-                          f"upstream {var_type} updated")
+                    logger.debug("recompute: %s — upstream %s updated (was %s, now %s)",
+                                 combo_str, var_type, used_rid, current_rid)
                     return False
 
-        print(f"[skip] {_combo_str(schema_combo)}")
+        logger.debug("skip: %s — up to date", combo_str)
         return True
 
     return _should_skip
@@ -218,11 +227,11 @@ def _save_with_lineage(
 
                 meta_str = ", ".join(f"{k}={v}" for k, v in save_metadata.items()
                                      if not k.startswith("__"))
-                print(f"[save] {meta_str}: {_output_name(output_obj)}")
+                logger.debug("save: %s: %s", meta_str, _output_name(output_obj))
             except Exception as e:
                 meta_str = ", ".join(f"{k}={v}" for k, v in save_metadata.items()
                                      if not k.startswith("__"))
-                print(f"[error] {meta_str}: failed to save {_output_name(output_obj)}: {e}")
+                logger.error("save failed: %s: %s: %s", meta_str, _output_name(output_obj), e)
 
 
 def _save_lineage_fcn_result(

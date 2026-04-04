@@ -5,12 +5,12 @@
       "y": 184.2800108984949
     },
     "var__RollingVO2": {
-      "x": 629.4421315570359,
-      "y": 210.39966694421315
+      "x": 623.8650416909029,
+      "y": 193.66839734581438
     },
     "var__RawVO2": {
-      "x": -13.588676103247295,
-      "y": 104.98334721065777
+      "x": 140.33900420202147,
+      "y": 87.1366596390324
     },
     "const__sample_interval": {
       "x": -10.191507077435475,
@@ -41,18 +41,8 @@
       "y": 267.70031357438046
     }
   },
-  "manual_nodes": {
-    "fn__compute_rolling_vo2": {
-      "type": "functionNode",
-      "label": "compute_rolling_vo2"
-    },
-    "fn__compute_max_vo2": {
-      "type": "functionNode",
-      "label": "compute_max_vo2"
-    }
-  },
   "constants": [
     "new1"
   ],
-  "manual_edges": []
+  "pipeline_db_migrated": true
 }

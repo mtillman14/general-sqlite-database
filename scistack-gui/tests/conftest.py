@@ -112,6 +112,10 @@ def populated_db(tmp_path):
     _gui_db._db = db
     _gui_db._db_path = db_path
 
+    # Ensure pipeline structure tables exist (normally done by init_db).
+    from scistack_gui import pipeline_store
+    pipeline_store._ensure_tables(db)
+
     yield db
 
     db.close()

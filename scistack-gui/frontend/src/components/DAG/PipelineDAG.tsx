@@ -96,8 +96,11 @@ export default function PipelineDAG() {
   }, [nodes])  // eslint-disable-line react-hooks/exhaustive-deps
 
   const onNodeClick = useCallback((_: unknown, node: Node) => {
-    if (node.type === 'functionNode' || node.type === 'constantNode') setSelectedNode(node)
-    else setSelectedNode(null)
+    if (node.type === 'functionNode' || node.type === 'constantNode' || node.type === 'variableNode') {
+      setSelectedNode(node)
+    } else {
+      setSelectedNode(null)
+    }
   }, [setSelectedNode])
 
   const onPaneClick = useCallback(() => {

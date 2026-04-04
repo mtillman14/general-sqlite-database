@@ -42,6 +42,12 @@ def init_db(db_path: Path) -> DatabaseManager:
     schema_keys = read_schema_keys(db_path)
     _db = scidb.configure_database(db_path, schema_keys)
     _db_path = db_path
+
+    # Migrate manual_nodes / manual_edges from JSON into DuckDB (one-time, idempotent).
+    from scistack_gui import pipeline_store
+    layout_path = db_path.with_suffix(".layout.json")
+    pipeline_store.migrate_from_json(_db, layout_path)
+
     return _db
 
 

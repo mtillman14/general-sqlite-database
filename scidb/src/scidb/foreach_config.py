@@ -1,7 +1,24 @@
 """ForEachConfig — serializes for_each() computation config into version keys."""
 
+import hashlib
+import inspect
 import json
 from typing import Any, Callable
+
+
+def _compute_fn_hash(fn: Callable) -> str:
+    """SHA-256 of the function's source code, truncated to 16 hex chars.
+
+    Falls back to hashing ``fn.__name__`` if source is unavailable (e.g.
+    built-in or compiled functions).  The hash is used downstream by
+    check_combo_state to detect whether the function body has changed since
+    an output record was saved.
+    """
+    try:
+        src = inspect.getsource(fn)
+    except (OSError, TypeError):
+        src = getattr(fn, "__name__", repr(fn))
+    return hashlib.sha256(src.encode()).hexdigest()[:16]
 
 
 class ForEachConfig:
@@ -36,6 +53,7 @@ class ForEachConfig:
         """Return dict of config keys to merge into save_metadata."""
         keys = {}
         keys["__fn"] = getattr(self.fn, "__name__", repr(self.fn))
+        keys["__fn_hash"] = _compute_fn_hash(self.fn)
         inputs_key = self._serialize_inputs()
         if inputs_key != "{}":
             keys["__inputs"] = inputs_key
