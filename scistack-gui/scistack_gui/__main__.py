@@ -69,7 +69,7 @@ def main():
             print(f"Error importing module {module_path}: {e}", file=sys.stderr)
             sys.exit(1)
         from scistack_gui import registry
-        registry.register_module(user_mod)
+        registry.register_module(user_mod, module_path=module_path)
         print(f"Loaded module: {module_path}")
 
     # Initialise the shared DB connection before uvicorn starts.

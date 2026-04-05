@@ -10,7 +10,7 @@
  *   └───────────────────────────────┴─────────────┘
  */
 
-import { useEffect, useState } from 'react'
+import { useEffect, useState, useCallback } from 'react'
 import { ReactFlowProvider } from '@xyflow/react'
 import PipelineDAG from './components/DAG/PipelineDAG'
 import Sidebar from './components/Sidebar/Sidebar'
@@ -46,8 +46,18 @@ const styles: Record<string, React.CSSProperties> = {
     fontFamily: 'monospace',
     opacity: 0.8,
   },
-  schemaKeys: {
+  refreshBtn: {
     marginLeft: 'auto',
+    padding: '4px 12px',
+    background: '#2a2a4a',
+    color: '#ccc',
+    border: '1px solid #3a3a5a',
+    borderRadius: 4,
+    cursor: 'pointer',
+    fontSize: 12,
+    fontFamily: 'inherit',
+  },
+  schemaKeys: {
     opacity: 0.6,
     fontSize: 12,
   },
@@ -73,6 +83,22 @@ const styles: Record<string, React.CSSProperties> = {
 export default function App() {
   const [schema, setSchema] = useState<{ keys: string[] }>({ keys: [] })
   const [dbName, setDbName] = useState('')
+  const [refreshing, setRefreshing] = useState(false)
+
+  const handleRefresh = useCallback(async () => {
+    setRefreshing(true)
+    try {
+      const res = await fetch('/api/refresh', { method: 'POST' })
+      const data = await res.json()
+      if (!data.ok) {
+        console.error('Refresh failed:', data.error)
+      }
+    } catch (err) {
+      console.error('Refresh failed:', err)
+    } finally {
+      setRefreshing(false)
+    }
+  }, [])
 
   useEffect(() => {
     fetch('/api/schema')
@@ -93,6 +119,14 @@ export default function App() {
         <span style={styles.title}>SciStack</span>
         <span style={styles.separator}>|</span>
         <span style={styles.dbName}>{dbName || 'loading…'}</span>
+        <button
+          style={styles.refreshBtn}
+          onClick={handleRefresh}
+          disabled={refreshing}
+          title="Re-import the pipeline module from disk"
+        >
+          {refreshing ? 'Refreshing...' : 'Refresh Module'}
+        </button>
         {schema.keys.length > 0 && (
           <span style={styles.schemaKeys}>
             schema: [{schema.keys.join(', ')}]

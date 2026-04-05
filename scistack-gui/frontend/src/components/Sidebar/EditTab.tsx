@@ -6,7 +6,8 @@
  *   { nodeType: 'functionNode' | 'variableNode' | 'constantNode', label: string }
  */
 
-import { useEffect, useState, useRef } from 'react'
+import { useEffect, useState, useRef, useCallback } from 'react'
+import { useWebSocket } from '../../hooks/useWebSocket'
 
 interface Registry {
   functions: string[]
@@ -20,13 +21,22 @@ export default function EditTab() {
   const [draft, setDraft] = useState('')
   const inputRef = useRef<HTMLInputElement>(null)
 
-  useEffect(() => {
+  function fetchRegistry() {
     fetch('/api/registry')
       .then(r => r.json())
       .then(setRegistry)
       .catch(console.error)
+  }
+
+  useEffect(() => {
+    fetchRegistry()
     fetchConstants()
   }, [])
+
+  // Re-fetch registry when the backend signals a refresh (e.g. module reload).
+  useWebSocket(useCallback((msg) => {
+    if (msg.type === 'dag_updated') fetchRegistry()
+  }, []))
 
   function fetchConstants() {
     fetch('/api/constants')

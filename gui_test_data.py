@@ -75,6 +75,14 @@ def compute_max_hr(signal):
     """Peak heart rate."""
     return float(np.max(signal))
 
+def compute_80_perc_max_hr(max_hr):
+    """Max HR * 0.8"""
+    return max_hr * 0.8
+
+def compute_50_perc_max_hr(max_hr):
+    """Max HR * 0.5"""
+    return max_hr * 0.5
+
 
 # ------------------------------------------------------------------
 # Data seeding — only runs when executed directly, not on import.

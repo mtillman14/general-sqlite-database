@@ -1663,3 +1663,6 @@
 [16:29:05.574] [INFO] [save] subject=S03: MaxVO2
 [16:29:05.583] [INFO] [save] subject=S03: MaxVO2
 [16:29:05.592] [INFO] [save] subject=S03: MaxVO2
+[19:26:31.212] [INFO] configure_database: path=/home/mtillman/SciDB/test_gui.duckdb, schema_keys=['subject']
+[09:45:39.408] [INFO] configure_database: path=/home/mtillman/SciDB/test_gui.duckdb, schema_keys=['subject']
+[09:52:02.189] [INFO] configure_database: path=/home/mtillman/SciDB/test_gui.duckdb, schema_keys=['subject']
