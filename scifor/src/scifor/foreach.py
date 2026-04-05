@@ -369,7 +369,9 @@ def _filter_df_for_combo(
     mask = pd.Series([True] * len(df), index=df.index)
     for key in schema_keys:
         if key in df.columns and key in metadata:
-            mask = mask & (df[key] == metadata[key])
+            col_vals = df[key]
+            meta_val = metadata[key]
+            mask = mask & (col_vals == meta_val)
     return df[mask].reset_index(drop=True)
 
 

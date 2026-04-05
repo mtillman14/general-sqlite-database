@@ -14,6 +14,7 @@ import pytest
 import scifor as _scifor
 
 # Make sure the local package is importable from an editable install.
+sys.path.insert(0, str(Path(__file__).parent))        # make conftest importable
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from fastapi.testclient import TestClient

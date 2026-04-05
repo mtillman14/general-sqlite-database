@@ -8,8 +8,6 @@ from scilineage import lineage_fcn
 from scihist import for_each
 from scihist.state import check_combo_state, check_node_state
 
-from conftest import DEFAULT_TEST_SCHEMA_KEYS  # ["subject", "trial"]
-
 
 # ---------------------------------------------------------------------------
 # Variable types — defined at module level for BaseVariable registry

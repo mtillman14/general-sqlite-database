@@ -156,6 +156,25 @@ def for_each(
     # Propagate schema keys to scifor so distribute and DataFrame detection work
     _propagate_schema(db, distribute)
 
+    # Stringify metadata_iterables values for schema keys.
+    # _load_var_type_all stringifies schema columns in loaded DataFrames (DB returns
+    # typed values like np.int64); combo metadata must match to filter correctly.
+    _resolved_db_for_str = db
+    if _resolved_db_for_str is None:
+        try:
+            from scidb.database import get_database
+            _resolved_db_for_str = get_database()
+        except Exception:
+            _resolved_db_for_str = None
+    if _resolved_db_for_str is not None and hasattr(_resolved_db_for_str, 'dataset_schema_keys'):
+        from scidb.database import _schema_str
+        _sk_set = set(_resolved_db_for_str.dataset_schema_keys)
+        for key in list(metadata_iterables.keys()):
+            if key in _sk_set:
+                metadata_iterables[key] = [
+                    _schema_str(v) for v in metadata_iterables[key]
+                ]
+
     # Build output_names for scifor
     output_names = [_output_name(o) for o in outputs] if outputs else ["result"]
 

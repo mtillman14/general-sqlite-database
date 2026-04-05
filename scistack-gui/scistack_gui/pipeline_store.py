@@ -118,6 +118,7 @@ def migrate_from_json(db, layout_path: Path) -> None:
 
 def get_manual_nodes(db) -> dict[str, dict]:
     """Return {node_id: {"type": ..., "label": ...}} for all manual nodes."""
+    _ensure_tables(db)
     rows = _duck(db)._fetchall(
         "SELECT node_id, node_type, label FROM _pipeline_nodes"
     )
@@ -125,6 +126,7 @@ def get_manual_nodes(db) -> dict[str, dict]:
 
 
 def write_manual_node(db, node_id: str, node_type: str, label: str) -> None:
+    _ensure_tables(db)
     _upsert_node(db, node_id, node_type, label)
 
 
@@ -147,6 +149,7 @@ def graduate_manual_node(db, old_id: str, new_id: str) -> None:
 
 def get_manual_edges(db) -> list[dict]:
     """Return all manual edges as a list of dicts."""
+    _ensure_tables(db)
     rows = _duck(db)._fetchall(
         "SELECT edge_id, source, target, source_handle, target_handle "
         "FROM _pipeline_edges"
@@ -163,6 +166,7 @@ def get_manual_edges(db) -> list[dict]:
 
 
 def write_manual_edge(db, edge: dict) -> None:
+    _ensure_tables(db)
     _upsert_edge(
         db,
         edge["id"],
@@ -184,6 +188,7 @@ def delete_manual_edge(db, edge_id: str) -> None:
 # ---------------------------------------------------------------------------
 
 def add_pending_constant(db, const_name: str, value: str) -> None:
+    _ensure_tables(db)
     _duck(db)._execute(
         "INSERT INTO _pipeline_pending_constants (constant_name, value) VALUES (?, ?) "
         "ON CONFLICT DO NOTHING",
@@ -200,6 +205,7 @@ def remove_pending_constant(db, const_name: str, value: str) -> None:
 
 def get_pending_constants(db) -> dict[str, set[str]]:
     """Return {constant_name: {value, ...}} for all pending constant values."""
+    _ensure_tables(db)
     rows = _duck(db)._fetchall(
         "SELECT constant_name, value FROM _pipeline_pending_constants"
     )

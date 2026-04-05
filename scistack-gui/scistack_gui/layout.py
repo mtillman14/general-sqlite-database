@@ -54,6 +54,7 @@ def read_layout() -> dict:
         "positions": data["positions"],
         "manual_nodes": pipeline_store.get_manual_nodes(db),
         "manual_edges": pipeline_store.get_manual_edges(db),
+        "constants": data.get("constants", []),
     }
 
 
