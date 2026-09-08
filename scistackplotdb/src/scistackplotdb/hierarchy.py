@@ -23,11 +23,17 @@ from typing import Literal
 import pandas as pd
 from scistacklog import Log
 
-from .load import VariableFrame
+from .load import LATEST_COLUMN, VariableFrame
 
 LAYER = "scistackplotdb"
 
 JoinKind = Literal["identical", "broadcast", "incompatible"]
+
+#: Private carriers for each side's latest-flag across a merge. Never leave
+#: :func:`join_frames` — they are combined into one :data:`LATEST_COLUMN` and
+#: dropped, so nothing downstream has to know a join happened.
+_LEFT_LATEST = "__latest_left"
+_RIGHT_LATEST = "__latest_right"
 
 
 def join_kind(levels_a: list[str], levels_b: list[str]) -> JoinKind:
@@ -72,6 +78,16 @@ def join_frames(
     left_frame = left.frame[[*left.levels, left_value, *left.variant_columns]].copy()
     right_frame = right.frame[[*right.levels, right_value, *right.variant_columns]].copy()
 
+    # Carry each side's "my chain is current" flag through the join under a
+    # private name, so the two cannot collide and neither is lost. Before this
+    # the flag was simply dropped and a two-measure plot silently fell back to
+    # showing every code version — the one case where the pin-latest default
+    # quietly stopped applying.
+    if left.latest_column:
+        left_frame[_LEFT_LATEST] = left.frame[left.latest_column].values
+    if right.latest_column:
+        right_frame[_RIGHT_LATEST] = right.frame[right.latest_column].values
+
     # Variant columns can collide by name when both variables carry the same
     # branch param; suffix the right one so neither is silently dropped.
     overlap = set(left.variant_columns) & set(right.variant_columns)
@@ -81,6 +97,20 @@ def join_frames(
         )
 
     merged = left_frame.merge(right_frame, on=on, how="inner", suffixes=("", "_right"))
+
+    # A joined row is current only if BOTH of its measures are. Either side
+    # being stale makes the pair a comparison across code versions, which is
+    # exactly what the flag exists to keep out of the default figure.
+    if _LEFT_LATEST in merged.columns or _RIGHT_LATEST in merged.columns:
+        combined = None
+        for column in (_LEFT_LATEST, _RIGHT_LATEST):
+            if column in merged.columns:
+                flag = merged[column].astype(bool)
+                combined = flag if combined is None else (combined & flag)
+        merged[LATEST_COLUMN] = combined
+        merged = merged.drop(
+            columns=[c for c in (_LEFT_LATEST, _RIGHT_LATEST) if c in merged.columns]
+        )
 
     Log.info(
         "%s join: %s(%d) x %s(%d) on %s -> %d row(s)",

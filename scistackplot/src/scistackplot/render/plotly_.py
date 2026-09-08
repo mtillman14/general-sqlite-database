@@ -25,13 +25,18 @@ from ..spec import PlotKind
 from .base import (
     color_groups,
     grid_shape,
+    legend_levels,
     palette_color,
     panel_position,
+    shows_legend,
     shows_x_labels,
     shows_y_labels,
 )
 
 LAYER = "scistackplot"
+
+#: Right margin with no legend in it — just room for the last x tick label.
+BARE_RIGHT_MARGIN = 20
 
 
 def render(resolved: ResolvedPlot) -> dict:
@@ -39,10 +44,34 @@ def render(resolved: ResolvedPlot) -> dict:
     with Log.timer("render_plotly", layer=LAYER, extra=str(resolved.kind)):
         n_rows, n_cols = grid_shape(resolved)
         traces: list[dict] = []
+        legend_on = shows_legend(resolved)
+        if not legend_on and resolved.encoding.color:
+            Log.debug(
+                "legend omitted: %d colour level(s) drawn for %r",
+                len(legend_levels(resolved)),
+                resolved.labels.color,
+                layer=LAYER,
+            )
         layout: dict[str, Any] = {
-            "showlegend": bool(resolved.encoding.color),
-            "legend": {"title": {"text": resolved.labels.color or ""}},
-            "margin": {"l": 60, "r": 20, "t": 40, "b": 50},
+            "showlegend": legend_on,
+            "legend": {
+                "title": {"text": resolved.labels.color or ""},
+                # Stated, not defaulted: outside the plotting area on the right
+                # and vertically centred, which is exactly where the matplotlib
+                # export puts it. The margin below reserves the room it sits in
+                # — at plotly's default right margin the legend was drawn into
+                # 20px of space and clipped.
+                "x": 1.02,
+                "xanchor": "left",
+                "y": 0.5,
+                "yanchor": "middle",
+            },
+            "margin": {
+                "l": 60,
+                "r": _right_margin(resolved) if legend_on else BARE_RIGHT_MARGIN,
+                "t": 40,
+                "b": 50,
+            },
             "hovermode": "closest",
             "annotations": [],
             # The grid shape travels with the figure so the panel can size it:
@@ -73,7 +102,9 @@ def render(resolved: ResolvedPlot) -> dict:
             y_axis = "y" if slot == 1 else f"y{slot}"
 
             traces.extend(
-                _panel_traces(panel.frame, resolved, x_axis, y_axis, seen_legend)
+                _panel_traces(
+                    panel.frame, resolved, x_axis, y_axis, seen_legend, legend_on
+                )
             )
             _add_axes(
                 layout,
@@ -115,6 +146,7 @@ def _panel_traces(
     x_axis: str,
     y_axis: str,
     seen_legend: set[str],
+    legend_on: bool = True,
 ) -> list[dict]:
     if frame.empty:
         return []
@@ -138,7 +170,7 @@ def _panel_traces(
     for index, (level, subset) in enumerate(color_groups(frame, resolved)):
         color = palette_color(index)
         label = str(level) if level is not None else resolved.labels.y
-        show_legend = level is not None and label not in seen_legend
+        show_legend = legend_on and level is not None and label not in seen_legend
         if show_legend:
             seen_legend.add(label)
 
@@ -336,6 +368,26 @@ def _panel_title(text, row, col, n_rows, n_cols) -> dict:
         "yanchor": "bottom",
         "font": {"size": 11},
     }
+
+
+#: Approximate width of one legend character at the webview's font size, in px.
+#: The renderer emits JSON and never measures text, so the strip is sized from
+#: the label lengths — generously, because too wide only costs plot area while
+#: too narrow clips the level names.
+LEGEND_CHAR_PX = 8
+#: Swatch, padding and the gap between the panels and the legend.
+LEGEND_FIXED_PX = 48
+#: Same cap as the matplotlib path (mpl.MAX_LEGEND_FRACTION), in pixels against
+#: the default figure width.
+MAX_LEGEND_PX = 320
+
+
+def _right_margin(resolved: ResolvedPlot) -> int:
+    """Room on the right for the legend, sized from the longest entry."""
+    entries = [str(level) for level in legend_levels(resolved)]
+    entries.append(resolved.labels.color or "")
+    longest = max((len(text) for text in entries), default=0)
+    return int(min(MAX_LEGEND_PX, LEGEND_FIXED_PX + LEGEND_CHAR_PX * longest))
 
 
 #: Space between subplot cells, as a fraction of the figure. The vertical gap is

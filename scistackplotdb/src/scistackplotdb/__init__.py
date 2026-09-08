@@ -39,8 +39,8 @@ from .endpoint import (
 from .hierarchy import join_frames, join_kind, joinable, joined_levels
 from .load import (
     LATEST_COLUMN,
-    RAW_VERSION_LEVEL,
-    VERSION_FACTOR,
+    MISSING_VERSION_LEVEL,
+    VERSION_FACTOR_PREFIX,
     VariableFrame,
     attach_variants,
     data_columns_for,
@@ -54,8 +54,8 @@ from .source import ScidbSource
 __all__ = [
     "ScidbSource",
     "VariableFrame",
-    "VERSION_FACTOR",
-    "RAW_VERSION_LEVEL",
+    "VERSION_FACTOR_PREFIX",
+    "MISSING_VERSION_LEVEL",
     "LATEST_COLUMN",
     "load_variable",
     "attach_variants",

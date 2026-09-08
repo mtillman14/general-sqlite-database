@@ -178,6 +178,28 @@ def _filter_records_by_branch_params(df, branch_params_filter: dict | None, duck
     if not branch_params_filter or len(df) == 0:
         return df
     from . import provenance_query
+    from .variant import CODE_PIN_PREFIX
+
+    # Split the two variant dimensions. They travel in one dict on purpose (see
+    # CODE_PIN_PREFIX) but they resolve against different graph reads: constants
+    # accumulate through `branch_params_batch`, code versions through
+    # `code_versions_batch`.
+    code_filter = {
+        k: v
+        for k, v in branch_params_filter.items()
+        if k == CODE_PIN_PREFIX or k.startswith(f"{CODE_PIN_PREFIX}.")
+    }
+    param_filter = {
+        k: v for k, v in branch_params_filter.items() if k not in code_filter
+    }
+
+    if code_filter and duck is not None:
+        df = _filter_records_by_code_version(df, code_filter, duck)
+        if len(df) == 0:
+            return df
+
+    if not param_filter:
+        return df
 
     # Derive every candidate record's branch params from the graph in one batched
     # closure build (instead of a per-record ancestry walk).
@@ -190,12 +212,149 @@ def _filter_records_by_branch_params(df, branch_params_filter: dict | None, duck
     def _bp_for(record_id):
         return bp_cache.get(record_id, {})
 
-    for key, value in branch_params_filter.items():
+    for key, value in param_filter.items():
 
         def _match_row(row, k=key, v=value):
             return _match_branch_param(_bp_for(row["record_id"]), k, v)
 
         df = df[df.apply(_match_row, axis=1)]
+    return df
+
+
+def _filter_records_by_code_version(df, code_filter: dict, duck):
+    """Keep only records whose producing *code* matches ``code_filter``.
+
+    The code half of :func:`_filter_records_by_branch_params`. Keys are either
+    ``__code__`` (resolve the function automatically) or ``__code__.<fn_name>``
+    (explicit). Values are a per-function ordinal (``"v1"``) or ``"latest"``.
+
+    Two resolutions, deliberately different:
+
+    * a named ordinal compares against
+      :func:`~scidb.provenance_query.code_version_ordinals`, which is scoped per
+      *function* so ``v2`` names the same code everywhere;
+    * ``"latest"`` uses ``variant_identity_batch``'s ``is_latest``, which is
+      chain-wide and resolved per schema *location* — so a location never re-run
+      under the newest code keeps its own newest record instead of dropping out
+      of the run entirely.
+    """
+    from . import provenance_query
+    from .exceptions import AmbiguousParamError
+    from .variant import CODE_PIN_PREFIX, LATEST_VERSION
+
+    record_ids = df["record_id"].tolist()
+    pinned_fns: set = set()
+    chain_wide = False
+
+    for key, value in code_filter.items():
+        wanted = str(value)
+
+        if wanted == LATEST_VERSION:
+            # Chain-wide: pins every versioned dimension at once, so it is never
+            # a partial pin and needs no per-function resolution.
+            chain_wide = True
+            ident = provenance_query.variant_identity_batch(duck, record_ids)
+            keep = {
+                rid
+                for rid in record_ids
+                # `is_latest` is None for a raw record — nothing upstream ever
+                # versioned it, so it cannot be stale. Keep it.
+                if (ident.get(rid) or {}).get("is_latest") is not False
+            }
+            df = df[df["record_id"].isin(keep)]
+            record_ids = df["record_id"].tolist()
+            continue
+
+        chains = provenance_query.code_versions_batch(duck, record_ids)
+        present_fns = {name for chain in chains.values() for name in chain}
+        ordinals = provenance_query.code_version_ordinals(duck, present_fns)
+
+        fn_name = key[len(CODE_PIN_PREFIX) + 1 :] if "." in key else None
+        if fn_name is None:
+            # Bare pin: unambiguous only when exactly one upstream function has
+            # more than one version. Mirrors `_match_branch_param`'s bare-name
+            # rule, and fails the same way rather than picking arbitrarily.
+            candidates = sorted(ordinals)
+            if len(candidates) > 1:
+                raise AmbiguousParamError(
+                    f"code_version={wanted!r} is ambiguous: more than one "
+                    f"upstream function has multiple versions ({candidates}). "
+                    f'Name one with fn=, e.g. Variant(X, fn="{candidates[0]}", '
+                    f"code_version={wanted!r})."
+                )
+            if not candidates:
+                # Nothing upstream is versioned, so the pin selects everything
+                # rather than nothing — a project where no function was ever
+                # edited must not silently produce an empty run.
+                Log.debug(
+                    f"code_version={wanted!r}: no upstream function has >1 "
+                    f"version; pin is a no-op"
+                )
+                continue
+            fn_name = candidates[0]
+
+        # A named function that is nowhere upstream is a typo, not an empty
+        # result set. Every failure below says what IS available, because the
+        # alternative — silently keeping nothing — produces a run that reports
+        # success having computed no records at all.
+        if fn_name not in present_fns:
+            raise ValueError(
+                f"code_version pin names {fn_name!r}, which is not upstream of "
+                f"these records. Available: {sorted(present_fns) or 'none'}."
+            )
+
+        by_hash = ordinals.get(fn_name)
+        if not by_hash:
+            # Single-version function: `code_version_ordinals` omits it, but its
+            # one version IS v1. Treat that as a satisfied pin rather than
+            # matching nothing — the qualified path used to empty the run here.
+            if wanted != "v1":
+                raise ValueError(
+                    f"{fn_name!r} has only one recorded version, so "
+                    f"code_version={wanted!r} matches nothing. Use 'v1', or "
+                    f"'latest'."
+                )
+            pinned_fns.add(fn_name)
+            continue
+
+        available = sorted(set(by_hash.values()))
+        if wanted not in available:
+            raise ValueError(
+                f"{fn_name!r} has versions {available}; code_version="
+                f"{wanted!r} matches nothing."
+            )
+
+        pinned_fns.add(fn_name)
+        keep = {
+            rid
+            for rid in record_ids
+            if by_hash.get(chains.get(rid, {}).get(fn_name)) == wanted
+        }
+        df = df[df["record_id"].isin(keep)]
+        record_ids = df["record_id"].tolist()
+
+    # A pin naming ONE function when several upstream functions are versioned is
+    # a *partial* pin: the unnamed dimensions stay free and still fan out. That
+    # is legitimate ("every variant where bandpass=v1"), but it is not what
+    # "pin the variant" sounds like, and a silently doubled record count is the
+    # same failure class this whole feature exists to prevent. Say so.
+    if record_ids and not chain_wide:
+        chains = provenance_query.code_versions_batch(duck, record_ids)
+        versioned = set(
+            provenance_query.code_version_ordinals(
+                duck, {name for chain in chains.values() for name in chain}
+            )
+        )
+        unpinned = sorted(versioned - pinned_fns)
+        if unpinned:
+            Log.warn(
+                f"code_version pin is PARTIAL: {sorted(pinned_fns)} pinned, but "
+                f"{unpinned} still have multiple versions among the surviving "
+                f"records, so those dimensions remain free and will fan out. "
+                f"Pin them too, or use code_version='latest' to pin the whole "
+                f"chain."
+            )
+
     return df
 
 

@@ -15,7 +15,7 @@ from __future__ import annotations
 
 from .shape import Shape
 from .spec import PlotKind, PlotSpec, Role
-from .table import LongTable
+from .table import CODE_FACTOR_PREFIX, LongTable
 
 #: Kinds that summarize several rows per x position into one mark.
 DISTRIBUTION_KINDS = (PlotKind.BOX, PlotKind.VIOLIN, PlotKind.BAR, PlotKind.BAND)
@@ -143,4 +143,74 @@ def capabilities(spec: PlotSpec, table: LongTable) -> dict:
             for kind in PlotKind
         ],
         "roles": {name: str(role) for name, role in roles.items()},
+        "variants": variant_summary(spec, table),
+    }
+
+
+def variant_summary(spec: PlotSpec, table: LongTable) -> dict:
+    """The variant picker's whole data model, and the combination readout.
+
+    One row per variant factor — its levels, which of them the current pin
+    selects, and whether it is a code axis — plus how many variant combinations
+    exist versus survive.
+
+    **Why the counts are measured, not computed.** Multiplying level counts
+    would be wrong in two ways that matter. The default pin is on
+    ``CodeIsLatest``, which is deliberately *not* a variant factor, so a purely
+    combinatorial count would report every combination as selected while the
+    figure showed half of them. And real data is ragged: a location never re-run
+    under the newest code has no row for that combination, so the Cartesian
+    product overstates what exists. Both numbers therefore come from the frame,
+    through the same :func:`~scistackplot.reduce.variant_pin_mask` the renderer
+    applies — a readout the figure could disagree with would be worse than none.
+
+    ``selected_combinations`` of 0 is a legitimate state to display (the user has
+    unchecked everything); it is ``roles.validate``'s job to refuse rendering it,
+    not this function's to hide it.
+    """
+    from .reduce import variant_pin_mask
+    from .spec import VariantPolicy
+
+    frame = table.frame
+    names = [f.name for f in table.variant_factors if f.name in frame.columns]
+    if not names:
+        return {
+            "factors": [],
+            "total_combinations": 0,
+            "selected_combinations": 0,
+            "policy": str(spec.variant_policy),
+        }
+
+    pinning = spec.variant_policy is VariantPolicy.PIN
+    kept = frame[variant_pin_mask(frame, spec.pinned_variant)] if pinning else frame
+
+    as_text = frame[names].astype(str)
+    total = len(as_text.drop_duplicates())
+    selected = len(kept[names].astype(str).drop_duplicates()) if len(kept) else 0
+
+    factors = []
+    for factor in table.variant_factors:
+        if factor.name not in frame.columns:
+            continue
+        levels = [str(level) for level in factor.levels]
+        surviving = (
+            set(kept[factor.name].astype(str)) if len(kept) else set()
+        )
+        factors.append(
+            {
+                "name": factor.name,
+                "levels": levels,
+                "selected": [level for level in levels if level in surviving],
+                # Code axes read differently from experimental conditions —
+                # one is usually pinned, the other usually faceted — so the GUI
+                # needs to tell them apart without parsing the name itself.
+                "is_code": factor.name.startswith(CODE_FACTOR_PREFIX),
+            }
+        )
+
+    return {
+        "factors": factors,
+        "total_combinations": total,
+        "selected_combinations": selected,
+        "policy": str(spec.variant_policy),
     }

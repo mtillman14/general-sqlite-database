@@ -26,6 +26,7 @@ from scistackplot.sources import BaseSource
 
 from .hierarchy import join_frames, joinable, joined_levels
 from .load import (
+    LATEST_COLUMN,
     data_columns_for,
     load_variable,
     registered_variables,
@@ -203,11 +204,7 @@ class ScidbSource(BaseSource):
             levels = primary.levels
             variant_columns = list(primary.variant_columns)
             measure_names = [measures[0]]
-            # Open on the current code version. Only for a single measure: a
-            # two-measure join drops the flag (hierarchy.join_frames keeps only
-            # levels, values and variant columns), and rather than reconstruct
-            # it across a broadcast we let that case show every version, which
-            # default_roles keeps visibly separated anyway.
+            # Open on the current code version.
             default_pin = (
                 {primary.latest_column: True} if primary.latest_column else None
             )
@@ -242,10 +239,21 @@ class ScidbSource(BaseSource):
                 dict.fromkeys(primary.variant_columns + secondary.variant_columns)
             )
             measure_names = list(measures)
-            default_pin = None
+            # `join_frames` now carries both sides' flags through the merge and
+            # ANDs them, so the pin-latest default applies to two-measure plots
+            # too. It used to drop the flag, which made a relational scatter the
+            # one place the default silently stopped protecting the figure.
+            default_pin = (
+                {LATEST_COLUMN: True} if LATEST_COLUMN in frame.columns else None
+            )
 
-        factors = [key for key in levels if key in frame.columns]
-        factors.extend(c for c in variant_columns if c in frame.columns)
+        # Variant columns first, and code versions lead within them (see
+        # `attach_variants`). The variants are what a reader has to make a
+        # decision about — a schema key is just where the data sits — so they
+        # get the top of the factor list rather than whatever position the
+        # schema happened to leave them.
+        factors = [c for c in variant_columns if c in frame.columns]
+        factors.extend(key for key in levels if key in frame.columns)
         factors.extend(c for c in field_columns if c in frame.columns)
 
         level_order = {

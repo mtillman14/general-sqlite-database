@@ -167,6 +167,109 @@ def test_plotly_legend_entry_appears_once_per_level(series_table):
     assert len(shown) == 2
 
 
+# --- legends ---------------------------------------------------------------
+
+
+@pytest.fixture
+def one_colour_level_spec():
+    """
+    A colour factor the data has TWO levels of, filtered down to one.
+
+    The declared level order still says "pre, post" here — the legend rule has
+    to look at what the figure draws, not at what the table could have drawn.
+    """
+    from scistackplot import Filter
+
+    return PlotSpec(
+        measures=["StepLength"],
+        roles={"subject": Role.X, "session": Role.COLOR, "trial": Role.FREE},
+        kind=PlotKind.BOX,
+        filters=[Filter(column="session", include=["pre"])],
+    )
+
+
+def test_no_legend_for_a_single_colour_level(scalar_table, one_colour_level_spec):
+    figure = render_matplotlib(resolve(one_colour_level_spec, scalar_table)[0])
+    assert figure.legends == []
+    matplotlib.pyplot.close(figure)
+
+
+def test_plotly_hides_the_legend_for_a_single_colour_level(
+    scalar_table, one_colour_level_spec
+):
+    payload = render_plotly(resolve(one_colour_level_spec, scalar_table)[0])
+    assert payload["layout"]["showlegend"] is False
+    assert not [trace for trace in payload["data"] if trace.get("showlegend")]
+
+
+def test_legend_is_drawn_for_two_colour_levels(scalar_table, box_spec):
+    figure = render_matplotlib(resolve(box_spec, scalar_table)[0])
+    assert len(figure.legends) == 1
+    assert {text.get_text() for text in figure.legends[0].get_texts()} == {"pre", "post"}
+    matplotlib.pyplot.close(figure)
+
+
+def test_matplotlib_legend_sits_right_of_every_panel(scalar_table):
+    """The export must place the legend where the interactive view does."""
+    spec = PlotSpec(
+        measures=["StepLength"],
+        roles={
+            "subject": Role.X,
+            "session": Role.COLOR,
+            "trial": Role.FACET,
+        },
+        kind=PlotKind.BAR,
+    )
+    figure = render_matplotlib(resolve(spec, scalar_table)[0])
+    figure.canvas.draw()
+    renderer = figure.canvas.get_renderer()
+
+    legend_left = figure.legends[0].get_window_extent(renderer).x0
+    panel_right = max(
+        ax.get_window_extent(renderer).x1 for ax in figure.axes if ax.get_visible()
+    )
+    assert panel_right <= legend_left
+    matplotlib.pyplot.close(figure)
+
+
+def test_matplotlib_legend_covers_levels_missing_from_the_first_panel(scalar_table):
+    """A level only present in a later facet still gets a legend entry."""
+    import pandas as pd
+
+    from scistackplot import LongTable
+
+    frame = pd.DataFrame(
+        {
+            "subject": ["01", "01", "02", "02"],
+            "session": ["pre", "pre", "post", "post"],
+            "trial": ["1", "2", "1", "2"],
+            "StepLength": [1.0, 1.1, 1.4, 1.5],
+        }
+    )
+    table = LongTable.from_frame(
+        frame, factors=["subject", "session", "trial"], measures=["StepLength"]
+    )
+    spec = PlotSpec(
+        measures=["StepLength"],
+        roles={"trial": Role.X, "session": Role.COLOR, "subject": Role.FACET},
+        kind=PlotKind.BAR,
+    )
+    figure = render_matplotlib(resolve(spec, table)[0])
+
+    assert {text.get_text() for text in figure.legends[0].get_texts()} == {"pre", "post"}
+    matplotlib.pyplot.close(figure)
+
+
+def test_plotly_reserves_right_margin_for_the_legend(scalar_table, box_spec):
+    from scistackplot.render.plotly_ import BARE_RIGHT_MARGIN
+
+    payload = render_plotly(resolve(box_spec, scalar_table)[0])
+    legend = payload["layout"]["legend"]
+
+    assert legend["x"] > 1.0 and legend["xanchor"] == "left"
+    assert payload["layout"]["margin"]["r"] > BARE_RIGHT_MARGIN
+
+
 # --- facet grid layout -----------------------------------------------------
 
 

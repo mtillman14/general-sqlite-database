@@ -97,14 +97,32 @@ def _loaded_record_ids(db):
 # ---------------------------------------------------------------------------
 
 
-def _inject(db, record_id, schema_id, timestamp, fn_name=None, fn_hash=None):
-    """Insert one Loaded record, optionally with a producing invocation."""
+def _inject(
+    db,
+    record_id,
+    schema_id,
+    timestamp,
+    fn_name=None,
+    fn_hash=None,
+    inputs=(),
+    vtype="Loaded",
+):
+    """Insert one record, optionally with a producing invocation.
+
+    ``inputs`` names record_ids consumed by that invocation, which is what turns
+    a set of flat records into a chain the code-version walk can follow.
+
+    ``vtype`` matters once a test builds more than one pipeline layer: each
+    layer is its own variable type in any real project, and ``fn_version`` is
+    numbered per type — so keeping two layers under one type would pool their
+    unrelated function hashes into a single ordinal sequence.
+    """
     duck = db._duck
     duck.con.execute(
         "INSERT INTO _record "
         "(record_id, created_at, type, schema_id, content_hash, schema_version, excluded) "
-        "VALUES (?, ?, 'Loaded', ?, ?, 1, FALSE)",
-        [record_id, timestamp, schema_id, "ab" * 32],
+        "VALUES (?, ?, ?, ?, ?, 1, FALSE)",
+        [record_id, timestamp, vtype, schema_id, "ab" * 32],
     )
     duck.con.execute(
         "INSERT INTO _record_save (record_id, timestamp) VALUES (?, ?)",
@@ -123,6 +141,13 @@ def _inject(db, record_id, schema_id, timestamp, fn_name=None, fn_hash=None):
             "(invocation_id, output_num, output_record_id) VALUES (?, 0, ?)",
             [inv_id, record_id],
         )
+        for position, input_rid in enumerate(inputs):
+            duck.con.execute(
+                "INSERT INTO _invocation_input "
+                "(invocation_id, param_name, input_record_id, selector) "
+                "VALUES (?, ?, ?, NULL)",
+                [inv_id, f"in{position}", input_rid],
+            )
     return record_id
 
 
@@ -401,3 +426,148 @@ class TestEdges:
         ident = variant_identity_batch(db._duck, ["does_not_exist"])
         assert ident["does_not_exist"]["fn_version"] is None
         assert ident["does_not_exist"]["branch_params"] == {}
+        assert ident["does_not_exist"]["code_chain"] == {}
+
+
+# ---------------------------------------------------------------------------
+# Chains: code versions introduced UPSTREAM of the record being asked about.
+#
+# `fn_version` answers "which code made this record" — one hop. Once a pipeline
+# has layers, that is not enough: a record whose own producer never changed is
+# still a different thing when something upstream of it did. These pin the
+# transitive answer. See docs/claude/variant-selection.md §2.
+# ---------------------------------------------------------------------------
+
+
+class TestCodeChain:
+    def _two_layer(self, db):
+        """`load` runs at two versions; `derive` consumes each and never changes.
+
+        Returns the two DERIVED record ids — the ones whose own producing hash
+        is identical and which therefore used to be indistinguishable.
+        """
+        sid = _schema_id(db, subject="1")
+        up_old = _inject(db, "up_old", sid, "2026-09-08T10:00:00", "load", "h1")
+        up_new = _inject(db, "up_new", sid, "2026-09-08T11:00:00", "load", "h2")
+        down_old = _inject(
+            db,
+            "down_old",
+            sid,
+            "2026-09-08T10:05:00",
+            "derive",
+            "d1",
+            [up_old],
+            vtype="Derived",
+        )
+        down_new = _inject(
+            db,
+            "down_new",
+            sid,
+            "2026-09-08T11:05:00",
+            "derive",
+            "d1",
+            [up_new],
+            vtype="Derived",
+        )
+        return down_old, down_new
+
+    def test_upstream_version_appears_in_the_chain(self, db):
+        down_old, down_new = self._two_layer(db)
+
+        ident = variant_identity_batch(db._duck, [down_old, down_new])
+
+        assert ident[down_old]["code_chain"] == {"load": "v1"}
+        assert ident[down_new]["code_chain"] == {"load": "v2"}
+
+    def test_the_unedited_producer_is_not_an_axis(self, db):
+        """`derive` has one version, so it must not appear at all — a column
+        whose only level is v1 is noise in every figure that carries it."""
+        _down_old, down_new = self._two_layer(db)
+
+        ident = variant_identity_batch(db._duck, [down_new])
+
+        assert "derive" not in ident[down_new]["code_chain"]
+
+    def test_one_hop_identity_still_says_they_are_the_same(self, db):
+        """The bug's mechanism, kept visible: nothing about the producing
+        invocation distinguishes these two records."""
+        down_old, down_new = self._two_layer(db)
+
+        ident = variant_identity_batch(db._duck, [down_old, down_new])
+
+        assert ident[down_old]["fn_hash"] == ident[down_new]["fn_hash"]
+        assert ident[down_old]["fn_version"] is None, (
+            "one version of `derive` exists, so there is no ordinal to give — "
+            "which is exactly why the chain has to be consulted instead"
+        )
+
+    def test_is_latest_follows_the_chain(self, db):
+        """The record whose upstream is stale is NOT current, even though its
+        own producing function is the newest (and only) version of itself."""
+        down_old, down_new = self._two_layer(db)
+
+        ident = variant_identity_batch(db._duck, [down_old, down_new])
+
+        assert ident[down_old]["is_latest"] is False
+        assert ident[down_new]["is_latest"] is True
+
+    def test_a_single_version_project_gains_nothing(self, db):
+        """The ordinary case must be untouched: no versions anywhere means no
+        chain entries, so no columns and no behaviour change."""
+        sid = _schema_id(db, subject="1")
+        up = _inject(db, "up", sid, "2026-09-08T10:00:00", "load", "h1")
+        down = _inject(
+            db,
+            "down",
+            sid,
+            "2026-09-08T10:05:00",
+            "derive",
+            "d1",
+            [up],
+            vtype="Derived",
+        )
+
+        ident = variant_identity_batch(db._duck, [down])
+
+        assert ident[down]["code_chain"] == {}
+        assert ident[down]["is_latest"] is True
+
+    def test_ordinals_are_scoped_per_function(self, db):
+        """`load` v1/v2 must mean the same code wherever it appears, including
+        at a location that only ever saw one of them."""
+        sid_a = _schema_id(db, subject="1")
+        sid_b = _schema_id(db, subject="2")
+        a_old = _inject(db, "a_old", sid_a, "2026-09-08T10:00:00", "load", "h1")
+        a_new = _inject(db, "a_new", sid_a, "2026-09-08T11:00:00", "load", "h2")
+        # subject=2 was never re-run under h2.
+        b_old = _inject(db, "b_old", sid_b, "2026-09-08T10:30:00", "load", "h1")
+        da = _inject(
+            db,
+            "da",
+            sid_a,
+            "2026-09-08T11:05:00",
+            "derive",
+            "d1",
+            [a_new],
+            vtype="Derived",
+        )
+        db_rec = _inject(
+            db,
+            "db_rec",
+            sid_b,
+            "2026-09-08T10:35:00",
+            "derive",
+            "d1",
+            [b_old],
+            vtype="Derived",
+        )
+        _ = a_old
+
+        ident = variant_identity_batch(db._duck, [da, db_rec])
+
+        assert ident[da]["code_chain"] == {"load": "v2"}
+        assert ident[db_rec]["code_chain"] == {"load": "v1"}
+        assert ident[db_rec]["is_latest"] is True, (
+            "subject=2's only chain is its own latest — pinning must not delete "
+            "a location that was never re-run"
+        )

@@ -28,6 +28,17 @@ from .shape import Shape, classify_column
 
 _NUM_CHUNK = re.compile(r"(\d+)")
 
+#: Prefix marking a factor as a **code-version** axis (``Code:bandpass_filter``)
+#: rather than an experimental condition.
+#:
+#: Defined here, in the rendering layer, even though only the scidb-backed source
+#: currently produces such factors: the distinction is about how a factor should
+#: be *presented and defaulted* — a code axis is usually pinned to current, a
+#: condition is usually faceted — and that is this layer's concern. Sources
+#: conform to the convention rather than each inventing their own
+#: (``scistackplotdb.VERSION_FACTOR_PREFIX`` is this constant).
+CODE_FACTOR_PREFIX = "Code:"
+
 
 def natural_sort_key(value: Any) -> tuple:
     """

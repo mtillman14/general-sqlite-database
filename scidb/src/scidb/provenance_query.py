@@ -150,13 +150,16 @@ def _build_upstream_closure(duck, seed_record_ids, max_depth: int = 20):
     """Load the full upstream subgraph reachable from ``seed_record_ids`` into
     in-memory adjacency maps using O(max_depth) batched queries.
 
-    Returns ``(rec_to_inv, inv_constants, inv_var_inputs)`` where:
+    Returns ``(rec_to_inv, inv_constants, inv_var_inputs, inv_fn_hash)`` where:
 
     * ``rec_to_inv``: ``{record_id: (inv_id, fn_name)}`` for produced records
     * ``inv_constants``: ``{inv_id: {f"{fn_name}.{param}": value}}``
     * ``inv_var_inputs``: ``{inv_id: [input_record_id, ...]}`` (variable inputs
       only; constants and PathInput specs excluded — matching
       :func:`invocation_inputs`)
+    * ``inv_fn_hash``: ``{inv_id: function_hash}`` — what :func:`code_versions_batch`
+      needs, carried here so the two walks share one closure build rather than
+      querying the same subgraph twice.
 
     Together these let a caller reproduce :func:`derived_branch_params` for every
     seed with a pure-Python walk and zero further DB round-trips.
@@ -165,6 +168,7 @@ def _build_upstream_closure(duck, seed_record_ids, max_depth: int = 20):
     inv_constants: dict = {}
     inv_var_inputs: dict = {}
     inv_fn_name: dict = {}  # invocation_id -> function_name (for constant namespacing)
+    inv_fn_hash: dict = {}  # invocation_id -> function_hash (for code versions)
 
     seen_records: set = set()
     frontier = list(dict.fromkeys(seed_record_ids))
@@ -178,17 +182,19 @@ def _build_upstream_closure(duck, seed_record_ids, max_depth: int = 20):
         # 1) producing invocation (+ fn_name) for each frontier record.
         inv_rows = _chunked_in(
             duck,
-            "SELECT io.output_record_id, io.invocation_id, inv.function_name "
+            "SELECT io.output_record_id, io.invocation_id, inv.function_name, "
+            "inv.function_hash "
             "FROM _invocation_output io "
             "JOIN _invocation inv ON inv.invocation_id = io.invocation_id "
             "WHERE io.output_record_id IN ({ph})",
             new_records,
         )
-        for out_rid, inv_id, fn_name in inv_rows:
+        for out_rid, inv_id, fn_name, fn_hash in inv_rows:
             prev = rec_to_inv.get(out_rid)
             if prev is None or inv_id < prev[0]:
                 rec_to_inv[out_rid] = (inv_id, fn_name)
             inv_fn_name[inv_id] = fn_name
+            inv_fn_hash[inv_id] = fn_hash
 
         # 2) inputs for the newly discovered invocations (skip ones already loaded).
         inv_ids = list(
@@ -237,7 +243,7 @@ def _build_upstream_closure(duck, seed_record_ids, max_depth: int = 20):
         depth += 1
         frontier = next_frontier
 
-    return rec_to_inv, inv_constants, inv_var_inputs
+    return rec_to_inv, inv_constants, inv_var_inputs, inv_fn_hash
 
 
 def branch_params_batch(duck, record_ids, max_depth: int = 20) -> dict:
@@ -251,7 +257,7 @@ def branch_params_batch(duck, record_ids, max_depth: int = 20) -> dict:
     seeds = list(dict.fromkeys(record_ids))
     if not seeds:
         return {}
-    rec_to_inv, inv_constants, inv_var_inputs = _build_upstream_closure(
+    rec_to_inv, inv_constants, inv_var_inputs, _fn_hash = _build_upstream_closure(
         duck, seeds, max_depth
     )
     out: dict = {}
@@ -273,6 +279,155 @@ def branch_params_batch(duck, record_ids, max_depth: int = 20) -> dict:
             for child in inv_var_inputs.get(inv_id, ()):
                 stack.append((child, depth + 1))
         out[seed] = bp
+    return out
+
+
+def code_versions_batch(duck, record_ids, max_depth: int = 20) -> dict:
+    """``{record_id: {fn_name: fn_hash}}`` — every function in a record's upstream
+    chain, including the one that produced it directly.
+
+    The code-version counterpart to :func:`branch_params_batch`, and deliberately
+    the same shape of walk over the same closure. Constants have accumulated
+    upstream since the beginning; code versions did not, and that asymmetry is a
+    correctness bug rather than a gap in polish: two records that differ *only*
+    by the version of some upstream function arrive at the display layer
+    indistinguishable and overplot as replicates.
+
+    :func:`producing_function_versions_batch` answers the one-hop question
+    ("which code made this record?") and is still the right read for labelling a
+    single production step. This answers the transitive one ("which code is this
+    record made *of*?"), which is what a figure spanning several pipeline layers
+    needs. See ``docs/claude/variant-selection.md`` §2.
+
+    Excluded, matching every other function-enumerating query here: the synthetic
+    ``__save__`` anchor, and invocations with an empty ``function_hash``.
+
+    A function appearing at two depths of one chain contributes a single entry.
+    That is not a collision — the same function at the same version has the same
+    hash, so there is nothing to disambiguate. Should a function genuinely run at
+    two *different* versions within one chain, the shallower (later-applied) one
+    wins, matching ``branch_params``' last-write-wins on a key collision.
+    """
+    seeds = list(dict.fromkeys(record_ids))
+    if not seeds:
+        return {}
+    rec_to_inv, _consts, inv_var_inputs, inv_fn_hash = _build_upstream_closure(
+        duck, seeds, max_depth
+    )
+    out: dict = {}
+    for seed in seeds:
+        chain: dict = {}
+        visited: set = set()
+        # Depth-ordered so a shallower occurrence of a function overwrites a
+        # deeper one rather than the reverse (BFS, unlike branch_params' DFS —
+        # which is free to use a stack because its keys are already namespaced
+        # per invocation and cannot collide across depths).
+        frontier = [seed]
+        depth = 0
+        while frontier and depth <= max_depth:
+            next_frontier: list = []
+            for cur in frontier:
+                if cur in visited:
+                    continue
+                visited.add(cur)
+                inv = rec_to_inv.get(cur)
+                if inv is None:
+                    continue
+                inv_id, fn_name = inv
+                fn_hash = inv_fn_hash.get(inv_id)
+                if fn_name != SAVE_FUNCTION_NAME and fn_hash:
+                    chain.setdefault(fn_name, fn_hash)
+                next_frontier.extend(inv_var_inputs.get(inv_id, ()))
+            frontier = next_frontier
+            depth += 1
+        out[seed] = chain
+    return out
+
+
+def function_source(duck, function_hash: str) -> dict:
+    """The code behind a stored ``function_hash`` →
+    ``{"entry": name_or_None, "units": {unit_name: source_text}}``.
+
+    Empty ``units`` means **not captured**, never "no code": source capture
+    started partway through this project's life and MATLAB does not supply it at
+    all yet, so old records legitimately have none. Callers must distinguish the
+    two — offering to re-run a version whose source was never stored is the one
+    thing this API must not enable.
+
+    ``units`` is the whole closure the hash covers, not just the entry point:
+    the Python hash is recursive over user-defined callees, so the helpers are
+    part of what it identifies. ``entry`` names the function the hash is filed
+    under, which is the one a reader wants shown first.
+    """
+    if not function_hash:
+        return {"entry": None, "units": {}}
+    rows = duck._fetchall(
+        "SELECT unit_name, unit_source, is_entry FROM _function_source "
+        "WHERE function_hash = ? ORDER BY unit_name",
+        [function_hash],
+    )
+    units = {name: source for name, source, _is_entry in rows}
+    entry = next((name for name, _s, is_entry in rows if is_entry), None)
+    return {"entry": entry, "units": units}
+
+
+def code_version_ordinals(duck, fn_names) -> dict:
+    """``{fn_name: {fn_hash: "vN"}}`` for functions holding **more than one**
+    version, numbered by each version's earliest save.
+
+    **Scoped per function, deliberately** — unlike ``fn_version`` in
+    :func:`variant_identity_batch`, which is numbered per *variable type*. Once
+    versions accumulate along a chain, one column exists per upstream function
+    and its levels must mean the same thing wherever that function appears; a
+    per-type ordinal would let one hash be ``v1`` in one variable's column and
+    ``v2`` in another's, which is the same incoherence the per-type scope was
+    originally chosen to avoid one level down.
+
+    Functions with a single version are **omitted entirely**, so a caller can
+    treat presence in this map as "this function is a real axis". That keeps the
+    ordinary single-version project free of columns whose only level is ``v1``.
+
+    Ordering is by earliest save, so a new version appends ``v3`` rather than
+    renumbering ``v1``/``v2`` under the user — the same stability guarantee
+    :func:`_order_versions` makes. ``fn_hash`` breaks ties deterministically
+    when two versions share a timestamp.
+    """
+    names = [n for n in dict.fromkeys(fn_names) if n and n != SAVE_FUNCTION_NAME]
+    if not names:
+        return {}
+    rows = _chunked_in(
+        duck,
+        "SELECT inv.function_name, inv.function_hash, MIN(rs.timestamp) "
+        "FROM _invocation inv "
+        "JOIN _invocation_output io ON io.invocation_id = inv.invocation_id "
+        "JOIN _record_save rs ON rs.record_id = io.output_record_id "
+        "WHERE inv.function_name IN ({ph}) AND inv.function_hash <> '' "
+        "GROUP BY inv.function_name, inv.function_hash",
+        names,
+    )
+    by_name: dict = {}
+    for fn_name, fn_hash, first_saved in rows:
+        by_name.setdefault(fn_name, []).append((first_saved or "", fn_hash))
+
+    out: dict = {}
+    for fn_name, versions in by_name.items():
+        if len(versions) < 2:
+            continue  # single-version functions are not an axis
+        ordered = sorted(versions)
+        out[fn_name] = {
+            fn_hash: f"v{ordinal}"
+            for ordinal, (_ts, fn_hash) in enumerate(ordered, start=1)
+        }
+
+    if out:
+        logger.info(
+            "code_version_ordinals: %d function(s) hold >1 version — records "
+            "differing only by upstream code are distinguishable through them: %s",
+            len(out),
+            "; ".join(
+                f"{name} [{len(versions)}]" for name, versions in sorted(out.items())
+            ),
+        )
     return out
 
 
@@ -329,6 +484,17 @@ def producing_function_versions_batch(duck, record_ids) -> dict:
             "saved_at": saved.get(rid),
         }
     return out
+
+
+def _chain_signature(chain: dict) -> str:
+    """A deterministic scalar standing for a whole ``{fn_name: fn_hash}`` chain.
+
+    Lets :func:`_order_versions` treat "this record's entire upstream code
+    story" exactly as it already treats a single producing hash — grouping and
+    recency logic stay in one place instead of gaining a chain-shaped twin.
+    Never stored or shown; two chains are equal iff their signatures are.
+    """
+    return "|".join(f"{name}={chain[name]}" for name in sorted(chain))
 
 
 def _order_versions(records, versions) -> tuple[dict, list, str | None]:
@@ -402,11 +568,23 @@ def variant_identity_batch(duck, record_ids, max_depth: int = 20) -> dict:
         version appends ``v3`` rather than renumbering ``v1``/``v2`` under the
         user.
     ``is_latest``
-        Whether this record's version is the most recently written one **at its
-        own schema location**. A property of the version, not the record: two
-        records of the same version (a plain re-save) are both latest, which is
-        what pinning wants — pin a version, keep all of its rows. ``None`` for
-        raw records.
+        Whether this record's **whole upstream code chain** is the most recently
+        written one **at its own schema location**. A property of the chain, not
+        the record: two records of the same chain (a plain re-save) are both
+        latest, which is what pinning wants — pin a version, keep all of its
+        rows. ``None`` for raw records.
+
+        Chain-wide rather than one-hop since 2026-09-08. A record whose own
+        producing function never changed is still stale when something upstream
+        of it did; the one-hop test called both such records current and let
+        them overplot (``docs/claude/variant-selection.md`` §2).
+    ``code_chain``
+        ``{fn_name: "vN"}`` over the record's upstream functions, restricted to
+        those holding more than one version (:func:`code_version_ordinals`).
+        Empty for a project where nothing was ever edited, so this costs the
+        ordinary case nothing. Ordinals here are scoped **per function**, unlike
+        ``fn_version`` above — see that function's docstring for why the two
+        scopes differ.
     ``saved_at``
         The record's newest ``_record_save`` timestamp.
 
@@ -487,16 +665,43 @@ def variant_identity_batch(duck, record_ids, max_depth: int = 20) -> dict:
             for rid in by_hash[fn_hash]:
                 fn_version_of[rid] = f"v{ordinal}"
 
-    # --- is_latest: resolved per LOCATION ---
+    # --- code chains: the whole upstream version story, not just one hop ---
+    # Scoped to the requested LOCATIONS, not to `all_rids`. The type-wide set
+    # exists to number `fn_version` coherently, which needs only the cheap
+    # one-hop `versions` map; a chain walk over every record of every type would
+    # multiply the cost of opening a panel for no gain, since `code_chain` is
+    # reported for seeds and `is_latest` compares within a location.
+    chain_rids = list(
+        dict.fromkeys([rid for bucket in peers.values() for rid in bucket])
+    )
+    chains = code_versions_batch(duck, chain_rids, max_depth)
+    ordinals = code_version_ordinals(
+        duck, {name for chain in chains.values() for name in chain}
+    )
+    saved = saved_at_batch(duck, all_rids)
+
+    # --- is_latest: resolved per LOCATION, over the WHOLE chain ---
     # Deliberately NOT type-wide, unlike the ordinals above. Pinning "the
     # latest" has to keep each location's own newest version, or a subject that
     # was never re-run under the newest code silently vanishes from the figure.
+    #
+    # Keyed on the whole chain rather than the producing hash alone: a record
+    # whose own function never changed is still stale if something upstream of
+    # it did, and the one-hop version of this check called both records current
+    # and let them overplot. Reuses `_order_versions` by handing it a synthetic
+    # per-record "hash" that stands for the entire chain, so latest-ness keeps
+    # meaning "newest thing here" and nothing about the ordering rules changes.
+    chain_versions = {
+        rid: {"fn_hash": _chain_signature(chain), "saved_at": saved.get(rid)}
+        for rid, chain in chains.items()
+        if chain
+    }
     is_latest_of: dict = {}  # record_id -> bool
     for bucket in peers.values():
-        by_hash, _ordered, latest_hash = _order_versions(bucket, versions)
-        for fn_hash, rids in by_hash.items():
+        by_hash, _ordered, latest_hash = _order_versions(bucket, chain_versions)
+        for chain_sig, rids in by_hash.items():
             for rid in rids:
-                is_latest_of[rid] = fn_hash == latest_hash
+                is_latest_of[rid] = chain_sig == latest_hash
 
     # One summary line per call, not one per type: this runs on every
     # variable-panel open. The detail that matters is which types became
@@ -523,10 +728,10 @@ def variant_identity_batch(duck, record_ids, max_depth: int = 20) -> dict:
     # no function version but still has a save time, and the UI sorts on it.
     # `all_rids` is a superset of `seeds`, so one lookup serves both.
     bp_map = branch_params_batch(duck, seeds, max_depth)
-    saved = saved_at_batch(duck, all_rids)
     out: dict = {}
     for rid in seeds:
         info = versions.get(rid) or {}
+        chain = chains.get(rid, {})
         out[rid] = {
             "branch_params": bp_map.get(rid, {}),
             "fn_name": info.get("fn_name"),
@@ -534,6 +739,14 @@ def variant_identity_batch(duck, record_ids, max_depth: int = 20) -> dict:
             "fn_version": fn_version_of.get(rid),
             "is_latest": is_latest_of.get(rid),
             "saved_at": saved.get(rid),
+            # Only multi-version functions appear — `code_version_ordinals`
+            # omits the rest — so this is empty for the ordinary project and
+            # a caller can treat a key's presence as "this is a real axis".
+            "code_chain": {
+                fn_name: ordinals[fn_name][fn_hash]
+                for fn_name, fn_hash in chain.items()
+                if fn_name in ordinals and fn_hash in ordinals[fn_name]
+            },
         }
     return out
 

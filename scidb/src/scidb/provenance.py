@@ -55,6 +55,7 @@ __all__ = [
     "constant_value_type",
     "ensure_provenance_tables",
     "insert_record_entity",
+    "insert_function_sources",
     "insert_record_entities",
 ]
 
@@ -360,13 +361,49 @@ def insert_record_entities(duck, rows: list[tuple]) -> None:
 # ---------------------------------------------------------------------------
 # Schema
 # ---------------------------------------------------------------------------
+def insert_function_sources(
+    duck, function_hash: str, units: dict, entry_name: str | None = None
+) -> int:
+    """Store the source behind ``function_hash``. Returns the row count written.
+
+    Idempotent (``ON CONFLICT DO NOTHING``) and content-keyed, so re-running an
+    unchanged function rewrites nothing and re-running an edited one files its
+    source under the new hash beside the old. Never overwrites: a captured
+    version stays captured, which is the point — the old body is otherwise
+    unrecoverable the moment the file is saved.
+
+    Failure here must never fail a save. The caller treats it as best-effort:
+    losing source costs traceability, losing the run costs the user's work.
+    """
+    if not function_hash or not units:
+        return 0
+    rows = [
+        (function_hash, name, source, name == entry_name)
+        for name, source in units.items()
+    ]
+    duck._bulk_insert(
+        "_function_source",
+        ("function_hash", "unit_name", "unit_source", "is_entry"),
+        rows,
+        conflict_cols=["function_hash", "unit_name"],
+    )
+    logger.debug(
+        "insert_function_sources: %s -> %d unit(s) (entry=%s)",
+        function_hash[:12],
+        len(rows),
+        entry_name,
+    )
+    return len(rows)
+
+
 def ensure_provenance_tables(duck) -> None:
-    """Create the seven bipartite provenance tables if absent.
+    """Create the bipartite provenance tables if absent.
 
     ``duck`` is a ``SciDuck`` instance (exposes ``_execute``). Tables:
 
     Identity/data: ``_record``, ``_constant``, ``_invocation``,
     ``_invocation_input``, ``_invocation_output``.
+    Code: ``_function_source``.
     Audit: ``_run``, ``_run_invocation``.
 
     See §4 of the design doc for the rationale (bipartite vs. flat edge table).
@@ -409,6 +446,31 @@ def ensure_provenance_tables(duck) -> None:
             function_hash VARCHAR NOT NULL,
             as_table      VARCHAR[],
             distribute    BOOLEAN DEFAULT FALSE
+        )
+    """)
+
+    # The code behind a ``function_hash``. Purely additive: the hash is already
+    # the key, so nothing about identity changes and an absent row means only
+    # "not captured", never "different code".
+    #
+    # One row per *unit*, not per function, because the Python hash is recursive
+    # over user-defined callees (``scilineage.hashing._hash_source``): a helper's
+    # body is part of what the hash identifies, so the entry point alone would
+    # not reconstitute the hashed code. ``is_entry`` marks the function the hash
+    # is named for; the rest are its closure.
+    #
+    # Deliberately NOT content-addressed with a separate unit table. A shared
+    # helper is therefore stored once per calling hash rather than once
+    # globally, which is duplication — but source is kilobytes, the dedup would
+    # cost a second table and a join on every read, and nothing in the read path
+    # is hot. Revisit only if a real database shows the size mattering.
+    duck._execute("""
+        CREATE TABLE IF NOT EXISTS _function_source (
+            function_hash VARCHAR NOT NULL,
+            unit_name     VARCHAR NOT NULL,
+            unit_source   VARCHAR NOT NULL,
+            is_entry      BOOLEAN NOT NULL DEFAULT FALSE,
+            PRIMARY KEY (function_hash, unit_name)
         )
     """)
 

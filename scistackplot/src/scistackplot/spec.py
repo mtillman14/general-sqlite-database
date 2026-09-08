@@ -270,6 +270,14 @@ class PlotSpec:
     style: StyleOptions = field(default_factory=StyleOptions)
     filters: list[Filter] = field(default_factory=list)
     variant_policy: VariantPolicy = VariantPolicy.FACET
+    #: ``{factor: level}`` or ``{factor: [level, ...]}`` — which variant levels
+    #: survive under ``VariantPolicy.PIN``.
+    #:
+    #: A list means "keep any of these", which is what makes the pin a *subcube*
+    #: selector rather than a single-point one. That is the whole difference
+    #: between answering "show me one variant" and "show me every variant where
+    #: bandpass=v1" — the second is the question a multi-layer project actually
+    #: asks, and it cannot be expressed one scalar at a time.
     pinned_variant: dict[str, Any] | None = None
 
     # ---- convenience accessors ------------------------------------------

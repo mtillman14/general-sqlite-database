@@ -21,8 +21,10 @@ from .base import (
     color_groups,
     grid_shape,
     is_categorical_x,
+    legend_levels,
     palette_color,
     panel_position,
+    shows_legend,
     shows_x_labels,
     shows_y_labels,
     x_positions,
@@ -86,11 +88,16 @@ def render(resolved: ResolvedPlot):
                     axes[row][col].set_visible(False)
 
         _apply_axes_cosmetics(fig, axes, resolved, n_rows, n_cols, used)
-        _apply_legend(fig, resolved)
 
         if resolved.labels.title:
             fig.suptitle(resolved.labels.title)
-        fig.tight_layout()
+        # tight_layout is told how much width the legend took. A FIGURE legend
+        # is invisible to tight_layout, so laying the axes out across the whole
+        # width put the legend on top of the rightmost panels in the exported
+        # PNG while the interactive plotly view kept it outside — the same
+        # figure reading two different ways depending on how you looked at it.
+        reserved = _apply_legend(fig, resolved)
+        fig.tight_layout(rect=(0.0, 0.0, 1.0 - reserved, 1.0))
         return fig
 
 
@@ -318,19 +325,70 @@ def _apply_axes_cosmetics(fig, axes, resolved: ResolvedPlot, n_rows, n_cols, use
             ax.tick_params(axis="x", rotation=0)
 
 
-def _apply_legend(fig, resolved: ResolvedPlot) -> None:
-    if not resolved.encoding.color:
-        return
-    handles, labels = fig.axes[0].get_legend_handles_labels()
-    if not handles:
-        return
+#: Breathing room between the panels and the legend strip, as a fraction of the
+#: figure width.
+LEGEND_PAD = 0.02
+
+#: Widest the legend strip may get, however long the level names are: past this
+#: the labels have eaten the figure, and truncating the panels is worse than
+#: truncating the legend.
+MAX_LEGEND_FRACTION = 0.4
+
+
+def _apply_legend(fig, resolved: ResolvedPlot) -> float:
+    """
+    Draw the legend to the right of the panels; return the width it claimed.
+
+    The return value is a fraction of the figure width, for ``tight_layout``'s
+    ``rect`` — see the call site. Zero means no legend was drawn, which is the
+    answer for a single colour level (``base.shows_legend``) as well as for no
+    colour at all.
+    """
+    if not shows_legend(resolved):
+        Log.debug(
+            "legend omitted: %d colour level(s) drawn for %r",
+            len(legend_levels(resolved)),
+            resolved.labels.color,
+            layer=LAYER,
+        )
+        return 0.0
+    # Every VISIBLE axes, not just the first: with facets, a level can be
+    # absent from panel 1 and present in panel 5, and reading one panel's
+    # handles would drop it from the legend of a figure that draws it.
     unique: dict[str, Any] = {}
-    for handle, label in zip(handles, labels, strict=False):
-        unique.setdefault(label, handle)
-    fig.legend(
+    for ax in fig.axes:
+        if not ax.get_visible():
+            continue
+        handles, labels = ax.get_legend_handles_labels()
+        for handle, label in zip(handles, labels, strict=False):
+            unique.setdefault(label, handle)
+    if not unique:
+        return 0.0
+
+    legend = fig.legend(
         unique.values(),
         unique.keys(),
         title=resolved.labels.color,
         loc="center right",
         frameon=False,
     )
+    return _legend_width_fraction(fig, legend, unique.keys(), resolved.labels.color)
+
+
+def _legend_width_fraction(fig, legend, labels, title) -> float:
+    """How much of the figure's width the legend needs, measured if possible."""
+    figure_width = fig.get_size_inches()[0] or 1.0
+    try:
+        inches = legend.get_window_extent(fig.canvas.get_renderer()).width / fig.dpi
+    except Exception:  # a backend without a usable renderer
+        # Estimate rather than reserve nothing: a wrong-by-a-little strip still
+        # keeps the legend off the panels, an unmeasured one does not.
+        longest = max((len(str(text)) for text in [*labels, title or ""]), default=0)
+        inches = 0.55 + 0.085 * longest
+        Log.debug(
+            "legend width not measurable; estimating %.2fin from %d labels",
+            inches,
+            len(list(labels)),
+            layer=LAYER,
+        )
+    return min(MAX_LEGEND_FRACTION, inches / figure_width + LEGEND_PAD)

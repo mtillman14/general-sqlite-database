@@ -281,12 +281,12 @@ def two_code_versions(seeded):
 def test_code_version_becomes_a_variant_column(two_code_versions):
     loaded = load_variable(two_code_versions, "Scaled")
 
-    assert "CodeVersion" in loaded.frame.columns
-    assert "CodeVersion" in loaded.variant_columns, (
+    assert "Code:scale_signal" in loaded.frame.columns
+    assert "Code:scale_signal" in loaded.variant_columns, (
         "it must be a VARIANT column, not a plain one — that is what arms the "
         "pooling guard"
     )
-    assert set(loaded.frame["CodeVersion"]) == {"v1", "v2"}
+    assert set(loaded.frame["Code:scale_signal"]) == {"v1", "v2"}
     assert len(loaded.frame) == 2 * 3 * 2 * 2
 
 
@@ -294,8 +294,8 @@ def test_single_code_version_attaches_no_column(two_variants):
     """The ordinary case stays exactly as it was: constants only, no version."""
     loaded = load_variable(two_variants, "Scaled")
 
-    assert "CodeVersion" not in loaded.frame.columns
-    assert all(not c.startswith("CodeVersion") for c in loaded.variant_columns)
+    assert "Code:scale_signal" not in loaded.frame.columns
+    assert all(not c.startswith("Code:") for c in loaded.variant_columns)
 
 
 def test_two_code_versions_are_refused_not_pooled(two_code_versions):
@@ -307,7 +307,7 @@ def test_two_code_versions_are_refused_not_pooled(two_code_versions):
             "session": Role.X,
             "subject": Role.FREE,
             "trial": Role.FREE,
-            "CodeVersion": Role.FREE,
+            "Code:scale_signal": Role.FREE,
         },
         kind=PlotKind.BOX,
     )
@@ -322,7 +322,7 @@ def test_code_version_assigned_to_colour_resolves(two_code_versions):
         measures=["Scaled"],
         roles={
             "session": Role.X,
-            "CodeVersion": Role.COLOR,
+            "Code:scale_signal": Role.COLOR,
             "subject": Role.FREE,
             "trial": Role.FREE,
         },
@@ -395,7 +395,7 @@ def _rows(resolved):
     Panels carry the CANONICAL frame (``__x``/``__y``/``__color``), not the
     original factor columns — ``reduce`` projects them away. So assertions here
     go through ``resolved.encoding`` to name the column they want rather than
-    reaching for ``subject`` or ``CodeVersion``, which are gone by this point.
+    reaching for ``subject`` or ``Code:scale_signal``, which are gone by this point.
     """
     import pandas as pd
 
@@ -445,7 +445,7 @@ def test_pinned_render_keeps_only_the_newest_rows(two_code_versions):
     # ...and the VALUES are the new code's, not the old one's. scale_v2 adds 1
     # to scale_v1, so this fails loudly if the pin kept the wrong record —
     # which is exactly the reported bug (the older variant got plotted).
-    expected = table.frame[table.frame["CodeVersion"] == "v2"]["Scaled"]
+    expected = table.frame[table.frame["Code:scale_signal"] == "v2"]["Scaled"]
     assert sorted(round(v, 9) for v in rows[resolved.encoding.y]) == sorted(
         round(v, 9) for v in expected
     )
@@ -464,7 +464,7 @@ def test_unpinning_brings_every_version_back(two_code_versions):
     unpinned = replace(
         spec,
         variant_policy=VariantPolicy.FACET,
-        roles={**spec.roles, "CodeVersion": Role.COLOR},
+        roles={**spec.roles, "Code:scale_signal": Role.COLOR},
     )
     resolved = resolve(unpinned, table)[0]
 
@@ -475,7 +475,7 @@ def test_unpinning_brings_every_version_back(two_code_versions):
 def test_pin_keeps_locations_never_rerun_under_the_newest_code(seeded):
     """The trap in pinning: a location the user did not re-run must NOT vanish.
 
-    CodeVersion is numbered per type, so pinning `CodeVersion == "v2"` would
+    Version ordinals are numbered per function, so pinning `Code:fn == "v2"` would
     drop any subject still on v1. The pin is on the per-location `CodeIsLatest`
     flag precisely so each location contributes its own newest record.
     """
@@ -513,7 +513,7 @@ def test_pin_keeps_locations_never_rerun_under_the_newest_code(seeded):
     rows = _rows(resolved)
 
     # The load-bearing number. One row per location: 3 subjects x 2 sessions x
-    # 2 trials. Pinning `CodeVersion == "v2"` instead would have kept only
+    # 2 trials. Pinning `Code:fn == "v2"` instead would have kept only
     # subject 01's four rows and quietly deleted the other two subjects.
     assert resolved.row_count == 3 * 2 * 2, (
         "pinning the latest must not delete the subjects that were never re-run"

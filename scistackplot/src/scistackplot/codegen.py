@@ -270,6 +270,12 @@ def _plot_call(spec, table, roles, shape) -> list[str]:
     args = [f"data=df", f"x={x!r}", f"y={spec.y_measure!r}"]
     if color:
         args.append(f"hue={color!r}")
+        if _color_level_count(spec, table, color) < 2:
+            # Same rule the renderers apply (render.base.shows_legend): one
+            # colour level means the legend restates what every mark on the
+            # figure has in common. The exported figure must be the previewed
+            # figure, so it has to be decided here too, not just at render time.
+            args.append("legend=False")
     # seaborn takes one factor per grid axis: the first faceted factor drives
     # the columns, a second one the rows.
     if facets:
@@ -347,6 +353,32 @@ def _heatmap_call(spec) -> list[str]:
         f"ax.set_title({(spec.style.title or spec.y_measure)!r})",
         "return fig",
     ]
+
+
+def _color_level_count(spec: PlotSpec, table: LongTable, color: str) -> int:
+    """
+    How many colour levels the generated code will actually draw.
+
+    Filters are applied here because they are applied in the generated
+    preamble: filtering a two-level factor down to one must drop the legend in
+    the export exactly as it drops it in the preview. An unknown factor keeps
+    its legend — omitting one that was wanted is worse than keeping one that
+    was not.
+    """
+    try:
+        levels = [str(level) for level in table.factor(color).levels]
+    except KeyError:
+        return 2
+    for flt in spec.filters:
+        if flt.column != color:
+            continue
+        if flt.include is not None:
+            keep = {str(value) for value in flt.include}
+            levels = [level for level in levels if level in keep]
+        if flt.exclude is not None:
+            drop = {str(value) for value in flt.exclude}
+            levels = [level for level in levels if level not in drop]
+    return len(levels)
 
 
 def _x_expression(spec, table, roles, shape) -> str:

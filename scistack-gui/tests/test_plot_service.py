@@ -365,3 +365,56 @@ def test_notify_still_updates_the_dag_if_invalidation_fails(
     run_api._notify_records_changed()  # must not raise
 
     assert {"type": "dag_updated"} in messages
+
+
+# --- panel styles ----------------------------------------------------------
+#
+# Source-scanned rather than rendered: the GUI has no frontend test runner, and
+# this class of defect is a property of the style OBJECTS, which are readable
+# text (same approach as the handle-id guards in test_edge_resolver.py).
+
+
+def _plot_studio_style(name: str) -> str:
+    """The body of one entry in PlotStudio.tsx's ``styles`` map."""
+    import re
+    from pathlib import Path
+
+    source = (
+        Path(__file__).parent.parent
+        / "frontend/src/components/PlotStudio/PlotStudio.tsx"
+    ).read_text()
+    match = re.search(rf"\n  {name}: \{{(.*?)\n?  \}},", source, re.DOTALL)
+    assert match, f"PlotStudio.tsx has no {name!r} style"
+    return match.group(1)
+
+
+def test_collapsed_controls_keep_the_scroll_property():
+    """
+    The controls rail must still scroll after being collapsed and reopened.
+
+    React removes the style properties a re-render drops. When the collapsed
+    state added the ``overflow`` SHORTHAND on top of a base that set the
+    ``overflowY`` LONGHAND, reopening cleared ``overflow`` — which owns
+    overflow-y — while ``overflowY: 'auto'``, unchanged between the two
+    objects, was skipped as nothing to re-apply. The rail came back
+    unscrollable, and only ever after a collapse/expand cycle.
+
+    So: both states name the same overflow keys, and neither uses the
+    shorthand.
+    """
+    open_style = _plot_studio_style("controls")
+    hidden_style = _plot_studio_style("controlsHidden")
+
+    for name, style in (("controls", open_style), ("controlsHidden", hidden_style)):
+        assert "overflow:" not in style, (
+            f"PlotStudio.tsx styles.{name} uses the `overflow` shorthand; the "
+            "two states are merged, so clearing it on reopen also clears the "
+            "other state's overflowY. Use overflowX/overflowY."
+        )
+        assert "overflowY" in style, (
+            f"PlotStudio.tsx styles.{name} must state overflowY explicitly — a "
+            "property present in only one of the two merged states is the "
+            "property React silently drops."
+        )
+
+    assert "overflowY: 'auto'" in open_style

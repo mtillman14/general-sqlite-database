@@ -205,6 +205,12 @@ class _ForEachState:
     # rids (fuse_glue rewrote __record_id), and the save path writes the
     # matching _record/_invocation/edge rows from this.
     glue_virtual: Any = None  # dict | None
+    # The function object itself, carried purely so the save path can capture
+    # its SOURCE against the hash it is storing (see _save_results). `fn_name`
+    # above is not enough: source has to come from the same object
+    # `to_version_keys` hashed, or it lands under a key nothing was stored
+    # beneath. Never used for dispatch — the call already happened by then.
+    fn: Any = None  # Callable | None
 
 
 # ---------------------------------------------------------------------------
@@ -2765,6 +2771,7 @@ def _for_each_prepare(
                 )  # preserve order, dedupe
 
     return _ForEachState(
+        fn=fn,
         fn_name=fn_name,
         config_keys=config_keys,
         call_id=call_id,
@@ -2883,6 +2890,7 @@ def _for_each_save_resolved(
             stamp_param_names=[rc[len("__rid_") :] for rc in (state.rid_keys or [])],
             glue_virtual=state.glue_virtual,
             glue_chains=state.glue_chains,
+            fn=state.fn,
         )
         save_elapsed = time.perf_counter() - save_t0
         Log.debug(
@@ -4348,13 +4356,37 @@ def _load_var_type_as_spread(
                 f"[Variant] _load_var_type_as_spread({_vt_name}): applying "
                 f"branch_params_filter={branch_params_filter}"
             )
+        # A CODE pin has to see superseded records, so it loads uncollapsed.
+        #
+        # `version_id="latest"` collapses on a variant key of
+        # `(fn_name, branch_params, output_num, consumed_locations)` —
+        # `function_hash` is deliberately NOT in it, because a body re-run is a
+        # newer version of the same variant rather than a rival
+        # (docs/claude/function-version-variants.md). So two code versions merge
+        # and the newer wins *before* any filter runs. A branch-param pin is
+        # unaffected: branch_params IS in that key, so its variants never merged
+        # in the first place. A code pin would otherwise always match nothing.
+        #
+        # Scoped to exactly this case, so an unpinned load keeps today's
+        # behaviour byte for byte.
+        from .variant import CODE_PIN_PREFIX
+
+        has_code_pin = any(
+            key == CODE_PIN_PREFIX or key.startswith(f"{CODE_PIN_PREFIX}.")
+            for key in (branch_params_filter or {})
+        )
+        if has_code_pin:
+            Log.info(
+                f"[Variant] {_vt_name}: code pin present — loading uncollapsed "
+                f"(version_id='all') so superseded versions remain selectable"
+            )
         result = resolved_db.load_all_as_df(
             var_type,
             layout="spread",
             include_rid=True,
             include_bp=True,
             stringify_schema=True,
-            version_id="latest",
+            version_id="all" if has_code_pin else "latest",
             **where_kw,
             **bp_kw,
         )
@@ -4692,6 +4724,7 @@ def _save_results(
     stamp_param_names: "list | None" = None,
     glue_virtual: "dict | None" = None,
     glue_chains: "dict | None" = None,
+    fn: Any | None = None,
 ) -> None:
     """Save results from the result table to output variable types using batch operations.
 
@@ -5257,6 +5290,48 @@ def _save_results(
         except Exception as e:
             # Provenance graph is additive during migration — never fail the save.
             Log.error(f"[provenance] record_run failed for fn={fn_name}: {e}")
+
+        # Capture the SOURCE behind this run's function_hash. Once per run, not
+        # per record: every record of a run shares one hash.
+        #
+        # Write-time is the only time this is possible. The moment the file is
+        # edited the old body is gone from disk, so a version whose source was
+        # not captured as it ran can never be recovered — lazy capture "on first
+        # edit" would miss the baseline version, which is precisely the one a
+        # comparison needs. See docs/claude/variant-selection.md §3.
+        try:
+            from .foreach_config import function_sources_for
+            from .provenance import insert_function_sources
+
+            stored_hash = config_keys.get("__fn_hash")
+            if fn is not None and stored_hash:
+                derived_hash, entry, units = function_sources_for(fn)
+                if not units:
+                    # Expected for MATLAB today: the bridge supplies a digest
+                    # but no text. Not an error, and not worth a warning on
+                    # every run.
+                    Log.debug(f"[provenance] no source captured for fn={fn_name}")
+                elif derived_hash != stored_hash:
+                    # Filing source under the wrong key would be worse than not
+                    # storing it: it reads as captured and returns the wrong
+                    # code. Refuse, and say so loudly enough to be findable.
+                    Log.warn(
+                        f"[provenance] source NOT captured for fn={fn_name}: "
+                        f"derived hash {derived_hash[:12]} != stored "
+                        f"{str(stored_hash)[:12]}; the two recipes have drifted"
+                    )
+                else:
+                    written = insert_function_sources(
+                        active_db._duck, stored_hash, units, entry_name=entry
+                    )
+                    Log.info(
+                        f"[provenance] captured {written} source unit(s) for "
+                        f"fn={fn_name} @ {stored_hash[:12]}"
+                    )
+        except Exception as e:
+            # Strictly best-effort: losing source costs traceability, losing the
+            # run costs the user's work.
+            Log.warn(f"[provenance] source capture failed for fn={fn_name}: {e}")
 
     # ===========================================================================
     # Summary

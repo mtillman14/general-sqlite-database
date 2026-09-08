@@ -5,7 +5,10 @@ import json
 from collections.abc import Callable
 from typing import Any
 
-from scilineage.hashing import compute_function_hash
+from scilineage.hashing import (
+    compute_function_hash,
+    compute_function_hash_with_sources,
+)
 
 
 def _compute_fn_hash(fn: Callable) -> str:
@@ -55,6 +58,41 @@ def function_hash_for(fn) -> str:
     if explicit:
         return str(explicit)
     return _compute_fn_hash(fn.fcn if hasattr(fn, "fcn") else fn)
+
+
+def function_sources_for(fn) -> tuple[str, str | None, dict]:
+    """``(hash, entry_name, {unit_name: source})`` — the code to file under the
+    hash the SAVE path stores.
+
+    Mirrors :func:`function_hash_for` in spirit but **not** in recipe, and the
+    difference is the entire point of this function existing separately. The
+    stored ``__fn_hash`` comes from ``to_version_keys`` →
+    ``_compute_fn_hash(self.fn)``, which hashes the object it is handed with no
+    ``.fcn`` unwrap. Source therefore has to be collected from that same object,
+    or it would be filed under a hash nothing was ever stored beneath — source
+    that exists but can never be found, which is worse than none.
+
+    The returned hash is what the caller must **verify** against the stored one
+    before writing. It is returned rather than assumed precisely so that check
+    is possible.
+
+    MATLAB is handled by duck-typing a ``source_text`` attribute, matching how
+    ``function_hash_for`` duck-types ``source_hash`` (scidb does not import
+    scimatlab). **Nothing supplies it yet** — ``MatlabLineageFcn`` carries only
+    the digest — so MATLAB functions currently capture no source. The hook is
+    here so closing that is a bridge-side change rather than a scidb one.
+    """
+    explicit_text = getattr(fn, "source_text", None)
+    if explicit_text:
+        inner = getattr(fn, "fcn", fn)
+        name = getattr(inner, "__name__", None) or getattr(fn, "__name__", "?")
+        return str(getattr(fn, "source_hash", "") or ""), name, {name: explicit_text}
+
+    fn_hash, units = compute_function_hash_with_sources(fn, truncate=16)
+    # `_hash_source` records the entry point before recursing into callees, and
+    # dicts preserve insertion order, so the first unit is the function itself.
+    entry = next(iter(units), None)
+    return fn_hash, entry, units
 
 
 # The canonical for_each call-site identity is captured by exactly these

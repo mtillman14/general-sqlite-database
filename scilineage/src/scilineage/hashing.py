@@ -110,8 +110,19 @@ def _resolve_call_target(call: ast.Call, globals_ns: dict) -> Any:
     return None
 
 
-def _hash_source(fn: Any, seen: dict) -> str:
-    """AST-based recursive hash of a callable's source plus its callees."""
+def _hash_source(fn: Any, seen: dict, collect: dict | None = None) -> str:
+    """AST-based recursive hash of a callable's source plus its callees.
+
+    ``collect``, when given, receives ``{qualname: source_text}`` for every unit
+    this walk hashes — the function itself and each user-defined callee it
+    recursed into. Gathering it *here*, rather than in a second walk that
+    reproduces the same traversal rules, is deliberate: the whole point of
+    storing source is to be able to reconstitute the code behind a stored hash,
+    and a separate walk that drifted from this one would store a set of units
+    that never corresponded to the hash it was filed under. One walk, one
+    answer. Units whose source is unavailable (the bytecode fallback below) are
+    simply absent, so a caller can tell "not captured" from "captured as empty".
+    """
     fn = _unwrap(fn)
     key = (
         getattr(fn, "__module__", None),
@@ -127,6 +138,9 @@ def _hash_source(fn: Any, seen: dict) -> str:
         result = _hash_bytecode_only(fn)
         seen[key] = result
         return result
+
+    if collect is not None:
+        collect[key[1]] = src
 
     src = inspect.cleandoc("\n" + src)
     try:
@@ -156,7 +170,7 @@ def _hash_source(fn: Any, seen: dict) -> str:
         if not callable(target) or not _is_user_defined(target):
             continue
         name = getattr(target, "__qualname__", getattr(target, "__name__", "?"))
-        callee_hashes.append((name, _hash_source(target, seen)))
+        callee_hashes.append((name, _hash_source(target, seen, collect)))
 
     callee_hashes.sort()
     payload = own + "||" + repr(callee_hashes)
@@ -216,3 +230,24 @@ def compute_function_hash(
         full[:12],
     )
     return full[:truncate]
+
+
+def compute_function_hash_with_sources(
+    fn: Callable, *, truncate: int = 16
+) -> tuple[str, dict[str, str]]:
+    """``(hash, {qualname: source_text})`` — the hash plus the code behind it.
+
+    The hash is **identical** to :func:`compute_function_hash`'s, by
+    construction: it is the same walk, run once, with collection switched on.
+    Callers storing source against a hash must use this rather than hashing and
+    reading source separately, or the two can disagree.
+
+    The returned mapping is the *closure*, not one function: because the hash is
+    recursive over user-defined callees, a helper's body is part of what the
+    hash identifies, and reconstituting the entry point without its helpers
+    would not reproduce the hashed code. Always recursive — there is no source
+    to collect on the bytecode-only path.
+    """
+    collected: dict[str, str] = {}
+    full = _hash_source(fn, {}, collected)
+    return full[:truncate], collected

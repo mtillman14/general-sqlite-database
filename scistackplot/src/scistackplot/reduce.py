@@ -175,6 +175,35 @@ def _apply_filters(frame: pd.DataFrame, spec: PlotSpec) -> pd.DataFrame:
     return filtered
 
 
+def variant_pin_mask(frame: pd.DataFrame, pinned_variant: dict | None) -> pd.Series:
+    """Rows kept by ``pinned_variant`` — the single definition of what a pin selects.
+
+    Public because the GUI's picker has to report *"4 of 24 combinations"* using
+    exactly the rule the renderer will apply. A second implementation that
+    counted differently from the one that filters would put a number on screen
+    that the figure disagrees with, which is worse than no number.
+
+    A list/tuple/set value selects a **subcube** — "any of these levels" — so one
+    pin expresses "every variant where bandpass=v1" without enumerating the other
+    dimensions. A scalar is the one-level case of the same rule.
+
+    Keys naming a column the frame does not have are ignored, not treated as
+    matching nothing: a spec outlives the table it was written against (a
+    two-measure join drops columns, a reload may find a factor gone), and a
+    stale key must not silently empty the figure.
+    """
+    mask = pd.Series(True, index=frame.index)
+    for key, value in (pinned_variant or {}).items():
+        if key not in frame.columns:
+            continue
+        column = frame[key].astype(str)
+        if isinstance(value, (list, tuple, set, frozenset)):
+            mask &= column.isin({str(v) for v in value})
+        else:
+            mask &= column == str(value)
+    return mask
+
+
 def _apply_variant_policy(
     frame: pd.DataFrame,
     spec: PlotSpec,
@@ -195,11 +224,7 @@ def _apply_variant_policy(
         return frame, roles
 
     if spec.variant_policy is VariantPolicy.PIN:
-        mask = pd.Series(True, index=frame.index)
-        for key, value in (spec.pinned_variant or {}).items():
-            if key in frame.columns:
-                mask &= frame[key].astype(str) == str(value)
-        pinned = frame[mask]
+        pinned = frame[variant_pin_mask(frame, spec.pinned_variant)]
         Log.info(
             "variant pin %s kept %d of %d row(s)",
             spec.pinned_variant,

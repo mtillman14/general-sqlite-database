@@ -66,12 +66,33 @@ interface KindInfo {
   reason: string | null
 }
 
+/** One variant factor as the picker renders it. Built entirely by
+ *  `capability.variant_summary` — the GUI decides nothing about variants. */
+interface VariantFactorInfo {
+  name: string
+  levels: string[]
+  /** Levels surviving the current pin, measured against the frame. */
+  selected: string[]
+  /** A code-version axis (`Code:bandpass`) rather than an experimental one. */
+  is_code: boolean
+}
+
+interface VariantSummary {
+  factors: VariantFactorInfo[]
+  /** Combinations present in the data — measured, not level counts multiplied,
+   *  because real data is ragged and the default pin is on a non-factor flag. */
+  total_combinations: number
+  selected_combinations: number
+  policy: string
+}
+
 interface Capabilities {
   shape: string
   has_replicates: boolean
   default: string
   available: string[]
   kinds: KindInfo[]
+  variants?: VariantSummary
 }
 
 type MatchOp = 'starts_with' | 'ends_with' | 'contains' | 'not_contains' | 'equals' | 'regex'
@@ -297,6 +318,58 @@ export default function PlotStudio({ variable, csvPath, embedded = false, onClos
     setSpec(prev => (prev ? { ...prev, variant_policy: policy } : prev))
   }, [])
 
+  /** Check/uncheck one level of one variant factor.
+   *
+   *  Writes a LIST into `pinned_variant` even for a single level, because the
+   *  backend treats a list as "any of these" — that is what makes this a
+   *  subcube selector and lets two dimensions be narrowed independently.
+   *
+   *  Toggling anything also switches the policy to 'pin': the levels are only
+   *  consulted under PIN, so leaving the policy alone would present checkboxes
+   *  that silently do nothing.
+   *
+   *  This state belongs to the PlotSpec and nothing else. It must never be
+   *  wired to the pipeline canvas's ParameterNode checkboxes, which are
+   *  execution state — unchecking there changes what future RUNS do, and a
+   *  display control that quietly edits the run config is far worse than two
+   *  similar-looking widgets.
+   */
+  const toggleVariantLevel = useCallback(
+    (factor: string, level: string, factors: VariantFactorInfo[]) => {
+      setSpec(prev => {
+        if (!prev) return prev
+        // Rebuild the pin from every factor's CURRENT selection, then apply the
+        // toggle. Two reasons, and the first is a correctness bug rather than
+        // tidiness:
+        //
+        // The opening pin is `{CodeIsLatest: true}` — a per-row flag, NOT a
+        // variant factor. Merging a level list onto it would AND the two, so
+        // ticking an older version asked for rows that are simultaneously
+        // "latest" and "v1" — an empty figure. Rebuilding from the factors
+        // drops that flag, which is right: an explicit choice supersedes the
+        // "just show me current" shortcut.
+        //
+        // Seeding from the current selection also means the figure does not
+        // jump on the first click: what was on screen stays on screen, minus
+        // or plus the one level touched.
+        const next: Record<string, string[]> = {}
+        for (const f of factors) {
+          const chosen =
+            f.name === factor
+              ? f.selected.includes(level)
+                ? f.selected.filter(l => l !== level)
+                : [...f.selected, level]
+              : f.selected
+          // Declared level order, not click order, so the legend and facet
+          // sequence stay stable as boxes are toggled.
+          next[f.name] = f.levels.filter(l => chosen.includes(l))
+        }
+        return { ...prev, variant_policy: 'pin', pinned_variant: next }
+      })
+    },
+    []
+  )
+
   const factors = describe?.table?.factors ?? []
   const hasVariants = useMemo(() => factors.some(f => f.is_variant), [factors])
   // 'pin' is only a legal policy when something was handed to us to pin on —
@@ -403,8 +476,7 @@ export default function PlotStudio({ variable, csvPath, embedded = false, onClos
       panelRef={panelRef}
       controlsHidden={controlsHidden}
       onToggleControls={() => setControlsHidden(v => !v)}
-    >
-      <div style={styles.body}>
+      sidebar={
         <div
           style={{
             ...styles.controls,
@@ -562,6 +634,11 @@ export default function PlotStudio({ variable, csvPath, embedded = false, onClos
                 <option value="facet">Keep separate (assign a role)</option>
                 <option value="pool">Pool them (average across variants)</option>
               </select>
+
+              <VariantPicker
+                summary={capabilities?.variants}
+                onToggle={toggleVariantLevel}
+              />
             </Section>
           )}
 
@@ -583,50 +660,50 @@ export default function PlotStudio({ variable, csvPath, embedded = false, onClos
           </div>
           {notice && <div style={styles.notice}>{notice}</div>}
         </div>
-
-        <div style={styles.canvas} ref={canvasRef}>
-          {specError && <div style={styles.specError}>{specError}</div>}
-          {busy && <div style={styles.note}>Resolving…</div>}
-          {!specError && figures.length === 0 && !busy && (
-            <div style={styles.note}>Nothing to plot with these settings.</div>
-          )}
-          {figures.map((figure, index) => (
-            <div
-              key={figure.label || index}
-              style={{
-                ...styles.figureBlock,
-                ...(figures.length === 1 ? { height: '100%' } : null),
+      }
+    >
+      <div style={styles.canvas} ref={canvasRef}>
+        {specError && <div style={styles.specError}>{specError}</div>}
+        {busy && <div style={styles.note}>Resolving…</div>}
+        {!specError && figures.length === 0 && !busy && (
+          <div style={styles.note}>Nothing to plot with these settings.</div>
+        )}
+        {figures.map((figure, index) => (
+          <div
+            key={figure.label || index}
+            style={{
+              ...styles.figureBlock,
+              ...(figures.length === 1 ? { height: '100%' } : null),
+            }}
+          >
+            {figure.label && <div style={styles.figureLabel}>{figure.label}</div>}
+            {figure.downsampled_from && (
+              <div style={styles.downsampleNote}>
+                Showing a reduced view of {figure.downsampled_from.toLocaleString()} points —
+                the exported figure uses every point.
+              </div>
+            )}
+            <Plot
+              data={figure.figure.data}
+              layout={{
+                ...figure.figure.layout,
+                autosize: true,
+                height: figureHeight,
+                paper_bgcolor: 'transparent',
+                plot_bgcolor: 'transparent',
+                font: { color: '#ccc', size: 11 },
               }}
-            >
-              {figure.label && <div style={styles.figureLabel}>{figure.label}</div>}
-              {figure.downsampled_from && (
-                <div style={styles.downsampleNote}>
-                  Showing a reduced view of {figure.downsampled_from.toLocaleString()} points —
-                  the exported figure uses every point.
-                </div>
-              )}
-              <Plot
-                data={figure.figure.data}
-                layout={{
-                  ...figure.figure.layout,
-                  autosize: true,
-                  height: figureHeight,
-                  paper_bgcolor: 'transparent',
-                  plot_bgcolor: 'transparent',
-                  font: { color: '#ccc', size: 11 },
-                }}
-                config={{
-                  displaylogo: false,
-                  responsive: true,
-                  // A webview cannot download; "Save image" does it server-side.
-                  modeBarButtonsToRemove: isVSCodeMode ? ['toImage'] : [],
-                }}
-                style={{ width: '100%' }}
-                useResizeHandler
-              />
-            </div>
-          ))}
-        </div>
+              config={{
+                displaylogo: false,
+                responsive: true,
+                // A webview cannot download; "Save image" does it server-side.
+                modeBarButtonsToRemove: isVSCodeMode ? ['toImage'] : [],
+              }}
+              style={{ width: '100%' }}
+              useResizeHandler
+            />
+          </div>
+        ))}
       </div>
 
       {code !== null && (
@@ -642,6 +719,9 @@ interface ShellProps {
   variable: string
   onClose: () => void
   embedded?: boolean
+  /** The controls rail. It sits under the header, in the same narrow column. */
+  sidebar?: React.ReactNode
+  /** The figure area — it owns the full height of the panel. */
   children: React.ReactNode
   panelRef?: React.RefObject<HTMLDivElement>
   controlsHidden?: boolean
@@ -652,6 +732,7 @@ function Shell({
   variable,
   onClose,
   embedded,
+  sidebar,
   children,
   panelRef,
   controlsHidden,
@@ -661,28 +742,37 @@ function Shell({
     // No overlay click-to-close: a stray click on the backdrop while dragging a
     // plotly selection would throw the panel away mid-exploration.
     <div style={embedded ? styles.embeddedRoot : styles.overlay}>
+      {/* A row, not a column: the title bar caps the controls rail rather than
+          spanning the panel, so the figure keeps the tab's full height. */}
       <div ref={panelRef} style={embedded ? styles.embeddedPanel : styles.panel}>
-        <div style={styles.header}>
-          {/* The toggle sits over the rail it collapses, so the control is
-              where the thing it controls is. */}
-          <div style={styles.headerLeft}>
-            {onToggleControls && (
-              <button
-                type="button"
-                style={styles.headerButton}
-                onClick={onToggleControls}
-                title="Give the figure the controls' width"
-              >
-                {controlsHidden ? '❯ Controls' : '❮ Controls'}
-              </button>
-            )}
-            <span style={styles.title}>Plot — {variable}</span>
+        <div style={{ ...styles.rail, ...(controlsHidden ? styles.railCollapsed : null) }}>
+          <div style={styles.header}>
+            {/* The toggle sits over the rail it collapses, so the control is
+                where the thing it controls is. */}
+            <div style={styles.headerLeft}>
+              {onToggleControls && (
+                <button
+                  type="button"
+                  style={styles.headerButton}
+                  onClick={onToggleControls}
+                  title={controlsHidden ? 'Show the controls' : "Give the figure the controls' width"}
+                >
+                  {controlsHidden ? '❯' : '❮'}
+                </button>
+              )}
+              {/* A collapsed rail is only as wide as its buttons, so the title
+                  would be the one thing keeping it wide. */}
+              {!controlsHidden && (
+                <span style={styles.title} title={`Plot — ${variable}`}>Plot — {variable}</span>
+              )}
+            </div>
+            <div style={styles.headerActions}>
+              {!embedded && (
+                <button type="button" style={styles.close} onClick={onClose}>✕</button>
+              )}
+            </div>
           </div>
-          <div style={styles.headerActions}>
-            {!embedded && (
-              <button type="button" style={styles.close} onClick={onClose}>✕</button>
-            )}
-          </div>
+          {sidebar}
         </div>
         {children}
       </div>
@@ -776,6 +866,71 @@ function RuleSlots({ title, count, rules, onEdit }: RuleSlotsProps) {
   )
 }
 
+interface VariantPickerProps {
+  summary?: VariantSummary
+  onToggle: (factor: string, level: string, factors: VariantFactorInfo[]) => void
+}
+
+/**
+ * Per-factor level selection, plus the combination readout.
+ *
+ * The design decision behind this shape: **name the coordinates, not the
+ * combinations.** A flat list of every variant would need
+ * `total_combinations` entries with concatenated labels, which stops being
+ * readable at two factors and stops being memorable at one. One row per factor
+ * composes instead — "just this variant", "everything where bandpass=v1" and
+ * "all of them" are the same control at different settings.
+ *
+ * The readout matters as much as the checkboxes. A canvas or a factor list
+ * shows coordinates; neither shows the PRODUCT, and an exploding panel count is
+ * the thing that actually catches people out.
+ */
+function VariantPicker({ summary, onToggle }: VariantPickerProps) {
+  if (!summary || summary.factors.length === 0) return null
+
+  const { factors, total_combinations, selected_combinations } = summary
+  const none = selected_combinations === 0
+
+  return (
+    <div style={styles.variantPicker}>
+      {factors.map(factor => (
+        <div key={factor.name} style={styles.variantRow}>
+          <div style={styles.variantName}>
+            {factor.name}
+            {factor.is_code && (
+              <span
+                style={styles.codeTag}
+                title="A code-version axis: which version of the function produced these records"
+              >
+                code
+              </span>
+            )}
+          </div>
+          <div style={styles.variantLevels}>
+            {factor.levels.map(level => (
+              <label key={level} style={styles.variantLevel}>
+                <input
+                  type="checkbox"
+                  checked={factor.selected.includes(level)}
+                  onChange={() => onToggle(factor.name, level, factors)}
+                />
+                <span>{level}</span>
+              </label>
+            ))}
+          </div>
+        </div>
+      ))}
+      <div style={none ? styles.variantCountEmpty : styles.variantCount}>
+        {none
+          ? 'Nothing selected — the figure would be empty.'
+          : `${selected_combinations} of ${total_combinations} variant combination${
+              total_combinations === 1 ? '' : 's'
+            }`}
+      </div>
+    </div>
+  )
+}
+
 function Section({ title, children }: { title: string; children: React.ReactNode }) {
   return (
     <div style={styles.section}>
@@ -794,32 +949,50 @@ const styles: Record<string, React.CSSProperties> = {
   embeddedRoot: { position: 'absolute', inset: 0, background: '#16162a' },
   embeddedPanel: {
     width: '100%', height: '100%', background: '#16162a',
-    display: 'flex', flexDirection: 'column', overflow: 'hidden',
+    display: 'flex', flexDirection: 'row', overflow: 'hidden',
   },
   panel: {
     width: '96vw', height: '94vh', background: '#16162a',
     border: '1px solid #3a3a5a', borderRadius: 8,
-    display: 'flex', flexDirection: 'column', overflow: 'hidden',
+    display: 'flex', flexDirection: 'row', overflow: 'hidden',
   },
+  // The title bar and the controls share one column, so the figure column
+  // starts at the very top of the panel.
+  rail: {
+    width: 260, flexShrink: 0, display: 'flex', flexDirection: 'column',
+    minHeight: 0, borderRight: '1px solid #2a2a4a',
+  },
+  // Collapsed: only as wide as the toggle that brings it back.
+  railCollapsed: { width: 'auto' },
   header: {
     display: 'flex', alignItems: 'center', justifyContent: 'space-between',
-    padding: '8px 12px', borderBottom: '1px solid #2a2a4a', background: '#1a1a2e',
+    gap: 6, padding: '8px 12px', borderBottom: '1px solid #2a2a4a',
+    background: '#1a1a2e', flexShrink: 0,
   },
-  title: { color: '#eee', fontSize: 13, fontWeight: 600 },
+  title: {
+    color: '#eee', fontSize: 13, fontWeight: 600,
+    whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis',
+  },
   close: {
     background: 'transparent', border: 'none', color: '#888',
     cursor: 'pointer', fontSize: 14,
   },
-  body: { display: 'flex', flex: 1, minHeight: 0 },
+  // LONGHANDS only, and the same keys in both states — see controlsHidden.
   controls: {
-    width: 260, padding: 12, borderRight: '1px solid #2a2a4a',
-    overflowY: 'auto', flexShrink: 0,
+    padding: 12, flex: 1, minHeight: 0, overflowX: 'hidden', overflowY: 'auto',
   },
   // Collapsed rather than unmounted: the control state survives the toggle.
+  //
+  // These two objects must name exactly the same overflow properties. React
+  // removes whatever a re-render drops, so a collapsed state that added the
+  // `overflow` SHORTHAND left React clearing `overflow` on reopen — and
+  // clearing the shorthand clears overflow-y with it, while the unchanged
+  // `overflowY: 'auto'` was skipped as "nothing to re-apply". The rail came
+  // back unscrollable, and only after a collapse/expand cycle.
   controlsHidden: {
-    width: 0, padding: 0, borderRight: 'none', overflow: 'hidden',
+    width: 0, flex: '0 0 0', padding: 0, overflowX: 'hidden', overflowY: 'hidden',
   },
-  headerActions: { display: 'flex', alignItems: 'center', gap: 6 },
+  headerActions: { display: 'flex', alignItems: 'center', gap: 6, flexShrink: 0 },
   headerLeft: { display: 'flex', alignItems: 'center', gap: 8, minWidth: 0 },
   ruleList: { marginTop: 6 },
   ruleTitle: { fontSize: 10, color: '#999', marginBottom: 3 },
@@ -837,7 +1010,9 @@ const styles: Record<string, React.CSSProperties> = {
     background: '#22223a', color: '#ccc', border: '1px solid #3a3a5a',
     borderRadius: 4, cursor: 'pointer', fontSize: 11, padding: '2px 8px',
   },
-  canvas: { flex: 1, padding: 12, overflowY: 'auto' },
+  // minWidth 0: a flex item defaults to its content's width, and a wide plotly
+  // figure would then push the rail off the panel instead of scrolling.
+  canvas: { flex: 1, minWidth: 0, padding: 12, overflowY: 'auto' },
   section: { marginBottom: 16 },
   sectionTitle: {
     fontSize: 10, textTransform: 'uppercase', letterSpacing: 0.6,
@@ -867,6 +1042,32 @@ const styles: Record<string, React.CSSProperties> = {
   fieldTag: {
     fontSize: 8, color: '#67e8f9', border: '1px solid #1a5a6b',
     borderRadius: 3, padding: '0 3px', textTransform: 'uppercase',
+  },
+  codeTag: {
+    fontSize: 8, color: '#c4b5fd', border: '1px solid #4c3a8a',
+    borderRadius: 3, padding: '0 3px', textTransform: 'uppercase',
+    marginLeft: 6,
+  },
+  variantPicker: {
+    display: 'flex', flexDirection: 'column', gap: 6, marginTop: 8,
+  },
+  variantRow: { display: 'flex', flexDirection: 'column', gap: 2 },
+  variantName: {
+    fontSize: 10, color: '#9ca3af', fontFamily: 'monospace',
+    display: 'flex', alignItems: 'center',
+  },
+  variantLevels: { display: 'flex', flexWrap: 'wrap', gap: 8 },
+  variantLevel: {
+    display: 'flex', alignItems: 'center', gap: 3,
+    fontSize: 11, color: '#ddd', cursor: 'pointer',
+  },
+  variantCount: {
+    fontSize: 10, color: '#9ca3af', marginTop: 4,
+    borderTop: '1px solid #333', paddingTop: 4,
+  },
+  variantCountEmpty: {
+    fontSize: 10, color: '#fbbf24', marginTop: 4,
+    borderTop: '1px solid #333', paddingTop: 4,
   },
   shapeTag: { fontSize: 9, color: '#67e8f9', marginLeft: 6 },
   readonlyValue: { fontSize: 12, fontFamily: 'monospace', color: '#eee' },

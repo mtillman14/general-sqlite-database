@@ -2,6 +2,32 @@
 
 from typing import Any
 
+#: Reserved namespace marking a **code-version** pin inside an otherwise ordinary
+#: branch-params filter dict.
+#:
+#: Code versions ride the existing ``branch_params_filter`` seam rather than a
+#: parallel parameter of their own, and that is a design decision, not a
+#: shortcut. Since ``Code:<fn>`` became a variant column sitting beside the
+#: branch params (docs/claude/variant-selection.md §1), "which variant of this
+#: input" is **one** question with two dimensions — so it gets one filter. The
+#: alternative was threading a second dict through ~10 call sites that already
+#: carry this one, with no gain.
+#:
+#: The namespace cannot collide with a real branch param: those are always
+#: ``{producing_fn}.{param}``, and ``__code__`` is not a producing function.
+#: (``__save__.<kwarg>`` is the established precedent for a synthetic namespace
+#: in this same dict.)
+CODE_PIN_PREFIX = "__code__"
+
+#: ``code_version="latest"`` — keep each schema location's own newest code
+#: chain, rather than a named ordinal.
+#:
+#: Deliberately NOT a synonym for "the highest ordinal". A global newest would
+#: drop every location never re-run under it, silently removing subjects from a
+#: run — the trap documented at ``scistackplotdb/load.py`` for the plotting pin.
+#: This resolves per location, so each contributes its own most recent.
+LATEST_VERSION = "latest"
+
 
 def branch_param(fn: str, **params: Any) -> dict:
     """Build a namespaced branch-param selector dict without a dotted-string kwarg.
@@ -64,9 +90,43 @@ class Variant:
 
         # Run once per pinned variant, results concatenated
         EachOf(Variant(FilteredEMG, low_hz=20), Variant(FilteredEMG, low_hz=50))
+
+    **Code versions are a second variant dimension** (``code_version=``), pinned
+    the same way and through the same filter. A record's variant identity has
+    two parts — the constants upstream of it, and the *code* that produced it
+    (docs/claude/variant-selection.md) — and both are things a user may want to
+    hold fixed::
+
+        Variant(FilteredEMG, code_version="v1")                 # one upstream
+        Variant(FilteredEMG, fn="bandpass", code_version="v1")  # disambiguated
+        Variant(FilteredEMG, code_version="latest")             # current code
+        Variant(FilteredEMG, low_hz=20, code_version="v2")      # both at once
+
+    A bare ``code_version`` resolves against whichever upstream function has more
+    than one recorded version; ``fn=`` names it when several do. Ordinals are the
+    per-function ``v1``/``v2``/… of
+    :func:`~scidb.provenance_query.code_version_ordinals`, so ``v2`` means the
+    same code wherever it appears.
+
+    ``"latest"`` is resolved **per schema location**, not as "the highest
+    ordinal" — a location never re-run under the newest code still contributes
+    its own newest record instead of vanishing from the run. Pin a named ordinal
+    only when you mean it: that *does* drop locations which never ran it, which
+    is occasionally what you want and never what you want by accident.
+
+    The declared-axis form composes exactly as it does for branch params::
+
+        EachOf(Variant(EMG, code_version="v1"), Variant(EMG, code_version="v2"))
     """
 
-    def __init__(self, var_type: Any, *, fn: str | None = None, **branch_params: Any):
+    def __init__(
+        self,
+        var_type: Any,
+        *,
+        fn: str | None = None,
+        code_version: str | None = None,
+        **branch_params: Any,
+    ):
         """
         Args:
             var_type: The variable type to load (must have a ``.load()`` method),
@@ -77,6 +137,15 @@ class Variant:
                       namespaced to ``f"{fn}.{k}"`` (the namespaced form is then
                       matched exactly at load time, never via the ambiguous suffix
                       path). Use this instead of a dotted-string kwarg.
+            code_version: Optional **code**-version pin — ``"v1"``/``"v2"``/… (a
+                      per-function ordinal from
+                      ``provenance_query.code_version_ordinals``) or
+                      ``"latest"``. Bare, it resolves against whichever upstream
+                      function has more than one version and raises
+                      ``AmbiguousParamError`` when several do; ``fn=`` names one
+                      explicitly. Note the asymmetry: a named ordinal drops
+                      schema locations that never ran it, while ``"latest"`` is
+                      resolved per location and drops none.
             **branch_params: branch_param key/value pairs to pin. Bare names are
                       suffix-matched against namespaced branch_params at load time
                       (unless ``fn=`` is given, which namespaces them).
@@ -94,6 +163,14 @@ class Variant:
         if fn is not None:
             branch_params = {f"{fn}.{k}": v for k, v in branch_params.items()}
 
+        # The code pin is extracted BEFORE the namespacing above would reach it:
+        # it is not a branch param and must not become "bandpass.code_version".
+        # ``fn=`` still disambiguates it, exactly as it does for branch params —
+        # one keyword, one meaning ("these pins concern that function").
+        if code_version is not None:
+            key = f"{CODE_PIN_PREFIX}.{fn}" if fn else CODE_PIN_PREFIX
+            branch_params = {**branch_params, key: str(code_version)}
+
         if isinstance(var_type, Merge):
             raise TypeError(
                 "Variant cannot wrap a Merge. branch_params are namespaced per "
@@ -109,8 +186,9 @@ class Variant:
             )
         if not branch_params:
             raise ValueError(
-                "Variant requires at least one branch_param to pin, e.g. "
-                "Variant(FilteredEMG, low_hz=20)."
+                "Variant requires at least one branch_param or code_version to "
+                "pin, e.g. Variant(FilteredEMG, low_hz=20) or "
+                'Variant(FilteredEMG, code_version="v1").'
             )
 
         # Nested Variant: merge the dicts; raise on conflicting key values.

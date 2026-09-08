@@ -19,6 +19,7 @@ from typing import Any
 
 import pandas as pd
 from scistacklog import Log
+from scistackplot import CODE_FACTOR_PREFIX
 
 LAYER = "scistackplotdb"
 
@@ -27,22 +28,38 @@ LAYER = "scistackplotdb"
 #: the stack's other synthetic factor (``source.FIELD_FACTOR`` = ``ColName``)
 #: rather than after a database column, because that is what it is to a reader
 #: of the figure: a condition, not a record attribute.
-VERSION_FACTOR = "CodeVersion"
+#: Owned by scistackplot (``CODE_FACTOR_PREFIX``), re-exported here under the
+#: name this layer's callers already use. The rendering layer decides how a code
+#: axis is presented and defaulted, so it owns the convention; sources conform
+#: rather than each inventing their own prefix.
+VERSION_FACTOR_PREFIX = CODE_FACTOR_PREFIX
 
-#: Level given to records that have no producing function at all (raw saves) in
-#: a variable that otherwise does carry versions. Without it those rows would
-#: hold NaN in the version column and drop silently out of every facet.
-RAW_VERSION_LEVEL = "(raw)"
+#: Level for a record whose chain does not include this column's function at
+#: all — a raw save, or a record that reached this schema location by a route
+#: that never ran it. Without a level of its own those rows would hold NaN and
+#: drop silently out of every facet.
+#:
+#: Note this replaced a single ``CodeVersion`` column carrying ``"(raw)"``. One
+#: column per function is what makes a multi-layer chain expressible, and it is
+#: also what lets the level mean the same thing everywhere: ``v2`` in
+#: ``Code:bandpass_filter`` is the same code at every schema location, which a
+#: single merged column could not promise once two functions were in play.
+MISSING_VERSION_LEVEL = "(n/a)"
 
 #: Per-row flag for "this record's code version is the newest at ITS OWN schema
 #: location". Not a variant factor — a helper the default pin filters on.
 #:
-#: Pinning has to happen on this rather than on ``CodeVersion == "v2"``, and the
-#: difference is not cosmetic. ``CodeVersion`` is numbered per variable type so
-#: its levels mean the same thing everywhere, which means pinning a level drops
-#: every schema location that was never re-run under the newest code —
+#: Pinning has to happen on this rather than on ``Code:fn == "v2"``, and the
+#: difference is not cosmetic. Version ordinals are numbered per function so
+#: their levels mean the same thing everywhere, which means pinning a level
+#: drops every schema location that was never re-run under the newest code —
 #: silently losing subjects from the figure. This flag is resolved per location,
 #: so pinning it keeps each location's own newest record and loses nothing.
+#:
+#: It is also **one flag for the whole chain**, not one per code column. That is
+#: what keeps the default a single checkbox however many layers were edited: an
+#: N-function chain would otherwise need N pins to express "just show me the
+#: current results".
 LATEST_COLUMN = "CodeIsLatest"
 
 
@@ -223,60 +240,78 @@ def attach_variants(
     versions of the same function's source** carry identical branch params, so
     they arrived here indistinguishable and were overplotted as replicates —
     precisely the failure this function exists to prevent, reached by the one
-    route it did not cover. ``fn_version`` closes it; scidb sets it only when a
-    variable type genuinely holds more than one version, so nothing changes for
-    the ordinary single-version case.
+    route it did not cover.
 
-    See ``docs/claude/function-version-variants.md``.
+    Nor was the producing function's own version enough, for the same reason one
+    hop further out: two records whose producer never changed are still
+    different when something *upstream* of it did. ``code_chain`` closes that,
+    contributing one ``Code:<fn>`` column per upstream function that genuinely
+    holds more than one version. scidb omits single-version functions, so an
+    unedited project gets no code columns at all and nothing changes for it.
+
+    Code columns come **first**: they are the axis a reader most often wants
+    pinned, and a stable leading position beats having them appear wherever the
+    branch-param iteration order happened to put them.
+
+    See ``docs/claude/variant-selection.md`` and
+    ``docs/claude/function-version-variants.md``.
     """
     from scidb.provenance_query import variant_identity_batch
 
     record_ids = frame["record_id"].tolist()
     ident = variant_identity_batch(db._duck, record_ids)
 
-    keys: list[str] = []
+    # --- code chain: one column per multi-version upstream function ---
+    # Sorted by function name so the column order is a property of the data and
+    # not of dict iteration — a saved PlotSpec must keep meaning the same thing.
+    fn_names = sorted(
+        {name for info in ident.values() for name in info.get("code_chain", {})}
+    )
+    code_keys: list[str] = []
+    for fn_name in fn_names:
+        column = f"{VERSION_FACTOR_PREFIX}{fn_name}"
+        while column in frame.columns:  # never shadow a schema key
+            column += "_"
+        frame[column] = [
+            (ident.get(rid) or {}).get("code_chain", {}).get(
+                fn_name, MISSING_VERSION_LEVEL
+            )
+            for rid in record_ids
+        ]
+        code_keys.append(column)
+
+    # --- branch params ---
+    param_keys: list[str] = []
     for info in ident.values():
         for key in info["branch_params"]:
-            if key not in keys:
-                keys.append(key)
+            if key not in param_keys:
+                param_keys.append(key)
 
-    for key in keys:
+    for key in param_keys:
         frame[key] = [
             _stringify(ident.get(rid, {}).get("branch_params", {}).get(key))
             for rid in record_ids
         ]
 
-    versions = [(ident.get(rid) or {}).get("fn_version") for rid in record_ids]
-    latest_column = None
-    if any(versions):
-        # Never shadow a schema key or a branch param that happens to be called
-        # CodeVersion — same guard as the field factor in `source._melt_fields`.
-        column = VERSION_FACTOR
-        while column in frame.columns:
-            column += "_"
-        levels = [v or RAW_VERSION_LEVEL for v in versions]
-        frame[column] = levels
-        keys.append(column)
+    keys = code_keys + param_keys
 
+    latest_column = None
+    if code_keys:
         latest_column = LATEST_COLUMN
         while latest_column in frame.columns:
             latest_column += "_"
         # Deliberately NOT appended to `keys`: it is a filter helper, not a
-        # condition anyone plots by. Keeping it out of the variant columns also
-        # keeps it out of `hierarchy.join_frames`, which selects only levels,
-        # the value and the variant columns — so a two-measure join simply
-        # drops it and falls back to showing every version.
+        # condition anyone plots by.
         frame[latest_column] = [
             bool((ident.get(rid) or {}).get("is_latest")) for rid in record_ids
         ]
 
         Log.info(
-            "attached %r: %d record(s) span %d function version(s) %s (%d row(s) "
-            "current) — these would otherwise plot as replicates of each other",
-            column,
+            "attached %d code column(s) %s over %d record(s) (%d row(s) current) "
+            "— these would otherwise plot as replicates of each other",
+            len(code_keys),
+            code_keys,
             len(record_ids),
-            len(set(levels)),
-            sorted(set(levels)),
             int(frame[latest_column].sum()),
             layer=LAYER,
         )

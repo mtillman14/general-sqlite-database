@@ -102,6 +102,36 @@ def test_generated_filters_are_applied(scalar_table, scalar_frame):
     matplotlib.pyplot.close(figure)
 
 
+def test_generated_code_keeps_the_legend_for_several_colour_levels(scalar_table):
+    spec = PlotSpec(
+        measures=["StepLength"],
+        roles={"subject": Role.X, "session": Role.COLOR, "trial": Role.FREE},
+        kind=PlotKind.BOX,
+    )
+    source = generate_plot_function(spec, scalar_table)
+
+    assert "hue='session'" in source
+    assert "legend=False" not in source
+
+
+def test_generated_code_drops_the_legend_for_one_colour_level(
+    scalar_table, scalar_frame
+):
+    """Same rule as the renderers: one level, no legend — preview and export agree."""
+    spec = PlotSpec(
+        measures=["StepLength"],
+        roles={"subject": Role.X, "session": Role.COLOR, "trial": Role.FREE},
+        kind=PlotKind.BOX,
+        filters=[Filter(column="session", include=["pre"])],
+    )
+    source = generate_plot_function(spec, scalar_table)
+
+    assert "legend=False" in source
+    figure = _run(source, scalar_frame, "plot_steplength")
+    assert figure.legends == [] and all(ax.get_legend() is None for ax in figure.axes)
+    matplotlib.pyplot.close(figure)
+
+
 def test_iterate_factors_are_documented_as_foreach_keys(scalar_table):
     spec = PlotSpec(
         measures=["StepLength"],

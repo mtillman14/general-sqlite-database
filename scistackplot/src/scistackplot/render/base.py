@@ -121,6 +121,52 @@ def color_groups(
     return groups
 
 
+def legend_levels(resolved: ResolvedPlot) -> list[Any]:
+    """
+    The colour levels a legend would list, in drawn order.
+
+    Read off the PANELS rather than off ``color_order`` because a legend must
+    describe what is actually on the figure: a colour factor can arrive with
+    levels that this figure never draws (a filter removed them, or an ITERATE
+    slice only contains one of them), and those must not be counted.
+    """
+    color_column = resolved.encoding.color
+    if not color_column:
+        return []
+    present: dict[str, Any] = {}
+    for panel in resolved.panels:
+        if color_column not in panel.frame.columns:
+            continue
+        # unique(), not color_groups(): this is only a level count, and masking
+        # every panel once per declared level would walk the whole figure's data
+        # a second time on the export path (which is not downsampled).
+        for value in panel.frame[color_column].dropna().unique():
+            present.setdefault(str(value), value)
+
+    # Declared order first, then anything it missed — the same ordering rule
+    # ``color_groups`` uses, so the legend lists the series in drawn order.
+    ordered = [
+        present[str(level)]
+        for level in (resolved.color_order or [])
+        if str(level) in present
+    ]
+    seen = {str(level) for level in ordered}
+    ordered.extend(value for key, value in present.items() if key not in seen)
+    return ordered
+
+
+def shows_legend(resolved: ResolvedPlot) -> bool:
+    """
+    Whether this figure gets a legend at all.
+
+    ONE rule, shared by both renderers and mirrored by the generated seaborn
+    code (``codegen``): the legend exists only to tell colour series apart, so
+    a single level makes it pure noise — it restates the one thing every mark
+    on the figure already has in common, and it costs the panels width.
+    """
+    return len(legend_levels(resolved)) > 1
+
+
 #: A colour-blind-safe qualitative palette, used when the spec names none.
 #: Okabe–Ito, which stays distinguishable in greyscale print.
 DEFAULT_PALETTE = (

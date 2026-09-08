@@ -53,6 +53,19 @@ class Scaled(BaseVariable):
     schema_version = 1
 
 
+class Summarized(BaseVariable):
+    """Produced from ``Scaled`` — the SECOND pipeline layer.
+
+    Exists so a test can edit an *upstream* function's body and ask what the
+    downstream variable knows about it. One layer is not enough to exercise
+    that: ``CodeVersion`` is derived from the immediate producing invocation
+    only, so the gap only appears a hop away from the edit.
+    See docs/claude/variant-selection.md §2.
+    """
+
+    schema_version = 1
+
+
 class StepLengthFigure(BaseVariable):
     """Endpoint output: the figure's path."""
 

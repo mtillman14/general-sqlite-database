@@ -31,7 +31,13 @@ from __future__ import annotations
 
 from typing import Any
 
-from .capability import available_plots, capabilities, default_plot, why_unavailable
+from .capability import (
+    available_plots,
+    capabilities,
+    default_plot,
+    variant_summary,
+    why_unavailable,
+)
 from .codegen import (
     default_function_name,
     extract_spec,
@@ -59,7 +65,13 @@ from .spec import (
     VariantPolicy,
     grid_shape_for,
 )
-from .table import FactorInfo, LongTable, MeasureInfo, natural_sort_key
+from .table import (
+    CODE_FACTOR_PREFIX,
+    FactorInfo,
+    LongTable,
+    MeasureInfo,
+    natural_sort_key,
+)
 
 __all__ = [
     # spec
@@ -92,6 +104,8 @@ __all__ = [
     "DataFrameSource",
     # policy
     "available_plots",
+    "variant_summary",
+    "CODE_FACTOR_PREFIX",
     "default_plot",
     "why_unavailable",
     "capabilities",
