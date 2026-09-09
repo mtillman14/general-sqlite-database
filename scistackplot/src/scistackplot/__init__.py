@@ -63,6 +63,7 @@ from .spec import (
     Statistic,
     StyleOptions,
     VariantPolicy,
+    VariantSet,
     grid_shape_for,
 )
 from .table import (
@@ -71,6 +72,17 @@ from .table import (
     LongTable,
     MeasureInfo,
     natural_sort_key,
+)
+from .variants import (
+    CURRENT_VARIANT_NAME,
+    LATEST,
+    VARIANT_FACTOR,
+    apply_variant_sets,
+    auto_label,
+    defined_sets,
+    spanned_code_axes,
+    strip_answered_roles,
+    variant_set_mask,
 )
 
 __all__ = [
@@ -88,6 +100,7 @@ __all__ = [
     "StyleOptions",
     "Filter",
     "VariantPolicy",
+    "VariantSet",
     # data
     "LongTable",
     "FactorInfo",
@@ -106,6 +119,16 @@ __all__ = [
     "available_plots",
     "variant_summary",
     "CODE_FACTOR_PREFIX",
+    # named variants
+    "VARIANT_FACTOR",
+    "CURRENT_VARIANT_NAME",
+    "LATEST",
+    "apply_variant_sets",
+    "variant_set_mask",
+    "auto_label",
+    "defined_sets",
+    "spanned_code_axes",
+    "strip_answered_roles",
     "default_plot",
     "why_unavailable",
     "capabilities",

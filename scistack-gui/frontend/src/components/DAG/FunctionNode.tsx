@@ -16,6 +16,8 @@ import type { SourceLocation } from '../SourceLocationDialog'
 import { useBackendMessage } from '../../hooks/useBackendMessage'
 import { useRunLog } from '../../context/RunLogContext'
 import { useScope } from '../../context/ScopeContext'
+import { useVariantSelection } from '../../context/VariantSelectionContext'
+import type { VariantSelectionValue } from '../../context/VariantSelectionContext'
 import type { Variant } from './VariableNode'
 
 interface FnVariantRow {
@@ -71,7 +73,26 @@ interface Props {
   data: FunctionNodeData
 }
 
+/**
+ * The node, in whichever of its two roles applies.
+ *
+ * The split is at the component boundary rather than inside one body, and that
+ * is not stylistic. The pipeline node reaches for `useScope`, `useRunLog` and a
+ * WebSocket subscription — none of which exist in the Plot Studio's own webview
+ * tab (PlotRoot mounts no providers), and all of which would throw the moment
+ * the variant popup rendered a function. Hooks cannot be skipped inside a
+ * component, so the branch happens before either body runs: the popup mounts
+ * *only* selection state, and the canvas mounts *only* execution state.
+ */
 export default function FunctionNode({ id, data }: Props) {
+  const variantSelection = useVariantSelection()
+  if (variantSelection) {
+    return <VariantFunctionNode data={data} selection={variantSelection} />
+  }
+  return <PipelineFunctionNode id={id} data={data} />
+}
+
+function PipelineFunctionNode({ id, data }: Props) {
   const { getNodes, getEdges } = useReactFlow()
   const updateNodeInternals = useUpdateNodeInternals()
   const { currentScope } = useScope()
@@ -485,6 +506,124 @@ export default function FunctionNode({ id, data }: Props) {
   )
 }
 
+/**
+ * The same node, choosing which recorded version of itself a figure draws.
+ *
+ * The dropdown always offers "latest" first, and that is not a synonym for the
+ * highest ordinal: scidb resolves it per schema location, so a subject nobody
+ * re-ran keeps contributing its own newest record instead of dropping out of
+ * the figure. Picking a named version deliberately gives that up.
+ *
+ * A function that has run under exactly one version still gets the dropdown —
+ * it is a legitimate (if uninteresting) choice, and hiding the control would
+ * make the common case look broken. A function with NO recorded runs renders
+ * inert: there is nothing to select.
+ */
+function VariantFunctionNode({
+  data,
+  selection,
+}: {
+  data: FunctionNodeData
+  selection: VariantSelectionValue
+}) {
+  const label = data.label
+  const outputs = data.output_types ?? []
+  // Same handle set as the pipeline node — derived from `data` alone, so the
+  // graph keeps the shape the user knows without any of the canvas's state.
+  const leftHandles = [
+    ...Object.entries(data.input_params ?? {}).map(([param, type]) => ({
+      id: `in__${param}`,
+      title: type ? `${param}: ${type}` : param,
+    })),
+    ...(data.constant_params ?? []).map(c => ({ id: `param__${c}`, title: c })),
+  ]
+  const handleStyle = (
+    index: number,
+    total: number,
+    side: 'left' | 'right',
+  ): React.CSSProperties => ({
+    top: `${((index + 1) / (total + 1)) * 100}%`,
+    transform: `translate(${side === 'left' ? '-50%' : '50%'}, -50%)`,
+  })
+
+  const axis = selection.axisForFunction(label)
+  const versions = selection.versionsFor(label)
+  const inert = versions.length === 0
+  // No axis means this function's versions do not distinguish the plotted
+  // measure's records — either it is not upstream of it, or it only ever ran
+  // one version. Selecting is then meaningless, so say so instead of pretending.
+  const effective = axis ? selection.versionFor(axis.column) : 'latest'
+
+  return (
+    <div
+      style={{ ...styles.container, ...(inert || !axis ? styles.variantInert : null) }}
+      title={
+        inert
+          ? `${label} has no recorded runs.`
+          : !axis
+            ? `${label}'s version does not distinguish this measure's records.`
+            : undefined
+      }
+    >
+      {leftHandles.length > 0
+        ? leftHandles.map((h, i) => (
+            <Handle
+              key={h.id}
+              id={h.id}
+              type="target"
+              position={Position.Left}
+              style={handleStyle(i, leftHandles.length, 'left')}
+              title={h.title}
+            />
+          ))
+        : <Handle type="target" position={Position.Left} />
+      }
+      <div style={{ ...styles.label, cursor: 'default', textDecoration: 'none' }}>
+        {label}
+      </div>
+      {inert ? (
+        <div style={styles.variantNone}>never run</div>
+      ) : (
+        <select
+          value={effective}
+          disabled={!axis}
+          onChange={e => axis && selection.setVersion(axis.column, e.target.value)}
+          // React Flow's drag/pan gestures otherwise swallow the pointer before
+          // the native menu opens.
+          className="nodrag nopan"
+          style={styles.versionSelect}
+          title={
+            axis
+              ? 'Which version of this function produced the records to plot'
+              : 'Not a variant axis for this measure'
+          }
+        >
+          <option value="latest">latest</option>
+          {versions.map(v => (
+            <option key={v.version} value={v.version}>
+              {v.version}
+              {v.first_saved ? ` — ${v.first_saved.slice(0, 10)}` : ''}
+            </option>
+          ))}
+        </select>
+      )}
+      {outputs.length > 0
+        ? outputs.map((t, i) => (
+            <Handle
+              key={t}
+              id={`out__${t}`}
+              type="source"
+              position={Position.Right}
+              style={handleStyle(i, outputs.length, 'right')}
+              title={t}
+            />
+          ))
+        : <Handle type="source" position={Position.Right} />
+      }
+    </div>
+  )
+}
+
 const styles: Record<string, React.CSSProperties> = {
   container: {
     background: '#f0f4ff',
@@ -513,6 +652,23 @@ const styles: Record<string, React.CSSProperties> = {
     marginBottom: 6,
     maxHeight: 96,
     overflowY: 'auto',
+  },
+  // Variant popup only.
+  variantInert: { opacity: 0.4, borderStyle: 'dashed' },
+  variantNone: {
+    fontSize: 10,
+    color: '#6b6b8f',
+    fontStyle: 'italic',
+    textAlign: 'center',
+  },
+  versionSelect: {
+    width: '100%',
+    background: '#fff',
+    color: '#3a1a8e',
+    border: '1px solid #7b68ee',
+    borderRadius: 4,
+    fontSize: 11,
+    padding: '2px 4px',
   },
   variantRow: {
     display: 'flex',

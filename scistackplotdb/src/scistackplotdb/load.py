@@ -76,6 +76,17 @@ class VariableFrame:
     #: Variant columns attached from the provenance graph — branch params, plus
     #: the producing function's version when there is more than one.
     variant_columns: list[str] = field(default_factory=list)
+    #: One entry per variant column saying where it came from:
+    #: ``{"column", "kind": "code"|"param", "function", "param"}``.
+    #:
+    #: Column names encode this already (``Code:bandpass``, ``bandpass.low_hz``),
+    #: but only as *scidb's* namespacing conventions. Anything that needed the
+    #: producing function — the GUI mapping an axis to its pipeline node, most
+    #: obviously — would otherwise re-implement those conventions by splitting
+    #: strings, one layer away from where they are defined and first to break
+    #: when they change. Carrying the structure costs nothing here, where both
+    #: halves are still in hand.
+    variant_axes: list[dict] = field(default_factory=list)
     #: Name of the per-row "this is my location's newest code version" flag, or
     #: None when the variable holds only one version. See :data:`LATEST_COLUMN`.
     latest_column: str | None = None
@@ -197,9 +208,12 @@ def load_variable(db, variable: str, *, with_variants: bool = True) -> VariableF
 
         levels = [key for key in keys if frame[key].notna().any()]
         variant_columns: list[str] = []
+        variant_axes: list[dict] = []
         latest_column: str | None = None
         if with_variants and len(frame):
-            frame, variant_columns, latest_column = attach_variants(db, frame)
+            frame, variant_columns, latest_column, variant_axes = attach_variants(
+                db, frame
+            )
 
         Log.info(
             "loaded %s: %d record(s), levels=%s, variants=%s",
@@ -215,19 +229,22 @@ def load_variable(db, variable: str, *, with_variants: bool = True) -> VariableF
             levels=levels,
             data_columns=columns,
             variant_columns=variant_columns,
+            variant_axes=variant_axes,
             latest_column=latest_column,
         )
 
 
 def attach_variants(
     db, frame: pd.DataFrame
-) -> tuple[pd.DataFrame, list[str], str | None]:
+) -> tuple[pd.DataFrame, list[str], str | None, list[dict]]:
     """
     Add one column per thing that distinguishes these records, from the
     provenance graph: each branch param, plus the producing function's version.
 
-    Returns ``(frame, variant_columns, latest_column)`` — the last being the
-    name of the :data:`LATEST_COLUMN` flag when versions are in play, or None.
+    Returns ``(frame, variant_columns, latest_column, variant_axes)`` — the
+    third being the name of the :data:`LATEST_COLUMN` flag when versions are in
+    play (or None), and the fourth the structured description of each column
+    (see :attr:`VariableFrame.variant_axes`).
 
     This is the correctness-critical step. A variable produced at two filter
     cutoffs has **two records per schema combination**; without these columns
@@ -268,6 +285,7 @@ def attach_variants(
         {name for info in ident.values() for name in info.get("code_chain", {})}
     )
     code_keys: list[str] = []
+    axes: list[dict] = []
     for fn_name in fn_names:
         column = f"{VERSION_FACTOR_PREFIX}{fn_name}"
         while column in frame.columns:  # never shadow a schema key
@@ -279,6 +297,9 @@ def attach_variants(
             for rid in record_ids
         ]
         code_keys.append(column)
+        axes.append(
+            {"column": column, "kind": "code", "function": fn_name, "param": None}
+        )
 
     # --- branch params ---
     param_keys: list[str] = []
@@ -292,6 +313,18 @@ def attach_variants(
             _stringify(ident.get(rid, {}).get("branch_params", {}).get(key))
             for rid in record_ids
         ]
+        # Branch params are namespaced ``{producing_fn}.{param}`` by
+        # `_build_upstream_closure`. A bare key (no dot) is possible in principle
+        # and split defensively rather than assumed away.
+        function, _, param = key.rpartition(".")
+        axes.append(
+            {
+                "column": key,
+                "kind": "param",
+                "function": function or None,
+                "param": param,
+            }
+        )
 
     keys = code_keys + param_keys
 
@@ -317,10 +350,10 @@ def attach_variants(
         )
 
     if not keys:
-        return frame, [], None
+        return frame, [], None, []
 
     Log.debug("attached %d variant column(s): %s", len(keys), keys, layer=LAYER)
-    return frame, keys, latest_column
+    return frame, keys, latest_column, axes
 
 
 def _stringify(value: Any) -> Any:

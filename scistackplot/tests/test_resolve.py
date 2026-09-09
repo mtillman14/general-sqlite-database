@@ -267,16 +267,41 @@ def test_explicit_pool_averages_variants_together(variant_table):
     assert resolved.row_count == 3
 
 
-def test_pin_keeps_only_the_named_variant(variant_table):
+def test_one_named_variant_keeps_only_its_rows(variant_table):
+    from scistackplot.spec import VariantSet
+
     spec = PlotSpec(
         measures=["Peak"],
         roles={"subject": Role.X},
         kind=PlotKind.SCATTER,
-        variant_policy=VariantPolicy.PIN,
-        pinned_variant={"bandpass.low_hz": "20"},
+        variant_sets=[VariantSet("20 Hz", {"bandpass.low_hz": "20"})],
     )
     resolved = resolve(spec, variant_table)[0]
     assert resolved.row_count == 3
+
+
+def test_two_named_variants_become_one_coloured_factor(variant_table):
+    """The comparison case: both variants in one figure, told apart by name
+    rather than overplotted."""
+    from scistackplot import VARIANT_FACTOR
+    from scistackplot.spec import VariantSet
+
+    spec = PlotSpec(
+        measures=["Peak"],
+        roles={"subject": Role.X},
+        kind=PlotKind.SCATTER,
+        variant_sets=[
+            VariantSet("narrow", {"bandpass.low_hz": "20"}),
+            VariantSet("wide", {"bandpass.low_hz": "40"}),
+        ],
+    )
+    resolved = resolve(spec, variant_table)[0]
+
+    assert resolved.row_count == 6
+    assert resolved.color_order == ["narrow", "wide"]
+    assert VARIANT_FACTOR not in spec.roles, (
+        "the role was defaulted, not assigned — the spec stays the user's"
+    )
 
 
 # --- transport budget ------------------------------------------------------

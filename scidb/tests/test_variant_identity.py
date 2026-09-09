@@ -16,6 +16,8 @@ import scifor as _scifor
 from scidb import BaseVariable, configure_database, for_each
 from scidb.provenance import SAVE_FUNCTION_NAME
 from scidb.provenance_query import (
+    code_version_ordinals,
+    function_versions,
     producing_function_versions_batch,
     variant_identity_batch,
 )
@@ -571,3 +573,61 @@ class TestCodeChain:
             "subject=2's only chain is its own latest — pinning must not delete "
             "a location that was never re-run"
         )
+
+
+class TestFunctionVersions:
+    """`function_versions` — the picker's list, not the axis test.
+
+    `code_version_ordinals` omits single-version functions on purpose: presence
+    there means "this function distinguishes records". A version *picker* asks a
+    different question — "what could I choose?" — and a function that has run
+    once still answers it. The two must agree on what `v2` means, which is why
+    one is now computed from the other.
+    """
+
+    def test_a_single_version_function_is_listed(self, db):
+        _seed_raw(db)
+        _run(_load_body_v1, db)
+
+        versions = function_versions(db._duck, ["load_signal"])
+
+        assert [v["version"] for v in versions["load_signal"]] == ["v1"]
+        assert versions["load_signal"][0]["function_hash"]
+        assert versions["load_signal"][0]["first_saved"]
+
+    def test_a_single_version_function_is_not_an_axis(self, db):
+        """The same function, through the other read: still absent there."""
+        _seed_raw(db)
+        _run(_load_body_v1, db)
+
+        assert code_version_ordinals(db._duck, ["load_signal"]) == {}
+
+    def test_versions_are_ordered_oldest_first(self, db):
+        _seed_raw(db)
+        _run(_load_body_v1, db)
+        _run(_load_body_v2, db)
+        _run(_load_body_v3, db)
+
+        versions = function_versions(db._duck, ["load_signal"])
+
+        assert [v["version"] for v in versions["load_signal"]] == ["v1", "v2", "v3"]
+
+    def test_ordinals_match_the_axis_read_exactly(self, db):
+        """Two labellings of the same versions that could disagree would be a
+        bug nobody notices until a function has been edited twice."""
+        _seed_raw(db)
+        _run(_load_body_v1, db)
+        _run(_load_body_v2, db)
+
+        listed = {
+            v["function_hash"]: v["version"]
+            for v in function_versions(db._duck, ["load_signal"])["load_signal"]
+        }
+
+        assert listed == code_version_ordinals(db._duck, ["load_signal"])["load_signal"]
+
+    def test_an_unknown_function_is_absent_not_an_error(self, db):
+        assert function_versions(db._duck, ["never_ran"]) == {}
+
+    def test_no_names_is_a_no_op(self, db):
+        assert function_versions(db._duck, []) == {}

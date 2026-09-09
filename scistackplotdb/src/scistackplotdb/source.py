@@ -203,11 +203,11 @@ class ScidbSource(BaseSource):
                 frame = self._named_frame(primary, measures[0])
             levels = primary.levels
             variant_columns = list(primary.variant_columns)
+            variant_axes = list(primary.variant_axes)
             measure_names = [measures[0]]
             # Open on the current code version.
-            default_pin = (
-                {primary.latest_column: True} if primary.latest_column else None
-            )
+            latest_column = primary.latest_column
+            default_pin = {latest_column: True} if latest_column else None
         else:
             secondary = self._variable_frame(measures[1])
             multi = [
@@ -238,14 +238,19 @@ class ScidbSource(BaseSource):
             variant_columns = list(
                 dict.fromkeys(primary.variant_columns + secondary.variant_columns)
             )
+            variant_axes = list(
+                {
+                    axis["column"]: axis
+                    for axis in primary.variant_axes + secondary.variant_axes
+                }.values()
+            )
             measure_names = list(measures)
             # `join_frames` now carries both sides' flags through the merge and
             # ANDs them, so the pin-latest default applies to two-measure plots
             # too. It used to drop the flag, which made a relational scatter the
             # one place the default silently stopped protecting the figure.
-            default_pin = (
-                {LATEST_COLUMN: True} if LATEST_COLUMN in frame.columns else None
-            )
+            latest_column = LATEST_COLUMN if LATEST_COLUMN in frame.columns else None
+            default_pin = {latest_column: True} if latest_column else None
 
         # Variant columns first, and code versions lead within them (see
         # `attach_variants`). The variants are what a reader has to make a
@@ -270,6 +275,8 @@ class ScidbSource(BaseSource):
             field_factors=field_columns,
             name=measures[0],
             default_pin=default_pin,
+            latest_column=latest_column,
+            factor_origins={axis["column"]: axis for axis in variant_axes},
         )
         Log.debug(
             "get_table(%s): %d row(s), factors=%s",
@@ -279,6 +286,18 @@ class ScidbSource(BaseSource):
             layer=LAYER,
         )
         return table
+
+    def variant_graph(self, variable: str, functions: list[str] | None = None) -> dict:
+        """Variant axes and per-function versions for ``variable``.
+
+        A method rather than a bare function so it reuses this source's frame
+        cache: the picker opens over a variable the panel has already loaded,
+        and re-reading it to answer "what versions exist" would double the cost
+        of opening a dialog.
+        """
+        from .variants import variant_graph
+
+        return variant_graph(self._db, self._variable_frame(variable), functions)
 
     def _melt_fields(self, variable_frame, measure: str):
         """

@@ -17,6 +17,12 @@
 > as *supersession* only, so "compare method A against method B" is not
 > expressible — and the obvious fix is not the one it looks like.
 >
+> **§5's GUI design was built on 2026-09-08 and is documented in
+> `plot-variant-rows.md`** — named variant rows, the DAG-popup picker, and how a
+> variant figure is written as code. Read that for anything about the picker;
+> the notes below are the reasoning that led to it, and one item (the induced
+> subgraph) was deliberately not followed.
+>
 > Prerequisite reading: `function-version-variants.md` (what a variant *is*),
 > `plotting-library-design.md` (roles, `VariantPolicy`), `each-of-variant-expansion.md`.
 

@@ -75,6 +75,15 @@ class FactorInfo:
     #: one axis is not a figure anyone wanted.
     is_field: bool = False
     label: str | None = None
+    #: Where a variant factor came from, when the source can say:
+    #: ``{"kind": "code"|"param", "function": ..., "param": ...}``.
+    #:
+    #: Carried so a consumer never has to parse the column name. ``Code:bandpass``
+    #: and ``bandpass.low_hz`` are scidb's namespacing conventions, and a GUI (or
+    #: any other caller) reconstructing the producing function by splitting on
+    #: ``":"`` and ``"."`` would be re-implementing them one layer away from
+    #: where they are defined — the first place to break when they change.
+    origin: dict[str, Any] | None = None
 
     @property
     def display(self) -> str:
@@ -105,15 +114,25 @@ class LongTable:
     #: a column only after the measure has been exploded.
     index_column: str | None = None
     name: str | None = None
-    #: A ``PlotSpec.pinned_variant`` mapping the SOURCE recommends, or None if
-    #: it has no opinion. Sources that can tell which rows are current say so
-    #: here, and ``default_spec`` opens on it; the user is free to clear it.
+    #: A variant selection the SOURCE recommends, or None if it has no opinion.
+    #: Sources that can tell which rows are current say so here, and
+    #: ``default_spec`` opens on it as the first named variant; the user is free
+    #: to rename it, narrow it, or delete the row.
     #:
     #: The point is to keep "which rows are current" with the layer that knows
     #: — a scidb variable whose function was edited holds records from both the
     #: old and the new code, and only scidb can say which is which. A CSV has
     #: no such notion and leaves this None.
     default_pin: dict[str, Any] | None = None
+    #: Name of the per-row "my whole code chain is the newest at my own schema
+    #: location" flag, when the source attaches one (scidb's ``CodeIsLatest``).
+    #:
+    #: Needed by name because ``"latest"`` in a variant selection resolves
+    #: through it, and it is emphatically **not** the same thing as "the highest
+    #: version ordinal": it is per schema location, so a subject never re-run
+    #: under the newest code still contributes its own newest record instead of
+    #: silently leaving the figure.
+    latest_column: str | None = None
 
     # ---- lookups ---------------------------------------------------------
 
@@ -166,6 +185,8 @@ class LongTable:
         index_column: str | None = None,
         name: str | None = None,
         default_pin: dict[str, Any] | None = None,
+        latest_column: str | None = None,
+        factor_origins: dict[str, dict] | None = None,
     ) -> "LongTable":
         """
         Build a LongTable, inferring column roles when they aren't given.
@@ -208,6 +229,7 @@ class LongTable:
                     levels=levels,
                     is_variant=column in variant_set,
                     is_field=column in field_set,
+                    origin=(factor_origins or {}).get(column),
                 )
             )
 
@@ -230,6 +252,7 @@ class LongTable:
                 if key in frame.columns
             }
             or None,
+            latest_column=latest_column if latest_column in frame.columns else None,
         )
 
     def describe(self) -> dict:
@@ -246,6 +269,7 @@ class LongTable:
                     "level_count": len(f.levels),
                     "is_variant": f.is_variant,
                     "is_field": f.is_field,
+                    "origin": f.origin,
                 }
                 for f in self.factors
             ],

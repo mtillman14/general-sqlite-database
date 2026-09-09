@@ -40,6 +40,7 @@ from .spec import (
     grid_shape_for,
 )
 from .table import LongTable, natural_sort_key
+from .variants import apply_variant_sets, strip_answered_roles
 
 LAYER = "scistackplot"
 
@@ -67,6 +68,12 @@ def resolve(
     ``tests/test_fanout_parity.py`` asserts it.
     """
     with Log.timer("resolve", layer=LAYER, extra=str(spec.kind)):
+        # Named variants become a ``Variant`` factor BEFORE anything else looks
+        # at the table, so validation, roles, faceting and rendering all see one
+        # ordinary factor rather than each needing a variant special case.
+        base = table
+        table = apply_variant_sets(spec, table)
+        spec = strip_answered_roles(spec, base, table)
         validate(spec, table)
         roles = complete_roles(spec, table)
 
@@ -175,35 +182,6 @@ def _apply_filters(frame: pd.DataFrame, spec: PlotSpec) -> pd.DataFrame:
     return filtered
 
 
-def variant_pin_mask(frame: pd.DataFrame, pinned_variant: dict | None) -> pd.Series:
-    """Rows kept by ``pinned_variant`` — the single definition of what a pin selects.
-
-    Public because the GUI's picker has to report *"4 of 24 combinations"* using
-    exactly the rule the renderer will apply. A second implementation that
-    counted differently from the one that filters would put a number on screen
-    that the figure disagrees with, which is worse than no number.
-
-    A list/tuple/set value selects a **subcube** — "any of these levels" — so one
-    pin expresses "every variant where bandpass=v1" without enumerating the other
-    dimensions. A scalar is the one-level case of the same rule.
-
-    Keys naming a column the frame does not have are ignored, not treated as
-    matching nothing: a spec outlives the table it was written against (a
-    two-measure join drops columns, a reload may find a factor gone), and a
-    stale key must not silently empty the figure.
-    """
-    mask = pd.Series(True, index=frame.index)
-    for key, value in (pinned_variant or {}).items():
-        if key not in frame.columns:
-            continue
-        column = frame[key].astype(str)
-        if isinstance(value, (list, tuple, set, frozenset)):
-            mask &= column.isin({str(v) for v in value})
-        else:
-            mask &= column == str(value)
-    return mask
-
-
 def _apply_variant_policy(
     frame: pd.DataFrame,
     spec: PlotSpec,
@@ -211,28 +189,21 @@ def _apply_variant_policy(
     roles: dict[str, Role],
 ) -> tuple[pd.DataFrame, dict[str, Role]]:
     """
-    Honor ``variant_policy``.
+    Honor ``variant_policy`` for variant factors nothing selected.
 
-    FACET is the default and needs nothing here (``roles.validate`` has already
-    refused to let a multi-level variant factor sit in FREE/AGGREGATE). PIN
-    filters to one variant. POOL is the deliberate opt-in to averaging across
-    pipeline variants, and always says so in the log — a pooled figure looks
-    exactly like an unpooled one.
+    Selection itself happens earlier and elsewhere —
+    :func:`~scistackplot.variants.apply_variant_sets` has already folded
+    ``spec.variant_sets`` into the ``Variant`` factor by the time ``resolve``
+    gets here. What is left is the question this enum answers: what happens to a
+    variant factor no set constrained. FACET (the default) needs nothing —
+    ``roles.validate`` has already refused to let such a factor sit in
+    FREE/AGGREGATE. POOL is the deliberate opt-in to averaging across them, and
+    always says so in the log, because a pooled figure looks exactly like an
+    unpooled one.
     """
     variant_names = [f.name for f in table.variant_factors]
     if not variant_names:
         return frame, roles
-
-    if spec.variant_policy is VariantPolicy.PIN:
-        pinned = frame[variant_pin_mask(frame, spec.pinned_variant)]
-        Log.info(
-            "variant pin %s kept %d of %d row(s)",
-            spec.pinned_variant,
-            len(pinned),
-            len(frame),
-            layer=LAYER,
-        )
-        return pinned, roles
 
     if spec.variant_policy is VariantPolicy.POOL:
         unassigned = [

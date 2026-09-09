@@ -980,6 +980,18 @@ def _h_plot_capabilities(params):
     )
 
 
+def _h_plot_variant_graph(params):
+    from scistack_gui.db import get_db
+    from scistack_gui.services.plot_service import variant_graph
+
+    return variant_graph(
+        get_db(),
+        params["variable"],
+        functions=params.get("functions") or [],
+        csv_path=params.get("csv_path"),
+    )
+
+
 def _h_plot_resolve(params):
     from scistack_gui.db import get_db
     from scistack_gui.services.plot_service import resolve_figures
@@ -1141,6 +1153,7 @@ METHODS = {
     "restart_matlab_engine": _h_restart_matlab_engine,
     "plot_describe": _h_plot_describe,
     "plot_capabilities": _h_plot_capabilities,
+    "plot_variant_graph": _h_plot_variant_graph,
     "plot_resolve": _h_plot_resolve,
     "plot_export": _h_plot_export,
     "plot_add_to_pipeline": _h_plot_add_to_pipeline,

@@ -415,15 +415,17 @@ def test_no_default_pin_without_code_versions(two_variants):
     assert table.default_pin is None
 
 
-def test_default_spec_opens_pinned_to_the_latest(two_code_versions):
-    from scistackplot import VariantPolicy, default_spec
+def test_default_spec_opens_on_one_named_variant(two_code_versions):
+    """The panel always has a row to edit, and it starts on current results."""
+    from scistackplot import CURRENT_VARIANT_NAME, apply_variant_sets, default_spec
 
     table = ScidbSource(two_code_versions).get_table(["Scaled"])
     spec = default_spec(table, "Scaled")
 
-    assert spec.variant_policy is VariantPolicy.PIN
-    assert spec.pinned_variant == {"CodeIsLatest": True}
-    validate(spec, table)  # must not raise
+    assert len(spec.variant_sets) == 1
+    assert spec.variant_sets[0].name == CURRENT_VARIANT_NAME
+    assert spec.variant_sets[0].selection == {"CodeIsLatest": True}
+    validate(spec, apply_variant_sets(spec, table))  # must not raise
 
 
 def test_pinned_render_keeps_only_the_newest_rows(two_code_versions):
@@ -437,34 +439,37 @@ def test_pinned_render_keeps_only_the_newest_rows(two_code_versions):
     # 3 subjects x 2 sessions x 2 trials, one row each — not two.
     assert resolved.row_count == 3 * 2 * 2
 
-    # default_roles puts the variant on colour, so the surviving version is
-    # readable straight off the encoding.
+    # The code version is no longer an encoding channel: the "current" variant
+    # answers that axis, so it leaves the factor list rather than being colour
+    # with a single level (the 2026-09-09 report). What it must still be is
+    # RIGHT — the VALUES have to be the new code's, not the old one's. scale_v2
+    # adds 1 to scale_v1, so this fails loudly if the wrong record survived,
+    # which is exactly the originally reported bug.
     rows = _rows(resolved)
-    assert set(rows[resolved.encoding.color]) == {"v2"}
-
-    # ...and the VALUES are the new code's, not the old one's. scale_v2 adds 1
-    # to scale_v1, so this fails loudly if the pin kept the wrong record —
-    # which is exactly the reported bug (the older variant got plotted).
     expected = table.frame[table.frame["Code:scale_signal"] == "v2"]["Scaled"]
     assert sorted(round(v, 9) for v in rows[resolved.encoding.y]) == sorted(
         round(v, 9) for v in expected
     )
 
 
-def test_unpinning_brings_every_version_back(two_code_versions):
-    """The pin is a starting point, not a lock — the old records are still
-    there and one dropdown change plots them."""
+def test_clearing_the_variant_brings_every_version_back(two_code_versions):
+    """The opening variant is a starting point, not a lock — the old records are
+    still there and deleting the row plots them."""
     from dataclasses import replace
 
-    from scistackplot import VariantPolicy, default_spec
+    from scistackplot import default_spec
 
     table = ScidbSource(two_code_versions).get_table(["Scaled"])
     spec = default_spec(table, "Scaled")
 
+    # Deleting the row brings the code axis back as an ordinary factor needing a
+    # role. `session` has to give up colour to take it: with the variant
+    # answering the code axis, the opening defaults put session there, and two
+    # factors cannot share one channel.
     unpinned = replace(
         spec,
-        variant_policy=VariantPolicy.FACET,
-        roles={**spec.roles, "Code:scale_signal": Role.COLOR},
+        variant_sets=[],
+        roles={**spec.roles, "session": Role.FREE, "Code:scale_signal": Role.COLOR},
     )
     resolved = resolve(unpinned, table)[0]
 
@@ -521,10 +526,15 @@ def test_pin_keeps_locations_never_rerun_under_the_newest_code(seeded):
     # default_roles puts subject on x for a scalar measure.
     assert set(rows[resolved.encoding.x]) == set(SUBJECTS)
 
-    # Subject 01 shows the new code, the others still show what they have.
+    # Subject 01 contributes the new code, the others still contribute what they
+    # have. Checked against the frame rather than a colour channel: "current"
+    # answers the code axis, so it is no longer an encoding — and one variant
+    # legitimately spanning two ordinals, each newest at its own location, is
+    # precisely what the per-location flag means.
+    kept = table.frame[table.frame[table.latest_column]]
     by_subject = {
-        subject: set(group[resolved.encoding.color])
-        for subject, group in rows.groupby(resolved.encoding.x)
+        subject: set(group["Code:scale_signal"])
+        for subject, group in kept.groupby("subject")
     }
     assert by_subject[SUBJECTS[0]] == {"v2"}
     assert by_subject[SUBJECTS[1]] == {"v1"}

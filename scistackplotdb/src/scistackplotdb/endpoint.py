@@ -26,6 +26,10 @@ from dataclasses import dataclass, field
 from scistacklog import Log
 from scistackplot import LongTable, PlotSpec, default_function_name
 from scistackplot import generate_plot_function
+from scistackplot.codegen import variant_params
+from scistackplot.variants import defined_sets
+
+from .load import LATEST_COLUMN
 
 LAYER = "scistackplotdb"
 
@@ -71,6 +75,7 @@ def generate_endpoint(
 
     function_source = generate_plot_function(spec, table, function_name=name)
     foreach_source = _foreach_call(
+        spec=spec,
         function_name=name,
         input_variable=input_variable,
         x_variable=x_variable,
@@ -118,8 +123,61 @@ def default_path_template(function_name: str, iterate_keys: list[str]) -> str:
     return f"plots/{slug}{parts}.png"
 
 
+def variant_expression(input_variable: str, variant_set) -> str:
+    """A ``Variant(...)`` call selecting one named variant's records.
+
+    The inverse of :func:`~scistackplotdb.variants.selection_for`, and the thing
+    that makes a variant figure reproducible by hand: what the popup's
+    checkboxes and version dropdowns produced comes back out as the same
+    wrapper a scientist would have typed.
+
+    Selections spanning two producing functions **nest** rather than resorting
+    to dotted-string kwargs::
+
+        Variant(Variant(EMG, fn="loadEMG", code_version="v1"), fn="bandpass", low_hz=20)
+
+    Nesting is documented, merges the two filters (``scidb.variant.Variant``
+    handles it explicitly), and keeps every keyword readable — where
+    ``**{"__code__.loadEMG": "v1"}`` would leak a reserved namespace into code a
+    user is meant to edit.
+    """
+    from scistackplot import CODE_FACTOR_PREFIX, LATEST
+
+    by_function: dict[str, dict[str, object]] = {}
+    for column, value in (variant_set.selection or {}).items():
+        if column.startswith(CODE_FACTOR_PREFIX):
+            fn_name = column[len(CODE_FACTOR_PREFIX) :]
+            by_function.setdefault(fn_name, {})["code_version"] = value
+        elif column == LATEST_COLUMN:
+            # The source's "these are the current records" recommendation. scidb
+            # spells the same thing `code_version="latest"`, resolved per schema
+            # location by the same rule — not "the highest ordinal".
+            by_function.setdefault(None, {})["code_version"] = LATEST
+        else:
+            fn_name, _, param = column.rpartition(".")
+            by_function.setdefault(fn_name or None, {})[param] = value
+
+    expression = input_variable
+    for fn_name in sorted(by_function, key=lambda n: (n is None, n or "")):
+        arguments = []
+        if fn_name:
+            arguments.append(f"fn={fn_name!r}")
+        arguments.extend(f"{key}={value!r}" for key, value in by_function[fn_name].items())
+        expression = f"Variant({expression}, {', '.join(arguments)})"
+    return expression
+
+
+def _single_variant_expression(input_variable: str, spec) -> str:
+    """The lone variant's pin, or the bare variable when nothing is selected."""
+    sets = defined_sets(spec.variant_sets)
+    if len(sets) != 1:
+        return input_variable
+    return variant_expression(input_variable, sets[0])
+
+
 def _foreach_call(
     *,
+    spec: PlotSpec,
     function_name: str,
     input_variable: str,
     x_variable: str | None,
@@ -128,8 +186,24 @@ def _foreach_call(
     iterate_keys: list[str],
     finalized: bool,
 ) -> str:
-    inputs = [f'        "df": {input_variable},']
-    table_inputs = ["df"]
+    variant_inputs = variant_params(spec)
+    if variant_inputs:
+        # One input per named variant, each loaded through its own pin. See
+        # `codegen.variant_params` for why this cannot be a single `df`.
+        # Zipped against `defined_sets`, not `spec.variant_sets`: unfilled rows
+        # produce no input, so indexing the raw list would pair a parameter with
+        # the wrong variant's selection.
+        inputs = [
+            f'        "{param}": {variant_expression(input_variable, variant)},'
+            for (param, _label), variant in zip(
+                variant_inputs, defined_sets(spec.variant_sets), strict=True
+            )
+        ]
+        table_inputs = [param for param, _ in variant_inputs]
+    else:
+        pinned = _single_variant_expression(input_variable, spec)
+        inputs = [f'        "df": {pinned},']
+        table_inputs = ["df"]
     if x_variable:
         inputs.append(f'        "df_x": {x_variable},')
         table_inputs.append("df_x")

@@ -95,10 +95,16 @@ class VariantPolicy(str, Enum):
     ``POOL`` must be chosen deliberately. Pooling variants silently plots two
     different pipelines' results as if they were replicates of one — a figure
     that is wrong in a way that looks like data. See the design doc.
+
+    There is no ``PIN`` member. Pinning is what a one-entry
+    :attr:`PlotSpec.variant_sets` *is*, and a policy that meant "obey the sets"
+    beside sets that already say what to keep was two switches for one decision
+    — the state where the policy said ``facet`` and a set said ``v1`` had no
+    defensible meaning. Selecting is now always the sets' job; this enum only
+    answers what happens to variant factors *nothing* selected.
     """
 
     FACET = "facet"   # variants become an ordinary factor the user assigns
-    PIN = "pin"       # keep only the pinned variant (see PlotSpec.pinned_variant)
     POOL = "pool"     # explicitly average across variants
 
     def __str__(self) -> str:
@@ -239,6 +245,45 @@ class FacetOptions:
 
 
 @dataclass(frozen=True)
+class VariantSet:
+    """One named variant: a label, and the variant coordinates it selects.
+
+    This is the unit the Plot Studio's Variants section edits — one row, one
+    :class:`VariantSet` — and the unit a scientist writes by hand as
+    ``scistackplotdb.variant_set("baseline", Variant(X, code_version="v1"))``.
+
+    ``selection`` is keyed by **frame column** (``"Code:bandpass"``,
+    ``"bandpass.low_hz"``) rather than by a ``scidb.Variant`` object, and that
+    is deliberate: a spec has to survive JSON-RPC and the docstring round trip
+    (``codegen.extract_spec``), and this package must keep working with no scidb
+    installed at all — the CSV source depends on that. Translating a
+    ``scidb.Variant`` into these keys is scistackplotdb's job, in the layer that
+    knows how scidb namespaces branch params.
+
+    A value may be:
+
+    * a level (``"20"``) or a list of them (``["20", "50"]`` — "any of these",
+      the same subcube rule the popup's checkboxes produce);
+    * ``"latest"`` on a code axis, resolved against the data rather than
+      hard-coded to an ordinal — see :func:`~scistackplot.variants.resolve_selection`.
+
+    ``name`` may be None, meaning "call me whatever my selection says". The GUI
+    keeps it None until the user types over the auto label, so a label stays
+    honest while the selection is still being edited.
+    """
+
+    name: str | None = None
+    selection: dict[str, Any] = field(default_factory=dict)
+
+    def to_dict(self) -> dict:
+        return {"name": self.name, "selection": dict(self.selection)}
+
+    @classmethod
+    def from_dict(cls, raw: dict) -> "VariantSet":
+        return cls(name=raw.get("name"), selection=dict(raw.get("selection") or {}))
+
+
+@dataclass(frozen=True)
 class StyleOptions:
     palette: str | None = None
     width: float = 8.0
@@ -270,15 +315,19 @@ class PlotSpec:
     style: StyleOptions = field(default_factory=StyleOptions)
     filters: list[Filter] = field(default_factory=list)
     variant_policy: VariantPolicy = VariantPolicy.FACET
-    #: ``{factor: level}`` or ``{factor: [level, ...]}`` — which variant levels
-    #: survive under ``VariantPolicy.PIN``.
+    #: Named variants to plot — one entry per row of the GUI's Variants section.
     #:
-    #: A list means "keep any of these", which is what makes the pin a *subcube*
-    #: selector rather than a single-point one. That is the whole difference
-    #: between answering "show me one variant" and "show me every variant where
-    #: bandpass=v1" — the second is the question a multi-layer project actually
-    #: asks, and it cannot be expressed one scalar at a time.
-    pinned_variant: dict[str, Any] | None = None
+    #: One entry is a pin: the figure shows that variant and nothing else.
+    #: Several entries are a **comparison**: a synthetic ``Variant`` factor
+    #: appears with one level per entry, and it takes a role like any other
+    #: factor (colour, facet, separate figures). That is the difference between
+    #: "show me the current results" and "show me v1 against v3", expressed by
+    #: adding a row rather than by a different control.
+    #:
+    #: Empty means no selection at all — every variant in the data, each variant
+    #: factor still needing a role of its own (``validate`` refuses to pool
+    #: them silently).
+    variant_sets: list[VariantSet] = field(default_factory=list)
 
     # ---- convenience accessors ------------------------------------------
 
@@ -332,6 +381,7 @@ class PlotSpec:
             "rows": [_matcher_to_dict(m) for m in self.facet.rows],
             "cols": [_matcher_to_dict(m) for m in self.facet.cols],
         }
+        raw["variant_sets"] = [s.to_dict() for s in self.variant_sets]
         # TOML has no null; drop empty optionals so a round trip is stable.
         return _drop_nulls(raw)
 
@@ -353,7 +403,9 @@ class PlotSpec:
             variant_policy=VariantPolicy(
                 raw.get("variant_policy", VariantPolicy.FACET)
             ),
-            pinned_variant=raw.get("pinned_variant"),
+            variant_sets=[
+                VariantSet.from_dict(s) for s in (raw.get("variant_sets") or [])
+            ],
         )
 
     def to_json(self, *, indent: int | None = 2) -> str:

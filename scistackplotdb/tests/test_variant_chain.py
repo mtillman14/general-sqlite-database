@@ -167,3 +167,154 @@ def test_downstream_pooling_is_refused(upstream_code_versions):
 
     with pytest.raises(RoleError, match="would be pooled"):
         validate(spec, table)
+
+
+# --- the picker's data model ----------------------------------------------
+#
+# Axis origin travels WITH the axis so nothing downstream has to parse
+# "Code:scale_signal" or "scale_signal.factor" back into a function name. Those
+# are scidb's namespacing conventions; a GUI re-deriving them by splitting
+# strings would be the first thing to break when they change.
+
+
+def test_axes_carry_the_function_that_produced_them(upstream_code_versions):
+    loaded = load_variable(upstream_code_versions, "Summarized")
+
+    by_column = {axis["column"]: axis for axis in loaded.variant_axes}
+
+    assert by_column["Code:scale_signal"]["kind"] == "code"
+    assert by_column["Code:scale_signal"]["function"] == "scale_signal"
+
+
+@pytest.fixture
+def param_variants(seeded):
+    """One step run at two constants — a branch-param axis, no code edit."""
+
+    def scale_signal(signal, factor):
+        return float(np.mean(signal) * factor)
+
+    for factor in (2, 3):
+        for_each(
+            scale_signal,
+            inputs={"signal": Signal, "factor": factor},
+            outputs=[Scaled],
+            subject=[],
+            session=[],
+            trial=[],
+        )
+    return seeded
+
+
+def test_param_axes_split_the_namespaced_name(param_variants):
+    loaded = load_variable(param_variants, "Scaled")
+
+    axis = next(a for a in loaded.variant_axes if a["kind"] == "param")
+
+    assert axis["column"] == f"{axis['function']}.{axis['param']}"
+    assert axis["function"] == "scale_signal"
+    assert axis["param"] == "factor"
+
+
+def test_axes_reach_the_table_as_factor_origins(upstream_code_versions):
+    """What `capability.variant_summary` hands the GUI."""
+    table = ScidbSource(upstream_code_versions).get_table(["Summarized"])
+
+    origin = table.factor("Code:scale_signal").origin
+
+    assert origin["kind"] == "code"
+    assert origin["function"] == "scale_signal"
+
+
+def test_variant_graph_lists_levels_and_versions(upstream_code_versions):
+    source = ScidbSource(upstream_code_versions)
+
+    graph = source.variant_graph("Summarized")
+
+    axis = next(a for a in graph["axes"] if a["column"] == "Code:scale_signal")
+    assert axis["levels"] == ["v1", "v2"]
+    assert [v["version"] for v in graph["versions"]["scale_signal"]] == ["v1", "v2"]
+
+
+def test_variant_graph_covers_single_version_functions_in_the_chain(
+    upstream_code_versions,
+):
+    """`summarize` was never edited, so it is not an axis — but the popup still
+    has to offer its one version, or the dropdown is empty for the commonest
+    case in any project."""
+    graph = ScidbSource(upstream_code_versions).variant_graph("Summarized")
+
+    assert "summarize" in graph["chain_functions"]
+    assert [v["version"] for v in graph["versions"]["summarize"]] == ["v1"]
+    assert not any(a["function"] == "summarize" for a in graph["axes"])
+
+
+def test_variant_graph_answers_for_functions_outside_the_chain(
+    upstream_code_versions,
+):
+    """The popup mirrors the whole canvas, so a node the plotted measure does
+    not depend on still has to be able to say what it has run."""
+    graph = ScidbSource(upstream_code_versions).variant_graph(
+        "Scaled", ["summarize", "never_ran"]
+    )
+
+    assert [v["version"] for v in graph["versions"]["summarize"]] == ["v1"]
+    assert "never_ran" not in graph["versions"]
+
+
+# --- writing the same selection by hand -----------------------------------
+
+
+def test_variant_set_translates_a_scidb_variant(upstream_code_versions):
+    """The selector a scientist already writes in for_each, meaning the same
+    thing in a figure."""
+    from scidb import Variant
+
+    from scistackplotdb import variant_set
+
+    table = ScidbSource(upstream_code_versions).get_table(["Summarized"])
+
+    built = variant_set("baseline", Variant(Summarized, code_version="v1"), table)
+
+    assert built.name == "baseline"
+    assert built.selection == {"Code:scale_signal": "v1"}
+
+
+def test_a_bare_code_version_is_refused_when_it_is_ambiguous(
+    upstream_code_versions,
+):
+    from scistackplotdb.variants import _bare_code_column
+
+    with pytest.raises(ValueError, match="ambiguous"):
+        _bare_code_column(
+            [
+                {"column": "Code:a", "kind": "code", "function": "a"},
+                {"column": "Code:b", "kind": "code", "function": "b"},
+            ]
+        )
+
+
+def test_a_named_variant_selects_the_same_rows_the_figure_will_show(
+    upstream_code_versions,
+):
+    """The point of translating rather than inventing a second dialect: what the
+    selector picks and what the figure draws are the same set of records."""
+    from scidb import Variant
+    from scistackplot import apply_variant_sets
+
+    from scistackplotdb import variant_set
+
+    source = ScidbSource(upstream_code_versions)
+    table = source.get_table(["Summarized"])
+    spec = PlotSpec(
+        measures=["Summarized"],
+        roles={"session": Role.X, "subject": Role.FREE, "trial": Role.FREE},
+        kind=PlotKind.BOX,
+        variant_sets=[
+            variant_set("old code", Variant(Summarized, code_version="v1"), table)
+        ],
+    )
+
+    derived = apply_variant_sets(spec, table)
+
+    assert len(derived.frame) == 3 * 2 * 2
+    assert set(derived.frame["Code:scale_signal"]) == {"v1"}

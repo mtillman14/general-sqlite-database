@@ -3,9 +3,9 @@
 > Concepts: `docs/claude/variant-selection.md`. Extends
 > `.claude/plan-function-version-variants.md`.
 >
-> Status: **approved 2026-09-08. Stage 0 GREEN (user-run — the strict xfails
-> failed as designed, confirming the bug). Stages 1 + 2 IMPLEMENTED, tests
-> written but NOT YET RUN. Stages 3–5 not started.**
+> Status: **approved 2026-09-08. Stages 0-4a COMPLETE, ALL TESTS PASSING
+> (user-run 2026-09-08), UNCOMMITTED. Stage 4b not started.**
+>
 >
 > Stages 1 and 2 shipped together deliberately: chain columns without a
 > chain-aware pin would give a table whose default pin collapses only one of
@@ -41,7 +41,7 @@ discarded (Stages 3–4).
 Stages are independently valuable and independently shippable. **Stage 0 and
 Stage 5 depend on nothing** and can land first.
 
-### Stage 0 — Characterise the one-hop bug ✅ written, tests unrun
+### Stage 0 — Characterise the one-hop bug ✅ DONE, xfails flipped at Stage 1
 
 Pure diagnosis, commits to no design. Per CLAUDE.md NOTE 2.
 
@@ -57,7 +57,7 @@ Pure diagnosis, commits to no design. Per CLAUDE.md NOTE 2.
 - Adds `Summarized` to `scistackplotdb/tests/conftest.py` — a second
   pipeline-produced variable, needed for any two-layer test.
 
-### Stage 1 — `code_versions_batch` (scidb) ✅ implemented, tests unrun
+### Stage 1 — `code_versions_batch` (scidb) ✅ DONE, tests passing
 
 - New batched read beside `branch_params_batch`, walking the same chain: one
   entry per **upstream function** holding more than one version.
@@ -69,7 +69,7 @@ Pure diagnosis, commits to no design. Per CLAUDE.md NOTE 2.
 - Tests: `scidb/tests/test_variant_identity.py`, extending the existing
   two-version cases to two layers.
 
-### Stage 2 — Chain-aware `CodeIsLatest` + column attachment ✅ implemented, tests unrun
+### Stage 2 — Chain-aware `CodeIsLatest` + column attachment ✅ DONE, tests passing
 
 Deviation from the plan as written, decided during implementation: the single
 `CodeVersion` column is **gone**, replaced by one `Code:<fn>` column per
@@ -96,7 +96,7 @@ lines and the code-first ordering only makes sense alongside the new columns.
   bad with a chain.
 - Stage 0's xfail flips to pass here.
 
-### Stage 3 — `_function_source` (scidb) ✅ implemented (Python), tests unrun
+### Stage 3 — `_function_source` (scidb) ✅ DONE (Python only), tests passing
 
 Resolved the open question **per-callee rows, not a flattened blob, and not
 content-addressed dedup**: one row per unit keyed `(function_hash, unit_name)`,
@@ -246,7 +246,7 @@ Distinguishing them needs one of:
 Pick one before implementing 4a's node-state half. 4a's *filtering* half is
 independent of this and safe to build first.
 
-#### Stage 4a — filtering ✅ implemented, tests unrun
+#### Stage 4a — filtering ✅ DONE, tests passing
 
 `Variant(X, code_version=…, fn=…)`, carried as a reserved `__code__` /
 `__code__.<fn>` key in the existing filter dict and resolved by

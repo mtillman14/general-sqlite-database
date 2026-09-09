@@ -156,14 +156,18 @@ def test_explicit_pool_policy_allows_variants(variant_table):
     validate(spec, variant_table)
 
 
-def test_pin_policy_requires_a_pinned_variant(variant_table):
+def test_a_named_variant_satisfies_the_no_pooling_rule(variant_table):
+    """Selecting one variant is what pinning became: the factor collapses to a
+    single level, so there is nothing left to pool."""
+    from scistackplot import apply_variant_sets
+    from scistackplot.spec import VariantSet
+
     spec = PlotSpec(
         measures=["Peak"],
         roles={"subject": Role.X},
-        variant_policy=VariantPolicy.PIN,
+        variant_sets=[VariantSet("20 Hz", {"bandpass.low_hz": "20"})],
     )
-    with pytest.raises(RoleError, match="pinned_variant"):
-        validate(spec, variant_table)
+    validate(spec, apply_variant_sets(spec, variant_table))  # does not raise
 
 
 # --- defaults --------------------------------------------------------------

@@ -48,6 +48,11 @@
 import { useCallback } from 'react'
 import { Handle, Position, useReactFlow } from '@xyflow/react'
 import { callBackend } from '../../api'
+import { useVariantSelection } from '../../context/VariantSelectionContext'
+import type {
+  VariantAxis,
+  VariantSelectionValue,
+} from '../../context/VariantSelectionContext'
 
 export interface ParameterValue {
   value: string
@@ -85,10 +90,40 @@ export interface ParameterNodeData {
 
 interface Props {
   id: string
-  data: ParameterNodeData
+  data: ParameterNodeData & {
+    /** Set by the variant popup: which functions this parameter feeds, used to
+     *  match it to a variant axis (branch params are namespaced per producing
+     *  function, so the name alone can be ambiguous). */
+    variantConsumers?: string[]
+  }
 }
 
+/**
+ * The node, in whichever of its two roles applies.
+ *
+ * Branching at the component boundary rather than inside one body keeps the
+ * execution machinery — `useReactFlow`'s node writes and the hide/unhide calls
+ * they pair with — out of the variant popup entirely, instead of merely
+ * unused there. Same reasoning as FunctionNode's split.
+ */
 export default function ParameterNode({ id, data }: Props) {
+  // Non-null only inside Plot Studio's variant popup, where these checkboxes
+  // select what a FIGURE shows rather than what a RUN executes. See the
+  // context's own docstring — the two must never share state.
+  const variant = useVariantSelection()
+  if (variant) {
+    return (
+      <VariantParameterNode
+        label={data.label}
+        axis={variant.axisForParameter(data.label, data.variantConsumers ?? [])}
+        selection={variant}
+      />
+    )
+  }
+  return <PipelineParameterNode id={id} data={data} />
+}
+
+function PipelineParameterNode({ id, data }: Props) {
   const { setNodes } = useReactFlow()
 
   const toggleValue = useCallback((index: number) => {
@@ -145,6 +180,57 @@ export default function ParameterNode({ id, data }: Props) {
               <span style={!showCheckboxes || v.checked ? styles.valueLabel : styles.valueLabelUnchecked}>
                 {v.value}
               </span>
+            </label>
+          ))}
+        </div>
+      )}
+    </div>
+  )
+}
+
+/**
+ * The same node, selecting variants instead of configuring runs.
+ *
+ * Levels come from the DATA (the variant axis), not from the parameter's
+ * declared values: the question here is which records to draw, and a value
+ * declared but never run has none. A parameter with no axis at all — nothing
+ * downstream of it distinguishes this measure's records — renders inert rather
+ * than offering checkboxes that would do nothing.
+ */
+function VariantParameterNode({
+  label,
+  axis,
+  selection,
+}: {
+  label: string
+  axis: VariantAxis | null
+  selection: VariantSelectionValue
+}) {
+  const inert = !axis || axis.levels.length === 0
+  return (
+    <div
+      style={{ ...styles.container, ...(inert ? styles.inert : null) }}
+      title={
+        inert
+          ? `${label} does not distinguish this measure's records — nothing to select.`
+          : undefined
+      }
+    >
+      <Handle type="source" position={Position.Right} />
+      <div style={styles.label}>{label}</div>
+      {inert && <div style={styles.noValue}>not a variant here</div>}
+      {!inert && (
+        <div style={styles.listbox}>
+          {axis!.levels.map(level => (
+            <label key={level} style={styles.valueRow}>
+              <input
+                type="checkbox"
+                checked={selection.isLevelSelected(axis!.column, level)}
+                onChange={() => selection.toggleLevel(axis!.column, level)}
+                className="nodrag nopan"
+                style={styles.checkbox}
+              />
+              <span style={styles.valueLabel}>{level}</span>
             </label>
           ))}
         </div>
@@ -211,5 +297,11 @@ const styles: Record<string, React.CSSProperties> = {
     color: '#555',
     fontFamily: 'monospace',
     textDecoration: 'line-through',
+  },
+  // Variant popup only: a node that cannot affect the plotted measure. Dimmed
+  // rather than hidden, so the graph still reads as the pipeline the user knows.
+  inert: {
+    opacity: 0.4,
+    borderStyle: 'dashed',
   },
 }

@@ -85,3 +85,114 @@ def test_second_measure_is_passed_as_a_second_input(seeded):
     )
     assert '"df_x": Mass,' in code.foreach_source
     assert "as_table=['df', 'df_x']" in code.foreach_source
+
+
+# --- variants ---------------------------------------------------------------
+#
+# Everything the GUI can do has to be writable by hand, so a variant figure has
+# to survive export. The two shapes below are the whole contract:
+#   one variant  -> one `df` input, pinned by a Variant(...) wrapper
+#   two or more  -> one input each, concatenated and labelled in the function
+# It cannot be one input carrying a variant column: `as_table` hands a function
+# schema keys and data columns only, never the branch-param/code columns that
+# tell variants apart (scifor's `_extract_data`).
+
+
+@pytest.fixture
+def comparison_spec():
+    from scistackplot.spec import VariantSet
+
+    return PlotSpec(
+        measures=["StepLength"],
+        roles={"session": Role.X, "subject": Role.FREE, "trial": Role.FREE},
+        kind=PlotKind.BOX,
+        variant_sets=[
+            VariantSet("baseline", {"Code:bandpass": "v1"}),
+            VariantSet("new filter", {"bandpass.low_hz": ["20", "50"]}),
+        ],
+    )
+
+
+def test_one_variant_pins_the_single_input(table):
+    from scistackplot.spec import VariantSet
+
+    spec = PlotSpec(
+        measures=["StepLength"],
+        roles={"session": Role.X, "subject": Role.FREE, "trial": Role.FREE},
+        kind=PlotKind.BOX,
+        variant_sets=[VariantSet("current", {"CodeIsLatest": True})],
+    )
+
+    code = generate_endpoint(spec, table, input_variable="StepLength")
+
+    assert '"df": Variant(StepLength, code_version=\'latest\')' in code.foreach_source
+    assert "def plot_steplength(df, filename)" in code.function_source
+
+
+def test_each_variant_becomes_its_own_input(table, comparison_spec):
+    code = generate_endpoint(comparison_spec, table, input_variable="StepLength")
+
+    assert '"baseline": Variant(StepLength, fn=\'bandpass\', code_version=\'v1\')' in (
+        code.foreach_source
+    )
+    assert '"new_filter": Variant(StepLength, fn=\'bandpass\', low_hz=[\'20\', \'50\'])' in (
+        code.foreach_source
+    )
+    assert "as_table=['baseline', 'new_filter']" in code.foreach_source
+
+
+def test_the_generated_function_labels_and_stacks_them(table, comparison_spec):
+    code = generate_endpoint(comparison_spec, table, input_variable="StepLength")
+
+    assert "def plot_steplength(baseline, new_filter, filename)" in code.function_source
+    assert "baseline.assign(**{'Variant': 'baseline'})" in code.function_source
+    assert "new_filter.assign(**{'Variant': 'new filter'})" in code.function_source
+
+
+def test_variant_input_names_are_identifiers(table):
+    """A variant is named for a reader ("20 Hz + latest"); a parameter cannot be."""
+    from scistackplot.spec import VariantSet
+
+    spec = PlotSpec(
+        measures=["StepLength"],
+        roles={"session": Role.X, "subject": Role.FREE, "trial": Role.FREE},
+        kind=PlotKind.BOX,
+        variant_sets=[
+            VariantSet("20 Hz + latest", {"bandpass.low_hz": "20"}),
+            VariantSet("50 Hz + latest", {"bandpass.low_hz": "50"}),
+        ],
+    )
+
+    code = generate_endpoint(spec, table, input_variable="StepLength")
+
+    assert "def plot_steplength(v_20_hz_latest, v_50_hz_latest, filename)" in (
+        code.function_source
+    )
+
+
+def test_a_multi_function_selection_nests_variants(table):
+    """Two producing functions cannot share one Variant(fn=...), and dotted-string
+    kwargs would leak a reserved namespace into code the user is meant to edit."""
+    from scistackplot.spec import VariantSet
+
+    spec = PlotSpec(
+        measures=["StepLength"],
+        roles={"session": Role.X, "subject": Role.FREE, "trial": Role.FREE},
+        kind=PlotKind.BOX,
+        variant_sets=[
+            VariantSet("old load, 20 Hz", {"Code:loadEMG": "v1", "bandpass.low_hz": "20"})
+        ],
+    )
+
+    code = generate_endpoint(spec, table, input_variable="StepLength")
+
+    assert (
+        "Variant(Variant(StepLength, fn='bandpass', low_hz='20'), "
+        "fn='loadEMG', code_version='v1')" in code.foreach_source
+    )
+
+
+def test_generated_variant_source_compiles(table, comparison_spec):
+    code = generate_endpoint(comparison_spec, table, input_variable="StepLength")
+
+    compile(code.function_source, "<generated>", "exec")

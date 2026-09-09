@@ -19,6 +19,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import createPlotlyComponent from 'react-plotly.js/factory'
 import Plotly from 'plotly.js-cartesian-dist-min'
 import { callBackend, isVSCodeMode } from '../../api'
+import VariantDagPopup from './VariantDagPopup'
 
 const Plot = createPlotlyComponent(Plotly)
 
@@ -71,16 +72,40 @@ interface KindInfo {
 interface VariantFactorInfo {
   name: string
   levels: string[]
-  /** Levels surviving the current pin, measured against the frame. */
+  /** Levels surviving the current selection, measured against the frame. */
   selected: string[]
   /** A code-version axis (`Code:bandpass`) rather than an experimental one. */
   is_code: boolean
 }
 
+/** One row of the Variants section, as the backend reports it back. */
+interface VariantSetInfo {
+  /** What to show: the user's name, or the auto label when they haven't typed. */
+  name: string
+  auto_label: string
+  /** null until the user names it — that is what keeps the label following the
+   *  selection while it is still being edited. */
+  explicit_name: string | null
+  selection: Record<string, unknown>
+  /** False for a row added but not filled in yet. Such a row is inert — it
+   *  changes nothing about the figure until it says something. */
+  defined: boolean
+  /** Rows this variant contributes to the figure. Zero is the number worth
+   *  showing: a variant selecting a combination nobody ran looks exactly like a
+   *  working one until its series fails to appear. */
+  row_count: number
+  /** Code axes this variant left open and whose versions its rows disagree on,
+   *  `{column: version count}`. Reported here because the code columns are no
+   *  longer offered as factors — the fix is on this row, not in Factors. */
+  spans: Record<string, number>
+}
+
 interface VariantSummary {
+  sets: VariantSetInfo[]
   factors: VariantFactorInfo[]
   /** Combinations present in the data — measured, not level counts multiplied,
-   *  because real data is ragged and the default pin is on a non-factor flag. */
+   *  because real data is ragged and the default selection is on a non-factor
+   *  flag. */
   total_combinations: number
   selected_combinations: number
   policy: string
@@ -92,6 +117,10 @@ interface Capabilities {
   default: string
   available: string[]
   kinds: KindInfo[]
+  /** Factors of the RESOLVED table — the synthetic `Variant` factor included,
+   *  and the columns its selections consumed excluded. The panel renders these
+   *  rather than `describe.table.factors`, which is the pre-selection view. */
+  factors?: FactorInfo[]
   variants?: VariantSummary
 }
 
@@ -138,6 +167,11 @@ interface GridMeta {
   layout_notes?: string[]
 }
 
+interface VariantSet {
+  name: string | null
+  selection: Record<string, unknown>
+}
+
 interface Spec {
   measures: string[]
   roles: Record<string, Role>
@@ -145,11 +179,10 @@ interface Spec {
   aggregate?: { statistic: string; error: string }
   facet?: FacetOptions
   variant_policy?: string
-  /* Set by the source when it can say which rows are current — a scidb
-     variable whose function was edited holds records from both the old and the
-     new code. Kept in the spec even while the policy is not 'pin', so toggling
-     back restores it. */
-  pinned_variant?: Record<string, unknown>
+  /* One entry per row of the Variants section. One row is a pin (the figure
+     shows that variant); several are a comparison, and a `Variant` factor
+     appears in Factors carrying whichever role the user gives it. */
+  variant_sets?: VariantSet[]
   style?: Record<string, unknown>
 }
 
@@ -205,6 +238,8 @@ export default function PlotStudio({ variable, csvPath, embedded = false, onClos
   // Reclaiming space happens at two levels: hiding the controls rail inside
   // the panel, and asking VS Code to enlarge the tab the webview lives in.
   const [controlsHidden, setControlsHidden] = useState(false)
+  // Index of the variant row whose DAG popup is open, or null.
+  const [variantEditor, setVariantEditor] = useState<number | null>(null)
   const panelRef = useRef<HTMLDivElement>(null)
   const [canvasHeight, setCanvasHeight] = useState(0)
   const observerRef = useRef<ResizeObserver | null>(null)
@@ -314,68 +349,68 @@ export default function PlotStudio({ variable, csvPath, embedded = false, onClos
     []
   )
 
-  const setVariantPolicy = useCallback((policy: string) => {
-    setSpec(prev => (prev ? { ...prev, variant_policy: policy } : prev))
+  /** Average across variant factors no row selected. The deliberate opt-in that
+   *  `roles.validate` demands — pooling looks exactly like not pooling. */
+  const setPooling = useCallback((pool: boolean) => {
+    setSpec(prev => (prev ? { ...prev, variant_policy: pool ? 'pool' : 'facet' } : prev))
   }, [])
 
-  /** Check/uncheck one level of one variant factor.
-   *
-   *  Writes a LIST into `pinned_variant` even for a single level, because the
-   *  backend treats a list as "any of these" — that is what makes this a
-   *  subcube selector and lets two dimensions be narrowed independently.
-   *
-   *  Toggling anything also switches the policy to 'pin': the levels are only
-   *  consulted under PIN, so leaving the policy alone would present checkboxes
-   *  that silently do nothing.
-   *
-   *  This state belongs to the PlotSpec and nothing else. It must never be
-   *  wired to the pipeline canvas's ParameterNode checkboxes, which are
-   *  execution state — unchecking there changes what future RUNS do, and a
-   *  display control that quietly edits the run config is far worse than two
-   *  similar-looking widgets.
-   */
-  const toggleVariantLevel = useCallback(
-    (factor: string, level: string, factors: VariantFactorInfo[]) => {
-      setSpec(prev => {
-        if (!prev) return prev
-        // Rebuild the pin from every factor's CURRENT selection, then apply the
-        // toggle. Two reasons, and the first is a correctness bug rather than
-        // tidiness:
-        //
-        // The opening pin is `{CodeIsLatest: true}` — a per-row flag, NOT a
-        // variant factor. Merging a level list onto it would AND the two, so
-        // ticking an older version asked for rows that are simultaneously
-        // "latest" and "v1" — an empty figure. Rebuilding from the factors
-        // drops that flag, which is right: an explicit choice supersedes the
-        // "just show me current" shortcut.
-        //
-        // Seeding from the current selection also means the figure does not
-        // jump on the first click: what was on screen stays on screen, minus
-        // or plus the one level touched.
-        const next: Record<string, string[]> = {}
-        for (const f of factors) {
-          const chosen =
-            f.name === factor
-              ? f.selected.includes(level)
-                ? f.selected.filter(l => l !== level)
-                : [...f.selected, level]
-              : f.selected
-          // Declared level order, not click order, so the legend and facet
-          // sequence stay stable as boxes are toggled.
-          next[f.name] = f.levels.filter(l => chosen.includes(l))
-        }
-        return { ...prev, variant_policy: 'pin', pinned_variant: next }
-      })
-    },
-    []
-  )
+  /** Add a row. Its selection starts empty — "all variants" — because the honest
+   *  starting point for a new comparison is everything, narrowed on the DAG. */
+  const addVariantSet = useCallback(() => {
+    setSpec(prev =>
+      prev
+        ? { ...prev, variant_sets: [...(prev.variant_sets ?? []), { name: null, selection: {} }] }
+        : prev
+    )
+  }, [])
 
-  const factors = describe?.table?.factors ?? []
-  const hasVariants = useMemo(() => factors.some(f => f.is_variant), [factors])
-  // 'pin' is only a legal policy when something was handed to us to pin on —
-  // validate() refuses PIN with an empty pinned_variant.
-  const canPin = Boolean(
-    spec?.pinned_variant && Object.keys(spec.pinned_variant).length > 0
+  const removeVariantSet = useCallback((index: number) => {
+    setSpec(prev =>
+      prev
+        ? { ...prev, variant_sets: (prev.variant_sets ?? []).filter((_, i) => i !== index) }
+        : prev
+    )
+  }, [])
+
+  const editVariantSet = useCallback((index: number, patch: Partial<VariantSet>) => {
+    setSpec(prev => {
+      if (!prev) return prev
+      const sets = [...(prev.variant_sets ?? [])]
+      if (!sets[index]) return prev
+      sets[index] = { ...sets[index], ...patch }
+      return { ...prev, variant_sets: sets }
+    })
+  }, [])
+
+  // Factors of the resolved table (Variant included, selected-away columns
+  // gone). `describe.table.factors` is the pre-selection view and would show
+  // both a `Code:` column and the `Variant` factor that consumed it.
+  const factors = capabilities?.factors ?? describe?.table?.factors ?? []
+
+  // Rows come from the SPEC, annotations from the backend. The spec is the
+  // source of truth and updates on the keystroke; `capabilities` is a debounced
+  // echo, so rendering rows from it would make "+ Add variant" appear to do
+  // nothing for a moment — and, worse, would let a row index mean different
+  // things in the list and in the popup during that window.
+  const variantRows = useMemo(
+    () =>
+      (spec?.variant_sets ?? []).map((set, index) => {
+        const info = capabilities?.variants?.sets?.[index]
+        return {
+          explicitName: set.name,
+          autoLabel: info?.auto_label ?? '(not set)',
+          defined: Object.keys(set.selection ?? {}).length > 0,
+          rowCount: info?.row_count,
+          spans: info?.spans ?? {},
+        }
+      }),
+    [spec?.variant_sets, capabilities]
+  )
+  // The section exists whenever this source has variants at all — a project
+  // with none never sees it, and one that does always has a row to edit.
+  const hasVariants = Boolean(
+    (capabilities?.variants?.factors ?? []).length > 0 || variantRows.length > 0
   )
   const summarizing = spec?.kind === 'bar' || spec?.kind === 'band'
   const faceted = Object.values(spec?.roles ?? {}).includes('facet')
@@ -439,14 +474,14 @@ export default function PlotStudio({ variable, csvPath, embedded = false, onClos
   // --- render -------------------------------------------------------------
   if (loadError) {
     return (
-      <Shell variable={title} onClose={onClose} embedded={embedded}>
+      <Shell variable={title} shape={capabilities?.shape} onClose={onClose} embedded={embedded}>
         <div style={styles.error}>Could not open the plot panel: {loadError}</div>
       </Shell>
     )
   }
   if (!describe) {
     return (
-      <Shell variable={title} onClose={onClose} embedded={embedded}>
+      <Shell variable={title} shape={capabilities?.shape} onClose={onClose} embedded={embedded}>
         <div style={styles.note}>Loading…</div>
       </Shell>
     )
@@ -454,7 +489,7 @@ export default function PlotStudio({ variable, csvPath, embedded = false, onClos
   if (describe.eligible === false) {
     // The empty state the design doc insists on: say why, never draw blank axes.
     return (
-      <Shell variable={title} onClose={onClose} embedded={embedded}>
+      <Shell variable={title} shape={capabilities?.shape} onClose={onClose} embedded={embedded}>
         <div style={styles.note}>{describe.reason}</div>
       </Shell>
     )
@@ -471,6 +506,9 @@ export default function PlotStudio({ variable, csvPath, embedded = false, onClos
   return (
     <Shell
       variable={title}
+      // The measure's shape used to head its own sidebar section, which spent a
+      // whole block restating the title. It belongs to the title.
+      shape={capabilities?.shape}
       onClose={onClose}
       embedded={embedded}
       panelRef={panelRef}
@@ -483,12 +521,31 @@ export default function PlotStudio({ variable, csvPath, embedded = false, onClos
             ...(controlsHidden ? styles.controlsHidden : null),
           }}
         >
-          <Section title="Measure">
-            <div style={styles.readonlyValue}>
-              {variable}
-              <span style={styles.shapeTag}>{capabilities?.shape}</span>
-            </div>
-          </Section>
+          {hasVariants && (
+            <Section title="Variants">
+              <div style={styles.hint}>
+                Each row is one variant of the pipeline. Two or more become a
+                factor you can colour or facet by.
+              </div>
+              <VariantRows
+                rows={variantRows}
+                onRename={(index, name) => editVariantSet(index, { name })}
+                onEdit={index => setVariantEditor(index)}
+                onRemove={removeVariantSet}
+                onAdd={addVariantSet}
+              />
+              <label style={styles.poolRow} title="Average across variant factors no row selected — results from different pipeline variants are combined">
+                <input
+                  type="checkbox"
+                  checked={spec?.variant_policy === 'pool'}
+                  onChange={e => setPooling(e.target.checked)}
+                  style={{ marginRight: 6 }}
+                />
+                Pool unselected variants
+              </label>
+              <VariantReadout summary={capabilities?.variants} />
+            </Section>
+          )}
 
           <Section title="Factors">
             <div style={styles.hint}>Each factor does exactly one thing.</div>
@@ -608,40 +665,6 @@ export default function PlotStudio({ variable, csvPath, embedded = false, onClos
             </Section>
           )}
 
-          {hasVariants && (
-            <Section title="Variants">
-              <div style={styles.hint}>
-                Levels here are different pipeline variants, not repeated measurements.
-              </div>
-              {canPin && spec?.variant_policy === 'pin' && (
-                /* Never let a pin hide data silently — that is the whole bug
-                   this stage exists to fix. Say what is being left out and how
-                   to get it back. */
-                <div style={styles.pinNote}>
-                  Showing only the newest code version at each schema location.
-                  Older versions are still stored — switch to “Keep separate” to
-                  plot them alongside.
-                </div>
-              )}
-              <select
-                value={spec?.variant_policy ?? 'facet'}
-                onChange={e => setVariantPolicy(e.target.value)}
-                style={styles.select}
-              >
-                {/* Only offered when the source supplied something to pin;
-                    PIN without a pinned_variant is refused by validate. */}
-                {canPin && <option value="pin">Show only the current code version</option>}
-                <option value="facet">Keep separate (assign a role)</option>
-                <option value="pool">Pool them (average across variants)</option>
-              </select>
-
-              <VariantPicker
-                summary={capabilities?.variants}
-                onToggle={toggleVariantLevel}
-              />
-            </Section>
-          )}
-
           <div style={{ ...styles.actions, flexWrap: 'wrap' }}>
             <button
               type="button"
@@ -711,12 +734,30 @@ export default function PlotStudio({ variable, csvPath, embedded = false, onClos
           <pre style={styles.code} onClick={e => e.stopPropagation()}>{code}</pre>
         </div>
       )}
+
+      {variantEditor !== null && !csvPath && (
+        <VariantDagPopup
+          variable={describe?.variable ?? variable}
+          selection={(spec?.variant_sets?.[variantEditor]?.selection ?? {}) as Record<string, unknown>}
+          name={variantRows[variantEditor]?.explicitName ?? ''}
+          placeholder={variantRows[variantEditor]?.autoLabel ?? ''}
+          onCancel={() => setVariantEditor(null)}
+          onApply={({ selection, name }) => {
+            // An empty name stays null so the label keeps following the
+            // selection; typing one pins it.
+            editVariantSet(variantEditor, { selection, name: name || null })
+            setVariantEditor(null)
+          }}
+        />
+      )}
     </Shell>
   )
 }
 
 interface ShellProps {
   variable: string
+  /** The measure's shape (`scalar`, `series_1d`, …), badged beside the title. */
+  shape?: string
   onClose: () => void
   embedded?: boolean
   /** The controls rail. It sits under the header, in the same narrow column. */
@@ -730,6 +771,7 @@ interface ShellProps {
 
 function Shell({
   variable,
+  shape,
   onClose,
   embedded,
   sidebar,
@@ -763,7 +805,10 @@ function Shell({
               {/* A collapsed rail is only as wide as its buttons, so the title
                   would be the one thing keeping it wide. */}
               {!controlsHidden && (
-                <span style={styles.title} title={`Plot — ${variable}`}>Plot — {variable}</span>
+                <span style={styles.title} title={`Plot — ${variable}`}>
+                  Plot — {variable}
+                  {shape && <span style={styles.shapeTag}>{shape}</span>}
+                </span>
               )}
             </div>
             <div style={styles.headerActions}>
@@ -866,67 +911,132 @@ function RuleSlots({ title, count, rules, onEdit }: RuleSlotsProps) {
   )
 }
 
-interface VariantPickerProps {
-  summary?: VariantSummary
-  onToggle: (factor: string, level: string, factors: VariantFactorInfo[]) => void
+interface VariantRow {
+  /** The user's name, or null while the label follows the selection. */
+  explicitName: string | null
+  /** What the selection says it is, used as the placeholder. */
+  autoLabel: string
+  /** False until the row selects something. Such a row changes nothing. */
+  defined: boolean
+  /** Rows it contributes, once the backend has measured it. */
+  rowCount?: number
+  /** Code axes it leaves open and disagrees on, `{column: version count}`. */
+  spans: Record<string, number>
+}
+
+interface VariantRowsProps {
+  rows: VariantRow[]
+  onRename: (index: number, name: string | null) => void
+  onEdit: (index: number) => void
+  onRemove: (index: number) => void
+  onAdd: () => void
 }
 
 /**
- * Per-factor level selection, plus the combination readout.
+ * The Variants section: a name and a "select on the DAG" button, per row.
  *
- * The design decision behind this shape: **name the coordinates, not the
- * combinations.** A flat list of every variant would need
- * `total_combinations` entries with concatenated labels, which stops being
- * readable at two factors and stops being memorable at one. One row per factor
- * composes instead — "just this variant", "everything where bandpass=v1" and
- * "all of them" are the same control at different settings.
+ * Shaped like Factors — two columns, many rows — because it is the same kind of
+ * list: a thing, and what to do with it. The name is editable and lands in the
+ * figure's legend, which is the whole reason a variant is *named* rather than
+ * numbered: "baseline" and "20 Hz filter" survive being read a week later,
+ * "variant 2" does not.
  *
- * The readout matters as much as the checkboxes. A canvas or a factor list
- * shows coordinates; neither shows the PRODUCT, and an exploding panel count is
- * the thing that actually catches people out.
+ * The selection itself is not editable here. It is a point in a space whose
+ * coordinates are pipeline nodes, and the pipeline canvas is already the
+ * picture of that space — see VariantDagPopup.
  */
-function VariantPicker({ summary, onToggle }: VariantPickerProps) {
-  if (!summary || summary.factors.length === 0) return null
-
-  const { factors, total_combinations, selected_combinations } = summary
-  const none = selected_combinations === 0
-
+function VariantRows({ rows, onRename, onEdit, onRemove, onAdd }: VariantRowsProps) {
   return (
     <div style={styles.variantPicker}>
-      {factors.map(factor => (
-        <div key={factor.name} style={styles.variantRow}>
-          <div style={styles.variantName}>
-            {factor.name}
-            {factor.is_code && (
-              <span
-                style={styles.codeTag}
-                title="A code-version axis: which version of the function produced these records"
-              >
-                code
-              </span>
-            )}
-          </div>
-          <div style={styles.variantLevels}>
-            {factor.levels.map(level => (
-              <label key={level} style={styles.variantLevel}>
-                <input
-                  type="checkbox"
-                  checked={factor.selected.includes(level)}
-                  onChange={() => onToggle(factor.name, level, factors)}
-                />
-                <span>{level}</span>
-              </label>
-            ))}
-          </div>
+      {rows.map((row, index) => (
+        <div key={index} style={styles.variantSetRow}>
+          <input
+            value={row.explicitName ?? ''}
+            placeholder={row.autoLabel}
+            onChange={e => onRename(index, e.target.value || null)}
+            style={styles.variantNameInput}
+            title={
+              row.explicitName === null
+                ? `Named from its selection: ${row.autoLabel}. Type to override.`
+                : 'The name this variant carries in the figure'
+            }
+          />
+          <button
+            type="button"
+            style={styles.variantSelectButton}
+            onClick={() => onEdit(index)}
+            title="Choose this variant on the pipeline graph"
+          >
+            ⋔ Select
+          </button>
+          {/* One variant is the pin; there is nothing to remove down to zero. */}
+          {rows.length > 1 && (
+            <button
+              type="button"
+              style={styles.variantRemove}
+              onClick={() => onRemove(index)}
+              title="Remove this variant"
+            >
+              ✕
+            </button>
+          )}
+          {/* An unfilled row is inert, not broken: it must not wear the same
+              warning as a selection that genuinely matched nothing. */}
+          {!row.defined && (
+            <span style={styles.variantUnsetTag} title="Nothing selected yet — this variant does not affect the figure. Click Select.">
+              not set
+            </span>
+          )}
+          {row.defined && row.rowCount === 0 && (
+            <span style={styles.variantEmptyTag} title="This selection matched no records — check it against what has actually run">
+              no data
+            </span>
+          )}
+          {Object.keys(row.spans).length > 0 && (
+            <span
+              style={styles.variantEmptyTag}
+              title={
+                `This variant pools ${Object.entries(row.spans)
+                  .map(([column, n]) => `${n} versions of ${column}`)
+                  .join(', ')} — its rows were built by more than one version ` +
+                `of that code. Pin a version on it, or split it into one variant per version.`
+              }
+            >
+              pools {Object.values(row.spans)[0]} versions
+            </span>
+          )}
         </div>
       ))}
-      <div style={none ? styles.variantCountEmpty : styles.variantCount}>
-        {none
-          ? 'Nothing selected — the figure would be empty.'
-          : `${selected_combinations} of ${total_combinations} variant combination${
-              total_combinations === 1 ? '' : 's'
-            }`}
-      </div>
+      <button
+        type="button"
+        style={styles.variantAdd}
+        onClick={onAdd}
+        title="Compare against another variant"
+      >
+        + Add variant
+      </button>
+    </div>
+  )
+}
+
+/**
+ * How much of the variant space is on screen.
+ *
+ * The readout matters as much as the rows. A canvas or a factor list shows
+ * coordinates; neither shows the PRODUCT, and an exploding panel count is the
+ * thing that actually catches people out.
+ */
+function VariantReadout({ summary }: { summary?: VariantSummary }) {
+  if (!summary || summary.factors.length === 0) return null
+  const { total_combinations, selected_combinations } = summary
+  const none = selected_combinations === 0
+  return (
+    <div style={none ? styles.variantCountEmpty : styles.variantCount}>
+      {none
+        ? 'Nothing selected — the figure would be empty.'
+        : `${selected_combinations} of ${total_combinations} variant combination${
+            total_combinations === 1 ? '' : 's'
+          }`}
     </div>
   )
 }
@@ -1050,6 +1160,40 @@ const styles: Record<string, React.CSSProperties> = {
   },
   variantPicker: {
     display: 'flex', flexDirection: 'column', gap: 6, marginTop: 8,
+  },
+  variantSetRow: {
+    display: 'flex', alignItems: 'center', gap: 4, flexWrap: 'wrap',
+  },
+  variantNameInput: {
+    flex: 1, minWidth: 0,
+    background: '#22223a', color: '#ddd', border: '1px solid #3a3a5a',
+    borderRadius: 4, fontSize: 11, padding: '3px 5px',
+  },
+  variantSelectButton: {
+    flex: '0 0 auto', padding: '3px 8px', background: '#22223a', color: '#c4b5fd',
+    border: '1px solid #4c3a8a', borderRadius: 4, cursor: 'pointer', fontSize: 11,
+  },
+  variantRemove: {
+    flex: '0 0 auto', padding: '2px 5px', background: 'transparent', color: '#888',
+    border: 'none', cursor: 'pointer', fontSize: 11,
+  },
+  variantEmptyTag: {
+    fontSize: 9, color: '#fbbf24', border: '1px solid #6b5a1a',
+    borderRadius: 3, padding: '0 3px', textTransform: 'uppercase',
+  },
+  // Grey, not amber: "not yet said" is a state, not a problem.
+  variantUnsetTag: {
+    fontSize: 9, color: '#8a8aa8', border: '1px solid #3a3a5a',
+    borderRadius: 3, padding: '0 3px', textTransform: 'uppercase',
+  },
+  variantAdd: {
+    alignSelf: 'flex-start', padding: '3px 10px', background: 'transparent',
+    color: '#9d92f5', border: '1px dashed #4c3a8a', borderRadius: 4,
+    cursor: 'pointer', fontSize: 11,
+  },
+  poolRow: {
+    display: 'flex', alignItems: 'center', fontSize: 11, color: '#bbb',
+    marginTop: 8, cursor: 'pointer',
   },
   variantRow: { display: 'flex', flexDirection: 'column', gap: 2 },
   variantName: {

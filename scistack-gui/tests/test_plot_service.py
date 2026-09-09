@@ -418,3 +418,99 @@ def test_collapsed_controls_keep_the_scroll_property():
         )
 
     assert "overflowY: 'auto'" in open_style
+
+
+# --- variant graph ---------------------------------------------------------
+#
+# What the variant-selection popup draws itself from. The GUI must not have to
+# parse "Code:bandpass" or "bandpass.low_hz" back into a producing function —
+# those are scidb's namespacing conventions, and a TypeScript copy of them
+# would be the first thing to break when they change.
+
+
+def test_variant_graph_reports_axes_and_versions(populated_db):
+    graph = plot_service.variant_graph(populated_db, "FilteredSignal")
+
+    assert set(graph) >= {"axes", "versions", "chain_functions"}
+    for axis in graph["axes"]:
+        assert axis["kind"] in ("code", "param")
+        assert "levels" in axis
+
+
+def test_variant_graph_answers_for_canvas_functions(populated_db):
+    """Nodes outside the plotted measure's chain still get a version list — the
+    popup mirrors the whole pipeline, so every node has to be able to speak."""
+    graph = plot_service.variant_graph(
+        populated_db, "FilteredSignal", functions=["never_ran_anywhere"]
+    )
+
+    assert "never_ran_anywhere" not in graph["versions"]
+
+
+def test_variant_graph_is_json_serializable(populated_db):
+    json.dumps(plot_service.variant_graph(populated_db, "FilteredSignal"))
+
+
+def test_variant_graph_on_a_csv_is_empty_not_an_error(tmp_path):
+    """A CSV carries no provenance, so it has no variants — the popup should
+    still open and say so rather than failing."""
+    csv = tmp_path / "flat.csv"
+    csv.write_text("subject,value\n01,1.0\n02,2.0\n")
+
+    graph = plot_service.variant_graph(None, "value", csv_path=str(csv))
+
+    assert graph["axes"] == []
+    assert graph["versions"] == {}
+
+
+def test_variant_graph_reaches_both_transports(client, populated_db):
+    from scistack_gui.server import METHODS
+
+    response = client.post(
+        "/api/plot/variant-graph", json={"variable": "FilteredSignal"}
+    )
+    assert response.status_code == 200
+
+    rpc_result = METHODS["plot_variant_graph"]({"variable": "FilteredSignal"})
+    assert rpc_result["axes"] == response.json()["axes"]
+
+
+def _component_body(path: str, name: str) -> str:
+    import re
+    from pathlib import Path
+
+    source = (Path(__file__).parent.parent / path).read_text()
+    match = re.search(rf"\nfunction {name}\(", source)
+    assert match, f"{path} has no {name!r} component"
+    rest = source[match.end() :]
+    # Up to the next top-level declaration — enough to cover the component.
+    end = re.search(r"\n(function |const styles)", rest)
+    return rest[: end.start()] if end else rest
+
+
+@pytest.mark.parametrize(
+    ("path", "component"),
+    [
+        ("frontend/src/components/DAG/ParameterNode.tsx", "VariantParameterNode"),
+        ("frontend/src/components/DAG/FunctionNode.tsx", "VariantFunctionNode"),
+    ],
+)
+def test_variant_mode_nodes_never_call_the_backend(path, component):
+    """The trap this whole feature is built around.
+
+    The canvas and the variant popup draw the same nodes with the same widgets,
+    and they mean opposite things: a ParameterNode checkbox on the canvas is
+    EXECUTION state (it excludes a value from future for_each fan-outs), while
+    in the popup it selects which already-computed records a FIGURE draws.
+
+    If the popup's controls ever reached a backend call, looking at a plot would
+    quietly rewrite the run configuration — far worse than two similar-looking
+    widgets. In selection mode the node components must therefore be pure: they
+    write to the PlotSpec through the context and touch nothing else.
+    """
+    body = _component_body(path, component)
+
+    assert "callBackend" not in body, (
+        f"{component} calls the backend — variant selection is display state "
+        f"and must never write execution state (hide/unhide/run)."
+    )

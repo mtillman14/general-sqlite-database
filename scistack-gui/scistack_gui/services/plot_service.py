@@ -200,6 +200,37 @@ def capabilities_for(db, spec_payload: dict, *, csv_path: str | None = None) -> 
     return capabilities(spec, table)
 
 
+def variant_graph(
+    db,
+    variable: str,
+    *,
+    functions: list[str] | None = None,
+    csv_path: str | None = None,
+) -> dict:
+    """
+    Variant axes and per-function versions, for the variant-selection popup.
+
+    ``functions`` is every function node currently on the canvas: the popup
+    mirrors the whole pipeline, so a node outside this variable's chain still
+    has to be able to say what versions it has run (and, by their absence, that
+    selecting one would not affect this figure).
+
+    A CSV has no provenance and therefore no variants — it returns the empty
+    graph rather than an error, so the popup can open and say so.
+    """
+    source = get_source(db, csv_path=csv_path)
+    if csv_path or not hasattr(source, "variant_graph"):
+        return {"variable": variable, "axes": [], "versions": {}, "chain_functions": []}
+    graph = source.variant_graph(variable, functions or [])
+    logger.info(
+        "[plot] variant_graph(%s): %d axes, %d function(s) with versions",
+        variable,
+        len(graph["axes"]),
+        len(graph["versions"]),
+    )
+    return graph
+
+
 def resolve_figures(
     db,
     spec_payload: dict,

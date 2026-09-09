@@ -14,6 +14,7 @@ import math
 from .shape import Shape
 from .spec import SINGLE_ASSIGNMENT_ROLES, PlotSpec, Role, VariantPolicy
 from .table import LongTable
+from .variants import CURRENT_VARIANT_NAME, VARIANT_FACTOR
 
 
 class RoleError(ValueError):
@@ -81,9 +82,27 @@ def complete_roles(spec: PlotSpec, table: LongTable) -> dict[str, Role]:
     Factors the spec doesn't mention default to FREE — they stay in the frame
     as replicate rows, which is the conservative choice: it never silently
     drops or averages data the user didn't ask to drop or average.
+
+    The one exception is the synthetic ``Variant`` factor once it has more than
+    one level, which defaults to COLOR. FREE is not the conservative choice
+    *there*: it would overplot two variants the user has just gone to the
+    trouble of naming, which is the exact failure this whole feature exists to
+    prevent — and ``validate`` would refuse it a moment later anyway, so the
+    alternative is an error message instead of the figure they asked for. Same
+    reasoning as ``default_roles`` giving the first variant factor COLOR.
     """
     roles = {name: role for name, role in spec.roles.items() if table.has_factor(name)}
     for factor in table.factors:
+        if (
+            factor.name == VARIANT_FACTOR
+            and factor.name not in roles
+            and len(factor.levels) > 1
+        ):
+            taken = set(roles.values())
+            roles[factor.name] = (
+                Role.COLOR if Role.COLOR not in taken else Role.FACET
+            )
+            continue
         roles.setdefault(factor.name, Role.FREE)
     return roles
 
@@ -147,25 +166,25 @@ def validate(spec: PlotSpec, table: LongTable) -> None:
 
     # --- variants must not be pooled by accident -------------------------
     if spec.variant_policy is VariantPolicy.FACET:
+        # Completed roles, not the spec's raw ones: the synthetic ``Variant``
+        # factor is defaulted rather than assigned (see complete_roles), and
+        # reading spec.roles here would reject the very figure that defaulting
+        # exists to produce.
+        assigned = complete_roles(spec, table)
         pooled = [
             f.name
             for f in table.variant_factors
             if len(f.levels) > 1
-            and spec.roles.get(f.name, Role.FREE) in (Role.FREE, Role.AGGREGATE)
+            and assigned.get(f.name, Role.FREE) in (Role.FREE, Role.AGGREGATE)
         ]
         if pooled:
             raise RoleError(
                 f"Variant factor(s) {pooled} would be pooled: their levels are "
                 f"different pipeline variants, not replicates, so averaging or "
                 f"overplotting them silently mixes results. Assign them "
-                f"'color'/'facet'/'iterate', pin one with "
-                f"variant_policy='pin', or opt in with variant_policy='pool'."
+                f"'color'/'facet'/'iterate', select the variants you want with "
+                f"PlotSpec.variant_sets, or opt in with variant_policy='pool'."
             )
-    if spec.variant_policy is VariantPolicy.PIN and not spec.pinned_variant:
-        raise RoleError(
-            "variant_policy='pin' requires PlotSpec.pinned_variant to name the "
-            "variant to keep, e.g. {'bandpass.low_hz': 20}."
-        )
 
     # --- 1-D needs an index ---------------------------------------------
     if shape is Shape.SERIES_1D and spec.index_column:
@@ -188,14 +207,41 @@ def default_spec(table: LongTable, measure: str | None = None) -> PlotSpec:
     the same figure (CLAUDE.md NOTE 3).
     """
     from .capability import default_plot
-    from .spec import FacetOptions, PlotKind, VariantPolicy, grid_shape_for
+    from .spec import FacetOptions, PlotKind, VariantSet, grid_shape_for
+
+    from .variants import apply_variant_sets
 
     measure = measure or (table.measure_names[0] if table.measures else None)
     if measure is None:
         raise RoleError("This table has no measures to plot.")
 
-    roles = default_roles(table, measure)
-    kind = default_plot(table.shape_of(measure), roles) or PlotKind.SCATTER
+    # When the source can say which rows are current, open on those, as ONE
+    # named variant. A scidb variable whose function was edited holds records
+    # from both the old and the new code; showing all of them at once answers a
+    # question nobody asked, and showing an arbitrary one is how the wrong data
+    # gets plotted.
+    #
+    # A single row is deliberately the opening state rather than zero: the GUI's
+    # Variants section always has a row to edit, and "current results" is a
+    # variant like any other — the user adds a second row to compare against it
+    # instead of first discovering a hidden pin and clearing it.
+    variant_sets = (
+        [VariantSet(name=CURRENT_VARIANT_NAME, selection=dict(table.default_pin))]
+        if table.default_pin
+        else []
+    )
+
+    # Roles describe the table AS RESOLVED, so they are derived after the
+    # variants are chosen — never before. Defaulting against the undecided table
+    # put a role on a `Code:<fn>` factor that the opening variant then answered,
+    # and `validate` calls a role on a missing factor an unknown factor and
+    # refuses to draw anything. (`strip_answered_roles` catches the same thing
+    # arriving from a saved spec; this stops it being created here at all.)
+    resolved = apply_variant_sets(
+        PlotSpec(measures=[measure], variant_sets=variant_sets), table
+    )
+    roles = default_roles(resolved, measure)
+    kind = default_plot(resolved.shape_of(measure), roles) or PlotKind.SCATTER
 
     # A 13-muscle struct wants a grid, not a 13-wide strip of subplots. The
     # arithmetic lives in grid_shape_for so the panel, the renderer and this
@@ -203,23 +249,15 @@ def default_spec(table: LongTable, measure: str | None = None) -> PlotSpec:
     # leaving n_rows open lets the height follow the panel count if the data
     # gains a field.
     facet_panels = math.prod(
-        [len(f.levels) for f in table.factors if roles.get(f.name) is Role.FACET] or [0]
+        [len(f.levels) for f in resolved.factors if roles.get(f.name) is Role.FACET]
+        or [0]
     )
     _, n_cols = grid_shape_for(facet_panels) if facet_panels > 1 else (1, None)
-
-    # When the source can say which rows are current, open on those. A scidb
-    # variable whose function was edited holds records from both the old and
-    # the new code; showing all of them at once answers a question nobody
-    # asked, and showing an arbitrary one is how the wrong data gets plotted.
-    # This is a starting point, not a lock — clearing variant_policy brings
-    # every version back, and the pinned factor stays in the table either way.
-    policy = VariantPolicy.PIN if table.default_pin else VariantPolicy.FACET
 
     return PlotSpec(
         measures=[measure],
         roles=roles,
         kind=kind,
         facet=FacetOptions(n_cols=n_cols),
-        variant_policy=policy,
-        pinned_variant=dict(table.default_pin) if table.default_pin else None,
+        variant_sets=variant_sets,
     )

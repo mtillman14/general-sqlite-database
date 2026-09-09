@@ -67,6 +67,26 @@ def plot_capabilities(req: SpecRequest, db: DatabaseManager = Depends(get_db)) -
         raise HTTPException(status_code=400, detail=str(exc))
 
 
+class VariantGraphRequest(BaseModel):
+    variable: str
+    # Every function node on the canvas, so nodes outside this variable's chain
+    # can still list the versions they have run.
+    functions: list[str] = []
+    csv_path: str | None = None
+
+
+@router.post("/plot/variant-graph")
+def plot_variant_graph(
+    req: VariantGraphRequest, db: DatabaseManager = Depends(get_db)
+) -> dict:
+    try:
+        return plot_service.variant_graph(
+            db, req.variable, functions=req.functions, csv_path=req.csv_path
+        )
+    except (ValueError, KeyError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+
 @router.post("/plot/resolve")
 def plot_resolve(req: SpecRequest, db: DatabaseManager = Depends(get_db)) -> dict:
     try:

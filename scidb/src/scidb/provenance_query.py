@@ -371,6 +371,65 @@ def function_source(duck, function_hash: str) -> dict:
     return {"entry": entry, "units": units}
 
 
+def function_versions(duck, fn_names) -> dict:
+    """``{fn_name: [{"version": "v1", "function_hash": …, "first_saved": …}]}`` —
+    every recorded version of each named function, oldest first.
+
+    The unfiltered counterpart to :func:`code_version_ordinals`, which drops
+    single-version functions because *as a plot axis* they are not interesting.
+    A version **picker** needs the opposite: a function that has run once still
+    offers a choice ("latest", or that one version by name), and a dropdown that
+    silently omitted it would present the user with an empty list for the most
+    common case in any project.
+
+    Ordinals are identical to ``code_version_ordinals``' — the same ordering, in
+    fact the same computation, since that function is now expressed in terms of
+    this one. Two implementations of "which version is v2" that could disagree
+    would be a labelling bug that only appears once somebody edits a function
+    twice, which is exactly when it is hardest to notice.
+
+    ``first_saved`` is the earliest save timestamp of any record the version
+    produced — what a picker shows beside the ordinal so "v1" has a date on it.
+    """
+    names = [n for n in dict.fromkeys(fn_names) if n and n != SAVE_FUNCTION_NAME]
+    if not names:
+        return {}
+    rows = _chunked_in(
+        duck,
+        "SELECT inv.function_name, inv.function_hash, MIN(rs.timestamp) "
+        "FROM _invocation inv "
+        "JOIN _invocation_output io ON io.invocation_id = inv.invocation_id "
+        "JOIN _record_save rs ON rs.record_id = io.output_record_id "
+        "WHERE inv.function_name IN ({ph}) AND inv.function_hash <> '' "
+        "GROUP BY inv.function_name, inv.function_hash",
+        names,
+    )
+    by_name: dict = {}
+    for fn_name, fn_hash, first_saved in rows:
+        by_name.setdefault(fn_name, []).append((first_saved or "", fn_hash))
+
+    out: dict = {}
+    for fn_name, versions in by_name.items():
+        # (timestamp, hash) sort: hash breaks ties deterministically when two
+        # versions share a timestamp, so ordinals never shuffle between reads.
+        out[fn_name] = [
+            {
+                "version": f"v{ordinal}",
+                "function_hash": fn_hash,
+                "first_saved": first_saved or None,
+            }
+            for ordinal, (first_saved, fn_hash) in enumerate(
+                sorted(versions), start=1
+            )
+        ]
+    logger.debug(
+        "function_versions: %d function(s) resolved: %s",
+        len(out),
+        {name: len(v) for name, v in sorted(out.items())},
+    )
+    return out
+
+
 def code_version_ordinals(duck, fn_names) -> dict:
     """``{fn_name: {fn_hash: "vN"}}`` for functions holding **more than one**
     version, numbered by each version's earliest save.
@@ -392,32 +451,11 @@ def code_version_ordinals(duck, fn_names) -> dict:
     :func:`_order_versions` makes. ``fn_hash`` breaks ties deterministically
     when two versions share a timestamp.
     """
-    names = [n for n in dict.fromkeys(fn_names) if n and n != SAVE_FUNCTION_NAME]
-    if not names:
-        return {}
-    rows = _chunked_in(
-        duck,
-        "SELECT inv.function_name, inv.function_hash, MIN(rs.timestamp) "
-        "FROM _invocation inv "
-        "JOIN _invocation_output io ON io.invocation_id = inv.invocation_id "
-        "JOIN _record_save rs ON rs.record_id = io.output_record_id "
-        "WHERE inv.function_name IN ({ph}) AND inv.function_hash <> '' "
-        "GROUP BY inv.function_name, inv.function_hash",
-        names,
-    )
-    by_name: dict = {}
-    for fn_name, fn_hash, first_saved in rows:
-        by_name.setdefault(fn_name, []).append((first_saved or "", fn_hash))
-
     out: dict = {}
-    for fn_name, versions in by_name.items():
+    for fn_name, versions in function_versions(duck, fn_names).items():
         if len(versions) < 2:
             continue  # single-version functions are not an axis
-        ordered = sorted(versions)
-        out[fn_name] = {
-            fn_hash: f"v{ordinal}"
-            for ordinal, (_ts, fn_hash) in enumerate(ordered, start=1)
-        }
+        out[fn_name] = {v["function_hash"]: v["version"] for v in versions}
 
     if out:
         logger.info(
